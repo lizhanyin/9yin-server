@@ -1,32 +1,30 @@
 package com.swingfrog.summer.proxy;
 
-import java.lang.reflect.Method;
+import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.InvocationHandlerAdapter;
+import net.bytebuddy.matcher.ElementMatchers;
 
-import net.sf.cglib.proxy.Enhancer;
-import net.sf.cglib.proxy.MethodInterceptor;
-import net.sf.cglib.proxy.MethodProxy;
+public class ProxyFactory {
 
-public class ProxyFactory implements MethodInterceptor {
-
-	private final Object target;
-	private final ProxyMethodInterceptor interceptor;
-	
-	private ProxyFactory(Object target, ProxyMethodInterceptor interceptor) {
-		this.target = target;
-		this.interceptor = interceptor;
-	}
-	
 	@SuppressWarnings("unchecked")
 	public static <T> T getProxyInstance(Object target, ProxyMethodInterceptor interceptor) {
-		ProxyFactory pf = new ProxyFactory(target, interceptor);
-		Enhancer en = new Enhancer();
-		en.setSuperclass(target.getClass());
-		en.setCallback(pf);
-		return (T)en.create();
+		try {
+			return (T) new ByteBuddy()
+					.subclass(target.getClass())
+					.method(ElementMatchers.isVirtual()
+							.and(ElementMatchers.not(ElementMatchers.isFinal())))
+					.intercept(InvocationHandlerAdapter.of(
+							(proxy, method, args) -> interceptor.intercept(target, method, args)))
+					.make()
+					.load(target.getClass().getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+					.getLoaded()
+					.getDeclaredConstructor()
+					.newInstance();
+		} catch (RuntimeException | ReflectiveOperationException e) {
+			throw new RuntimeException(String.format("create proxy instance failure, class[%s]",
+					target.getClass().getName()), e);
+		}
 	}
-	
-	@Override
-	public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable {
-		return interceptor.intercept(target, method, args);
-	}
+
 }

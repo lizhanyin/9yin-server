@@ -27,6 +27,8 @@
 
 ## 更新说明
 ### 1.1.19 - 2024-08-23
+0. 升级 JDK 版本至 21，同步升级构建插件与依赖（javassist 3.30.2-GA、netty 4.1.115.Final），代理实现由已停更的 cglib 替换为 byte-buddy 1.15.10，无需任何 JVM 开放参数。 - 2026-10-28
+0. 构建与文档编码统一为 UTF-8，修复 Windows 控制台中文乱码问题；新增 Maven Wrapper（3.9.6），无需本地安装 Maven 即可构建。 - 2026-10-28
 1. 新增@ShardingKey注解，可对Repository进行分表，在test.sharding有相关例子。 - 2024-07-14
 2. 修复Http协议下，上传文件WebFileUpload不能正确保存的问题。 - 2024-07-24
 3. 优化Summer.getRandomClientRemote()，在调用ClientRemote时可自动轮训到可用的节点再发出RPC请求，感谢 [whxlxl](https://github.com/whxlxl) 大佬指出问题。 - 2024-07-29
@@ -230,9 +232,16 @@
 2. 当作为web服务器时，若接口返回的类型不是WebView，则将返数据序列化成Json，并返回TextView。
 
 ## 环境介绍与安装说明
-JDK 1.8 以上<br/>
+JDK 21 (LTS)<br/>
+Maven 3.9.x (项目自带 Maven Wrapper，可直接使用 mvnw / mvnw.cmd，无需安装)<br/>
 MySql 5.7 (仅供参考)<br/>
 Redis 5.0 (仅供参考)<br/>
+
+### 构建
+```
+mvnw.cmd clean package    # Windows
+./mvnw clean package      # Linux / macOS
+```
 
 ## 快捷上手
 ### 创建项目

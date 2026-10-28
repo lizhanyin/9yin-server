@@ -7,21 +7,31 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** 连接级入站处理：绑定会话属性，把明文帧交给 opcode 路由器。 */
-final class FxServerHandler extends SimpleChannelInboundHandler<byte[]> {
+public final class FxServerHandler extends SimpleChannelInboundHandler<byte[]> {
 
     private static final Logger log = LoggerFactory.getLogger(FxServerHandler.class);
 
     private final FxOpcodeRouter router;
     private final FxConnection connection;
+    private final FxConnectionListener listener;
 
-    FxServerHandler(FxOpcodeRouter router, FxConnection connection) {
+    public FxServerHandler(FxOpcodeRouter router, FxConnection connection) {
+        this(router, connection, null);
+    }
+
+    public FxServerHandler(FxOpcodeRouter router, FxConnection connection, FxConnectionListener listener) {
         this.router = router;
         this.connection = connection;
+        this.listener = listener;
     }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
-        ctx.channel().attr(FxSession.ATTR).set(new FxSession(ctx.channel(), connection));
+        FxSession session = new FxSession(ctx.channel(), connection);
+        ctx.channel().attr(FxSession.ATTR).set(session);
+        if (listener != null) {
+            listener.onConnected(session);
+        }
         ctx.fireChannelActive();
     }
 
@@ -29,6 +39,17 @@ final class FxServerHandler extends SimpleChannelInboundHandler<byte[]> {
     protected void channelRead0(ChannelHandlerContext ctx, byte[] plain) {
         FxSession session = ctx.channel().attr(FxSession.ATTR).get();
         router.dispatch(session, plain);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        if (listener != null) {
+            FxSession session = ctx.channel().attr(FxSession.ATTR).get();
+            if (session != null) {
+                listener.onDisconnected(session);
+            }
+        }
+        ctx.fireChannelInactive();
     }
 
     @Override

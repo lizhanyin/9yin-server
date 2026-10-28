@@ -59,6 +59,13 @@ public final class RoleStore {
         return roles.size();
     }
 
+    /** 全量落盘（断线/停服时调用）。 */
+    public synchronized void flush() {
+        if (!roles.isEmpty()) {
+            save();
+        }
+    }
+
     private void load() {
         if (!Files.exists(file)) {
             return;

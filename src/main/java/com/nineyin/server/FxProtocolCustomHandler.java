@@ -15,9 +15,15 @@ import io.netty.channel.socket.SocketChannel;
 public final class FxProtocolCustomHandler implements ProtocolCustomHandler {
 
     private final FxOpcodeRouter router;
+    private final FxConnectionListener listener;
 
     public FxProtocolCustomHandler(FxOpcodeRouter router) {
+        this(router, null);
+    }
+
+    public FxProtocolCustomHandler(FxOpcodeRouter router, FxConnectionListener listener) {
         this.router = router;
+        this.listener = listener;
     }
 
     @Override
@@ -26,6 +32,6 @@ public final class FxProtocolCustomHandler implements ProtocolCustomHandler {
         socketChannel.pipeline()
                 .addLast(new FxFrameDecoder(connection))
                 .addLast(new FxFrameEncoder(connection))
-                .addLast(new FxServerHandler(router, connection));
+                .addLast(new FxServerHandler(router, connection, listener));
     }
 }

@@ -37,14 +37,14 @@ public final class LoginFlow {
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
 
     private final RoleStore roleStore;
-    private final List<Runnable> readyHooks = new ArrayList<>();
+    private final List<java.util.function.Consumer<LoginSession>> readyHooks = new ArrayList<>();
 
     public LoginFlow(RoleStore roleStore) {
         this.roleStore = roleStore;
     }
 
     /** ClientReady 后回调（场景阶段用来下发 NPC）。 */
-    public void addReadyHook(Runnable hook) {
+    public void addReadyHook(java.util.function.Consumer<LoginSession> hook) {
         readyHooks.add(hook);
     }
 
@@ -177,9 +177,9 @@ public final class LoginFlow {
         if (s.spawnResource.isEmpty()) {
             return;
         }
-        for (Runnable hook : readyHooks) {
+        for (java.util.function.Consumer<LoginSession> hook : readyHooks) {
             try {
-                hook.run();
+                hook.accept(s);
             } catch (Exception e) {
                 log.error("ready hook error", e);
             }

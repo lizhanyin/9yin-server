@@ -25,7 +25,13 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -202,13 +208,36 @@ public final class NineyinServer implements SummerApp {
         log.info("nineyin server stopped");
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         Summer.addModuleNet();
-        String config = NineyinServer.class.getClassLoader()
-                .getResource("nineyin/server.properties").getPath();
+        String config = materializeServerProperties();
         Summer.hot(SummerConfig.newBuilder()
                 .app(new NineyinServer())
                 .serverProperties(config)
                 .build());
+    }
+
+    /**
+     * ConfigMgr 只接受文件系统路径；jar 内运行时资源无真实路径，
+     * 落临时文件传递。file 协议下用 toURI() 规避中文目录的 URL 编码。
+     */
+    private static String materializeServerProperties() throws IOException {
+        URL url = NineyinServer.class.getClassLoader().getResource("nineyin/server.properties");
+        if (url == null) {
+            throw new IllegalStateException("nineyin/server.properties missing on classpath");
+        }
+        if ("file".equals(url.getProtocol())) {
+            try {
+                return Path.of(url.toURI()).toString();
+            } catch (URISyntaxException e) {
+                throw new IllegalStateException("server.properties url invalid: " + url, e);
+            }
+        }
+        Path tmp = Files.createTempFile("nineyin-server", ".properties");
+        tmp.toFile().deleteOnExit();
+        try (InputStream in = url.openStream()) {
+            Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return tmp.toString();
     }
 }

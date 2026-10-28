@@ -1,5 +1,6 @@
 package com.nineyin.db;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -7,6 +8,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -91,5 +94,38 @@ class MySqlRoleStoreTest {
         MySqlRoleStore store = open();
         assertNull(store.get("acct:v1:no-such-" + System.nanoTime()));
         store.close();
+    }
+
+    /**
+     * 集成测试不自清理会留下 '集成测试侠'，其唯一名约束会卡死下一次
+     * mvn package，故每次跑完删掉本测试的痕迹。
+     */
+    @AfterAll
+    void cleanupLeftovers() {
+        MySqlRoleStore store;
+        try {
+            store = new MySqlRoleStore(MysqlDsn.parse(DSN), tempDir.resolve("cleanup.json"));
+        } catch (Throwable unreachable) {
+            return;
+        }
+        try (Connection conn = store.dataSourceForTest().getConnection()) {
+            exec(conn, "DELETE l FROM role_locations l JOIN roles r ON r.role_id = l.role_id WHERE r.name = ?", "集成测试侠");
+            exec(conn, "DELETE a FROM role_appearances a JOIN roles r ON a.role_id = r.role_id WHERE r.name = ?", "集成测试侠");
+            exec(conn, "DELETE FROM roles WHERE name = ?", "集成测试侠");
+            exec(conn, "DELETE FROM accounts WHERE account_key LIKE 'acct:v1:it-%'", null);
+        } catch (Throwable ignoreCleanupFailure) {
+            // 清理尽力而为：MySQL 不可达或权限不足时静默跳过
+        } finally {
+            store.close();
+        }
+    }
+
+    private static void exec(Connection conn, String sql, String arg) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            if (arg != null) {
+                ps.setString(1, arg);
+            }
+            ps.executeUpdate();
+        }
     }
 }

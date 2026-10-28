@@ -2,11 +2,13 @@ package com.nineyin.server;
 
 import com.nineyin.db.RoleStore;
 import com.nineyin.game.SceneFlow;
+import com.nineyin.game.SelectFlow;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
 import com.nineyin.scene.SceneManager;
+import com.nineyin.shop.ShopRepository;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.app.SummerApp;
 import com.swingfrog.summer.app.SummerConfig;
@@ -44,7 +46,12 @@ public final class NineyinServer implements SummerApp {
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
+        new SelectFlow(sceneManager).register(router);
+        shopRepository = new ShopRepository();
+        shopRepository.load(SceneManager.locateShareRoot().resolve("trade").resolve("shop.ini"));
     }
+
+    private final ShopRepository shopRepository;
 
     public FxOpcodeRouter router() {
         return router;
@@ -68,8 +75,9 @@ public final class NineyinServer implements SummerApp {
                 roleStore.flush();
             }
         };
-        ProtocolCustomMgr.get().setHandler(new FxProtocolCustomHandler(router, listener));
-        log.info("nineyin server init: FxNet2 custom protocol registered");
+        ProtocolCustomMgr.get().setHandler(
+                new FxProtocolCustomHandler(router, listener, "127.0.0.1", 19061));
+        log.info("nineyin server init: FxNet2 + svrlist protocols registered");
     }
 
     @Override

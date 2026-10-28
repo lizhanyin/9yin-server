@@ -7,6 +7,7 @@ import com.nineyin.protocol.Appearance;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.RecordId;
 import com.nineyin.protocol.S2CPackets;
+import com.nineyin.protocol.SkillPackets;
 import com.nineyin.server.FxC2SHandler;
 import com.nineyin.server.FxOpcodeRouter;
 import com.nineyin.server.FxSession;
@@ -213,9 +214,16 @@ public final class LoginFlow {
         for (LoginSession.Shortcut sc : s.shortcuts) {
             fx.send(S2CPackets.shortcutAdd(sc.index(), sc.kind(), sc.id()));
         }
+        // 已学技能容器（SkillContainer View=40，官服 21 属性布局）+ 技能开关 + 立即 0x38
+        fx.send(SkillPackets.createView(SkillPackets.VIEW_SKILL, 800));
+        for (int i = 0; i < SkillPackets.STARTER_SKILLS.size(); i++) {
+            fx.send(SkillPackets.skillViewAdd(i + 1, SkillPackets.STARTER_SKILLS.get(i)));
+        }
+        fx.send(SkillPackets.skillActionSwitch());
+        fx.send(S2CPackets.timeSync(0, 0));
         s.uiBootstrapped = true;
-        log.info("UI bootstrap mode={} shortcuts={} clockMin={}",
-                s.operateMode, s.shortcuts.size(), clockMinutes());
+        log.info("UI bootstrap mode={} shortcuts={} skills={} clockMin={}",
+                s.operateMode, s.shortcuts.size(), SkillPackets.STARTER_SKILLS.size(), clockMinutes());
     }
 
     // ---------- C2S 解析 ----------

@@ -17,6 +17,7 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -63,6 +64,11 @@ public final class SceneFlow {
         public float lastNpcZ;
         public long lastPatrolMs;
         public long lastPosSaveMs;
+        // 选中目标（SelectFlow 维护）
+        public int selectedOid;
+        public int selectedOwner;
+        public float selectedX;
+        public float selectedZ;
     }
 
     public record PendingArrive(long atMs, float x, float y, float z, float orient) {
@@ -149,15 +155,19 @@ public final class SceneFlow {
         return id.contains("leader") || id.contains("world") ? -100 : 0;
     }
 
-    // ---------- 0x18 ping → 立即 0x38 ----------
+    // ---------- 0x18 ping → 回显客户端 tick 的 0x38（HUD 延迟显示依赖此回包） ----------
 
     private void onPing(FxSession fx, byte[] plain) {
         LoginSession session = fx.channel().attr(LoginFlow.SESSION).get();
         if (session == null) {
             return;
         }
-        long elapsed = System.nanoTime() / 1_000_000L - session.bootSteadyMs;
-        fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), session.timeSeq++));
+        int tick = plain.length >= 5 ? leU32(plain, 1) : 0;
+        fx.send(S2CPackets.timeSync(tick, session.timeSeq++));
+        if (++session.pingCount % 10 == 0) {
+            fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK,
+                    LocalDateTime.now().getHour() * 60 + LocalDateTime.now().getMinute()));
+        }
     }
 
     // ---------- 0x0A ----------
@@ -193,6 +203,8 @@ public final class SceneFlow {
                 st.lastPosSaveMs = now;
                 roleStore.updateLocation(session.accountKey, mx, my, mz, mo);
             }
+            // 选中目标超出 28m 自动清除
+            SelectFlow.autoClearIfNeeded(fx, session, st);
             // >1m 触发增量补发
             if (st.npcsSent && st.world != null) {
                 float moved = (session.x - st.lastNpcX) * (session.x - st.lastNpcX)
@@ -248,6 +260,10 @@ public final class SceneFlow {
                     fx.send(S2CPackets.objectPropertyInt(223, session.operateMode));
                 }
             }
+            // 商店购买流程（64 打开 / 70 购买 / 71 关闭）：S2C 响应格式待抓包钉死，先对齐 C++ 记日志
+            case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
+            case 70 -> log.info("shop msg=70 buy argc={} (response pending capture)", msg.size());
+            case 71 -> log.info("shop msg=71 close argc={}", msg.size());
             default -> {
             }
         }
@@ -431,8 +447,11 @@ public final class SceneFlow {
     }
 
     private static float readF32(byte[] b, int off) {
-        int bits = (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8)
+        return Float.intBitsToFloat(leU32(b, off));
+    }
+
+    private static int leU32(byte[] b, int off) {
+        return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8)
                 | ((b[off + 2] & 0xFF) << 16) | ((b[off + 3] & 0xFF) << 24);
-        return Float.intBitsToFloat(bits);
     }
 }

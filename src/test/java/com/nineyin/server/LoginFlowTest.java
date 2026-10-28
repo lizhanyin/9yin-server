@@ -171,11 +171,15 @@ class LoginFlowTest {
                 + ready.size());
         assertEquals(0x1D, op(ready.get(0)));
         assertEquals(0x10, op(ready.get(1)));
-        // bootstrap 内必含 0x38 时间同步与 7 条轻功行 + 1 条快捷键行（0x11）
+        // bootstrap 内含 2 个 0x38（时钟 + 技能容器后追加）、7 条轻功行 + 1 条快捷键行（0x11）
         long timeSync = ready.stream().filter(f -> op(f) == 0x38).count();
         long recordRows = ready.stream().filter(f -> op(f) == 0x11).count();
-        assertEquals(1, timeSync);
+        assertEquals(2, timeSync);
         assertEquals(8, recordRows);
+        // 技能容器：CreateView(0x15) + 8 条 ViewAdd(0x18) + 开关(0x1E)
+        assertEquals(1, ready.stream().filter(f -> op(f) == 0x15).count());
+        assertEquals(8, ready.stream().filter(f -> op(f) == 0x18).count());
+        assertEquals(1, ready.stream().filter(f -> op(f) == 0x1E).count());
     }
 
     @Test

@@ -34,6 +34,7 @@ public final class LoginSession {
 
     public int operateMode;
     public int logicState;
+    public int pingCount;
     public List<Shortcut> shortcuts = new java.util.ArrayList<>();
 
     public LoginSession(FxSession fx) {

@@ -25,7 +25,7 @@ public final class SceneCreatorLoader {
     private static final Logger log = LoggerFactory.getLogger(SceneCreatorLoader.class);
 
     private static final Pattern ITEM_TAG = Pattern.compile("<item\\b[^>]*>");
-    private static final Pattern ATTR = Pattern.compile("(\\w+)\\s*=\\s*\"([^\"]*)\"");
+    private static final Pattern ATTR = Pattern.compile("(\\w+)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')");
 
     /** 已知资源 → npc_creator 子目录映射，缺失时模糊前缀匹配。 */
     private static Path creatorDirForResource(String sceneResource, Path creatorRoot) {
@@ -140,7 +140,12 @@ public final class SceneCreatorLoader {
                 npcs.add(n);
             }
         }
-        log.info("npc permanent loaded dir={} count={}", dir, npcs.size());
+        if (npcs.isEmpty()) {
+            log.warn("npc creator loaded 0 items from {} (files={}, check XML format/manifest)", dir,
+                    ordered.size());
+        } else {
+            log.info("npc permanent loaded dir={} count={}", dir, npcs.size());
+        }
         return npcs;
     }
 
@@ -195,7 +200,8 @@ public final class SceneCreatorLoader {
         java.util.HashMap<String, String> map = new java.util.HashMap<>();
         Matcher m = ATTR.matcher(tag);
         while (m.find()) {
-            map.put(m.group(1), m.group(2));
+            String v = m.group(3) != null ? m.group(3) : m.group(4);
+            map.put(m.group(1), v != null ? v : "");
         }
         return new MapAttr(map);
     }

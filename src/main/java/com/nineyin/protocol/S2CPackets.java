@@ -355,11 +355,11 @@ public final class S2CPackets {
         return recordAddRow(RecordId.QING_GONG_REC, 0, id);
     }
 
-    // ---------- 清选区帧组（ESC 系统面板依赖） ----------
+    // ---------- 清选区帧组（ESC 系统面板依赖，LastObject 为对象形态） ----------
 
     public static java.util.List<byte[]> clearSelectionFrames() {
         return java.util.List.of(
-                objectPropertyInt(PropertyId.LAST_OBJECT, 0),
+                SkillPackets.lastObject(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, 0),
                 objectPropertyInt(PropertyId.AUTO_SELECT_OBJECT, 0),
                 objectPropertyInt(PropertyId.CUR_SKILL_TARGET, 0),
                 objectPropertyByte(PropertyId.SELECT_STATE, 0),

@@ -42,9 +42,9 @@ public final class NpcPackets {
         String state = n.bornAction.isEmpty() || "nil".equals(n.bornAction) || "NULL".equals(n.bornAction)
                 ? "stand" : n.bornAction;
         count++; w.u16(183).string(state);                          // State（BornAction）
-        count++; w.u16(468).i32(100);                               // HPRatio
-        count++; w.u16(577).i32(1000);                              // MaxHP
-        count++; w.u16(464).i32(1000);                              // HP
+        count++; w.u16(468).i32(n.maxHp > 0 ? (int) ((long) n.hp * 100 / n.maxHp) : 100);  // HPRatio
+        count++; w.u16(577).i32(n.maxHp > 0 ? n.maxHp : 1000);                             // MaxHP
+        count++; w.u16(464).i32(n.maxHp > 0 ? n.hp : 1000);                                // HP
         count++; w.u16(1557).i32(n.monster ? 1 : 0);                // NpcType
         count++;
         w.u16(178);

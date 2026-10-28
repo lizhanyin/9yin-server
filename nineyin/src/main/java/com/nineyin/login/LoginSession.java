@@ -1,18 +1,16 @@
 package com.nineyin.login;
 
+import com.nineyin.game.PlayerActor;
 import com.nineyin.server.FxSession;
 
 import java.util.List;
 
 /**
  * 登录会话状态（对应 C++ handle_client 内的 session_* 局部变量）。
- * 游戏系统阶段会把快捷键/技能/轻功等状态并入 PlayerEntity，这里只承载登录链路所需。
+ * 进场景后权威战斗/资源状态在 PlayerActor 上（actor），
+ * 这里只承载登录链路与位置等会话字段。
  */
 public final class LoginSession {
-
-    /** 快捷键栏位（对应 PlayerShortcut）。 */
-    public record Shortcut(int index, String kind, String id) {
-    }
 
     public final FxSession fx;
 
@@ -33,9 +31,10 @@ public final class LoginSession {
     public final long bootSteadyMs = System.nanoTime() / 1_000_000L;
 
     public int operateMode;
-    public int logicState;
     public int pingCount;
-    public List<Shortcut> shortcuts = new java.util.ArrayList<>();
+
+    /** 权威玩家状态（选角时创建）。 */
+    public PlayerActor actor;
 
     public LoginSession(FxSession fx) {
         this.fx = fx;

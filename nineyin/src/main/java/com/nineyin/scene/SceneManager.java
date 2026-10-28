@@ -22,6 +22,7 @@ public final class SceneManager {
     private final NpcTemplateRepository templates = new NpcTemplateRepository();
     private final Map<String, SceneWorld> worlds = new ConcurrentHashMap<>();
     private final Path shareRoot;
+    private final DoorRoutes doorRoutes = new DoorRoutes();
 
     public SceneManager() {
         this(locateShareRoot());
@@ -63,6 +64,7 @@ public final class SceneManager {
     private SceneWorld loadWorld(String sceneResource) {
         SceneWorld world = new SceneWorld(sceneResource);
         templates.load(shareRoot.resolve("npc").resolve("npcconfig"));
+        doorRoutes.load(shareRoot.resolve("rule").resolve("door_data.ini"));
         world.npcs.addAll(SceneCreatorLoader.load(sceneResource,
                 shareRoot.resolve("creator").resolve("npc_creator")));
         PatrolPaths.load(shareRoot.resolve("creator").resolve("mappath"), sceneResource)
@@ -71,7 +73,26 @@ public final class SceneManager {
         world.npcs.removeIf(n -> isActivityId(n.configId));
         log.info("activity/event NPCs stripped: {} -> {}", before, world.npcs.size());
         PatrolPaths.assignRoutes(world.npcs, world.pathTable);
+        for (NpcInstance n : world.npcs) {
+            NpcTemplate tmpl = templates.lookup(n.configId);
+            n.maxHp = tmpl.maxHp() > 0 ? tmpl.maxHp() : 1000;
+            n.hp = n.maxHp;
+            String script = tmpl.scriptClass().toLowerCase(Locale.ROOT);
+            if (script.contains("attack") || script.contains("boss")) {
+                n.monster = true;
+            }
+            DoorRoutes.Route route = doorRoutes.routeFor(tmpl, n,
+                    n.doorPackageId, n.playerTransferPosition);
+            if (route != null) {
+                world.portals.add(new SceneWorld.Portal(n.objectId, route));
+            }
+        }
         return world;
+    }
+
+    /** 传送门路由（door_data.ini）。 */
+    public DoorRoutes doorRoutes() {
+        return doorRoutes;
     }
 
     /** 活动/剧情/护送/副本类 NPC 不作为场景常驻单位。 */

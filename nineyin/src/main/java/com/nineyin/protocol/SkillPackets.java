@@ -7,6 +7,14 @@ package com.nineyin.protocol;
 public final class SkillPackets {
 
     public static final int VIEW_SKILL = 40;
+    /** 内功容器（Go viewportNeiGong）。 */
+    public static final int VIEW_NEIGONG = 43;
+    /** 轻功容器（Go viewportQingGong）。 */
+    public static final int VIEW_QINGGONG = 46;
+    /** 商店容器（Go viewportShop）。 */
+    public static final int VIEW_SHOP = 61;
+    /** 仓库容器（Go viewportDepot）。 */
+    public static final int VIEW_DEPOT = 4;
 
     // 官服抓包还原的 View 属性索引
     public static final int V_ITEM_TYPE = 1887;
@@ -61,6 +69,32 @@ public final class SkillPackets {
                 .toByteArray();
     }
 
+    /** 带初始属性的 0x15（商店视图等）：view + capacity + u16 属性数 + 属性值。 */
+    public static PacketWriter createViewHeader(int viewId, int capacity, int propCount) {
+        return new PacketWriter()
+                .u8(0x15)
+                .u16(viewId)
+                .u16(capacity)
+                .u16(propCount);
+    }
+
+    /** 通用 0x18 ViewAdd 头：op + u16 view + u16 index + u16 属性数。 */
+    public static PacketWriter viewAddHeader(int viewId, int index, int propCount) {
+        return new PacketWriter()
+                .u8(0x18)
+                .u16(viewId)
+                .u16(index)
+                .u16(propCount);
+    }
+
+    /** View 46 轻功容器项（1 个属性：ConfigID string）。 */
+    public static byte[] qinggongViewAdd(int viewId, int index, String configId) {
+        return viewAddHeader(viewId, index, 1)
+                .u16(V_CONFIG_ID)
+                .string(configId)
+                .toByteArray();
+    }
+
     // ---------- 0x18 ViewAdd ----------
     // [0]=0x18 u16 view@1 u16 index@3 u16 属性数@5，随后 21 个 u16 索引 + 值
 
@@ -89,6 +123,16 @@ public final class SkillPackets {
         w.u16(V_LEAD_TIME).i32(10000);
         w.u16(V_LEAD_SEP_TIME).i32(1500);
         return w.toByteArray();
+    }
+
+    /** View 40 容器 + 全部起始技能（ClientReady / 0x0C 重进后使用）。 */
+    public static java.util.List<byte[]> starterSkillFrames() {
+        java.util.List<byte[]> frames = new java.util.ArrayList<>(STARTER_SKILLS.size() + 1);
+        frames.add(createView(VIEW_SKILL, 800));
+        for (int i = 0; i < STARTER_SKILLS.size(); i++) {
+            frames.add(skillViewAdd(i + 1, STARTER_SKILLS.get(i)));
+        }
+        return frames;
     }
 
     // ---------- 0x1E 技能开关（msg 414 "reset" / 1223） ----------

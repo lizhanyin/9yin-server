@@ -47,11 +47,12 @@ class SelectFlowTest {
         FxOpcodeRouter router = new FxOpcodeRouter();
         SceneManager sceneManager = new SceneManager(share);
         LoginFlow loginFlow = new LoginFlow(roleStore);
-        SceneFlow sceneFlow = new SceneFlow(sceneManager, roleStore);
+        SceneFlow sceneFlow = new SceneFlow(sceneManager, roleStore, new QinggongCatalog());
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
-        new SelectFlow(sceneManager).register(router);
+        new SelectFlow(sceneManager, new com.nineyin.shop.ShopRepository(), sceneFlow.switcher())
+                .register(router);
         FxConnection connection = new FxConnection();
         channel = new EmbeddedChannel(
                 new FxFrameDecoder(connection),
@@ -177,14 +178,16 @@ class SelectFlowTest {
     void menuLeaveFuncClearsSelection() {
         send(selectPacket(1, 10001, 1, 0));
         drainOutbound();
-        // func = 600000000（离开类菜单动作）→ 清 LastObject
+        // func = 600000000（离开）→ 0x1E 帧对话关闭 + 清选区 5 帧
         send(selectPacket(2, 10001, 1, 600000000));
         List<byte[]> out = drainOutbound();
-        // 选中帧（0x1D + LastObject + SelectState）+ 离开清选（LastObject=0）
-        assertEquals(4, out.size());
-        assertEquals(0x10, op(out.get(3)));
-        assertEquals(413, leU16(out.get(3), 12));
-        assertEquals(0, leU32(out.get(3), 14));
+        assertEquals(6, out.size());
+        assertEquals(0x1E, op(out.get(0)), "cinematic close frame");
+        // 清选区：LastObject 对象形态清零 + AutoSelect + CurSkillTarget + SelectState + ClearMenu
+        assertEquals(0x10, op(out.get(1)));
+        assertEquals(413, leU16(out.get(1), 12));
+        assertEquals(0, leU32(out.get(1), 14));
+        assertEquals(0x1D, op(out.get(5)));
     }
 
     @Test

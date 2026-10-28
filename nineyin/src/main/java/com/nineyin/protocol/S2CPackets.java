@@ -57,6 +57,104 @@ public final class S2CPackets {
                 .u16(1);
     }
 
+    // ---------- 0x10 多属性批量更新 ----------
+    // 头 12 字节：[0]=0x10 [1]=0 u32 oid@2 u32 owner@6 u16 个数@10（build 时回填），
+    // 随后 (u16 属性索引 + 按协商类型的裸值)*。值编码由属性在 0x09 表中的类型决定。
+
+    public static final class Batch {
+
+        private final PacketWriter w;
+        private int count;
+
+        Batch(int objectId, int ownerId) {
+            w = new PacketWriter().u8(0x10).u8(0).u32(objectId).u32(ownerId).u16(0);
+        }
+
+        public Batch u8(int propIdx, int value) {
+            count++;
+            w.u16(propIdx).u8(value);
+            return this;
+        }
+
+        public Batch i32(int propIdx, int value) {
+            count++;
+            w.u16(propIdx).i32(value);
+            return this;
+        }
+
+        public Batch i64(int propIdx, long value) {
+            count++;
+            w.u16(propIdx).i64(value);
+            return this;
+        }
+
+        public Batch f32(int propIdx, float value) {
+            count++;
+            w.u16(propIdx).f32(value);
+            return this;
+        }
+
+        public Batch str(int propIdx, String value) {
+            count++;
+            w.u16(propIdx).string(value);
+            return this;
+        }
+
+        public Batch wide(int propIdx, String value) {
+            count++;
+            w.u16(propIdx);
+            appendWideStringProp(w, value);
+            return this;
+        }
+
+        public Batch obj(int propIdx, int objectId, int ownerId) {
+            count++;
+            w.u16(propIdx).u32(objectId).u32(ownerId);
+            return this;
+        }
+
+        public byte[] build() {
+            byte[] body = w.toByteArray();
+            body[10] = (byte) (count & 0xFF);
+            body[11] = (byte) ((count >> 8) & 0xFF);
+            return body;
+        }
+    }
+
+    /** 面向玩家的多属性 0x10 批量包。 */
+    public static Batch playerBatch() {
+        return new Batch(PLAYER_OBJECT_ID, PLAYER_OWNER_ID);
+    }
+
+    public static Batch batch(int objectId, int ownerId) {
+        return new Batch(objectId, ownerId);
+    }
+
+    // ---------- 0x0E ServerRemoveObject（9 字节） ----------
+
+    public static byte[] removeObject(int objectId, int ownerId) {
+        return new PacketWriter().u8(0x0E).u32(objectId).u32(ownerId).toByteArray();
+    }
+
+    // ---------- 门派三元属性（School/Force/NewSchool 互斥） ----------
+
+    /** factionProperties：原始门派写 School，force_ 写 Force，newschool_ 写 NewSchool，伴随清空其余两项。 */
+    public static void appendFaction(Batch batch, String faction) {
+        String school = faction;
+        String force = "";
+        String newSchool = "";
+        if (faction != null && faction.startsWith("force_")) {
+            school = "";
+            force = faction;
+        } else if (faction != null && faction.startsWith("newschool_")) {
+            school = "";
+            newSchool = faction;
+        }
+        batch.str(PropertyId.SCHOOL, school)
+                .str(PropertyId.FORCE, force)
+                .str(PropertyId.NEW_SCHOOL, newSchool);
+    }
+
     // ---------- 0x0A 记录表 schema ----------
     // [0]=0x0A u16 表数@1，随后每表：name\0 + u16 列数 + 列类型字节
 

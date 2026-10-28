@@ -4,6 +4,8 @@ import com.nineyin.db.JsonRoleStore;
 import com.nineyin.db.MySqlRoleStore;
 import com.nineyin.db.MysqlDsn;
 import com.nineyin.db.RoleStore;
+import com.nineyin.game.GmActions;
+import com.nineyin.game.QinggongCatalog;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.game.SelectFlow;
 import com.nineyin.gm.GmCatalog;
@@ -55,12 +57,15 @@ public final class NineyinServer implements SummerApp {
     private final SceneManager sceneManager;
     private final FxOpcodeRouter router;
     private final ShopRepository shopRepository;
+    private final GmActions gmActions;
+    private final SceneFlow sceneFlow;
     private final List<FxSession> sessions = new CopyOnWriteArrayList<>();
     private final Map<Long, FxSession> sessionById = new ConcurrentHashMap<>();
     private final AtomicLong sessionIds = new AtomicLong();
     private final GmHub gmHub = new GmHub();
     private final GmHttpServer gmServer;
     private TickScheduler clockScheduler;
+    private TickScheduler actorScheduler;
 
     public NineyinServer() {
         this.roleStore = openRoleStore();
@@ -69,14 +74,24 @@ public final class NineyinServer implements SummerApp {
         Path shareRoot = SceneManager.locateShareRoot();
         this.gmServer = new GmHttpServer(gmHub, GmCatalog.create(shareRoot));
 
-        LoginFlow loginFlow = new LoginFlow(roleStore);
-        SceneFlow sceneFlow = new SceneFlow(sceneManager, roleStore);
-        loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
-        loginFlow.register(router);
-        sceneFlow.register(router);
-        new SelectFlow(sceneManager).register(router);
         shopRepository = new ShopRepository();
         shopRepository.load(shareRoot.resolve("trade").resolve("shop.ini"));
+        QinggongCatalog qinggongCatalog = new QinggongCatalog();
+        qinggongCatalog.load(shareRoot.resolve("skill").resolve("qinggong").resolve("qgdefine.ini"));
+
+        LoginFlow loginFlow = new LoginFlow(roleStore);
+        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog);
+        loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
+        loginFlow.setReentryHandler(fx -> {
+            LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+            if (login != null) {
+                sceneFlow.switcher().finishReentry(fx, login, sceneFlow.stateOf(fx), sceneFlow);
+            }
+        });
+        loginFlow.register(router);
+        sceneFlow.register(router);
+        new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher()).register(router);
+        gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher());
     }
 
     public FxOpcodeRouter router() {
@@ -166,6 +181,23 @@ public final class NineyinServer implements SummerApp {
             }
         });
         clockScheduler.start();
+
+        // 每秒 actor tick：轻功点/打坐恢复、buff 到期、NPC 重生（对齐 Go facultyTicker 的 1s 节奏）
+        actorScheduler = new TickScheduler("nineyin-actor", 1000);
+        actorScheduler.addTask((tick, now) -> {
+            for (FxSession fx : sessions) {
+                LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+                if (login == null) {
+                    continue;
+                }
+                try {
+                    sceneFlow.tick(fx, login);
+                } catch (Exception e) {
+                    log.error("actor tick error session={}", fx.remoteAddress(), e);
+                }
+            }
+        });
+        actorScheduler.start();
         log.info("nineyin server started (share root: {}, gm: {})",
                 status.serverRoot, gmServer.url());
     }
@@ -185,7 +217,7 @@ public final class NineyinServer implements SummerApp {
         });
     }
 
-    /** 消费 GM 命令：kick / minimal_login 立即生效，其余记日志（对应游戏系统落地后逐个实现）。 */
+    /** 消费 GM 命令：kick/minimal_login 与 GmActions 动作集（资源/传送/门派/协议探针）。 */
     private void consumeGmCommands(long id, FxSession fx) {
         GmCommand cmd;
         while ((cmd = gmHub.tryPop(id)) != null) {
@@ -198,8 +230,23 @@ public final class NineyinServer implements SummerApp {
                     boolean enabled = gmHub.toggleMinimalLogin();
                     log.info("GM minimal-login toggled: {} (session={})", enabled, id);
                 }
-                default -> log.info("GM command pending (not implemented): id={} action={} params={}",
-                        id, cmd.action(), cmd.params());
+                default -> {
+                    LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+                    if (login == null) {
+                        log.info("GM command dropped (session not logged in): id={} action={}", id, cmd.action());
+                        continue;
+                    }
+                    try {
+                        String error = gmActions.execute(fx, login, sceneFlow.stateOf(fx), cmd);
+                        if (error == null) {
+                            log.info("GM command ok: id={} action={} params={}", id, cmd.action(), cmd.params());
+                        } else {
+                            log.info("GM command rejected: id={} action={} reason={}", id, cmd.action(), error);
+                        }
+                    } catch (Exception e) {
+                        log.error("GM command error: id={} action={}", id, cmd.action(), e);
+                    }
+                }
             }
         }
     }
@@ -208,6 +255,9 @@ public final class NineyinServer implements SummerApp {
     public void stop() {
         if (clockScheduler != null) {
             clockScheduler.close();
+        }
+        if (actorScheduler != null) {
+            actorScheduler.close();
         }
         gmServer.stop();
         roleStore.flush();

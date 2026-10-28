@@ -137,6 +137,11 @@ public final class SceneCreatorLoader {
                 n.pathId = attr.getOrElse("PathId", attr.getOrElse("PathID", ""));
                 n.bornAction = attr.getOrDefault("BornAction", "");
                 n.patrolMode = (int) attr.floatOr("PatrolMode", 0);
+                n.shopId = attr.getOrElse("ShopID", attr.getOrElse("ShopId", ""));
+                n.depotId = attr.getOrElse("DepotID", attr.getOrElse("DepotId", ""));
+                n.doorPackageId = attr.getOrElse("DoorPackageID", attr.getOrElse("DoorPackageId", ""));
+                n.playerTransferPosition = attr.getOrElse("PlayerTransferPosition", "");
+                n.springRange = attr.floatOr("SpringRange", 0);
                 npcs.add(n);
             }
         }

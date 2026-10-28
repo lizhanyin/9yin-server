@@ -3,7 +3,12 @@ package com.nineyin.login;
 import com.nineyin.auth.AccountKeys;
 import com.nineyin.db.RoleStore;
 import com.nineyin.db.StoredRole;
+import com.nineyin.game.PlayerActor;
+import com.nineyin.game.SceneFlow;
 import com.nineyin.protocol.Appearance;
+import com.nineyin.protocol.BootstrapPackets;
+import com.nineyin.protocol.CustomPackets;
+import com.nineyin.protocol.FxText;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.RecordId;
 import com.nineyin.protocol.S2CPackets;
@@ -15,15 +20,17 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * 登录状态机：0x02 登录 → 0x04 角色列表；0x03 → 0x05 剧本；
- * 0x05 建角 → 0x04 单角色 + 落库；0x04 选角 → 进场景链；0x09 Ready → UI bootstrap。
- * NPC 场景下发在 scene 阶段挂到 onClientReady 钩子上。
+ * 0x05 建角 → 0x04 单角色 + 落库；0x04 选角 → 进场景链
+ * （0x09 属性表 → 0x0A 记录表 → 8 个背包视图 → 0x0B → 0x0D → 0x1F → 权威 0x10）；
+ * 0x09 Ready → NPC 下发 + UI bootstrap（轻功/任务解锁/内功/技能/快捷键/开关）。
+ * NPC 场景下发挂在 onClientReady 钩子上；0x0C 重进的 Ready 走 reentryHandler。
  */
 public final class LoginFlow {
 
@@ -35,18 +42,27 @@ public final class LoginFlow {
     public static final int OP_CREATE_ROLE = 0x05;
     public static final int OP_CLIENT_READY = 0x09;
 
+    /** 初始碎银（Go starter-silver 默认）。 */
+    public static final long STARTER_SILVER = 99999;
+
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
 
     private final RoleStore roleStore;
-    private final List<java.util.function.Consumer<LoginSession>> readyHooks = new ArrayList<>();
+    private final List<Consumer<LoginSession>> readyHooks = new ArrayList<>();
+    /** 0x0C 重进场景后的 Ready 处理（SceneSwitcher.finishReentry）。 */
+    private Consumer<FxSession> reentryHandler;
 
     public LoginFlow(RoleStore roleStore) {
         this.roleStore = roleStore;
     }
 
     /** ClientReady 后回调（场景阶段用来下发 NPC）。 */
-    public void addReadyHook(java.util.function.Consumer<LoginSession> hook) {
+    public void addReadyHook(Consumer<LoginSession> hook) {
         readyHooks.add(hook);
+    }
+
+    public void setReentryHandler(Consumer<FxSession> handler) {
+        this.reentryHandler = handler;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -161,14 +177,25 @@ public final class LoginFlow {
             pz = sp.z();
             po = sp.orient();
         }
+        // 权威玩家状态：名字 + 门派（appearance[3]）+ 初始碎银
+        PlayerActor actor = new PlayerActor();
+        actor.name = s.roleName.isEmpty() ? "LocalHero" : s.roleName;
+        actor.faction = Appearance.get(s.appearance, 3, "");
+        actor.silver = STARTER_SILVER;
+        s.actor = actor;
+
         fx.send(S2CPackets.propertyTable());
         fx.send(S2CPackets.recordTableEmpty());
+        // 四大背包页 + 四个扩展页（客户端 bag UI 容器，必须在 0x0B 前创建）
+        CustomPackets.sendAll(fx, BootstrapPackets.starterBagViewFrames());
         fx.send(S2CPackets.entryScene(cfg, res));
         fx.send(S2CPackets.playerAddObject(
                 s.roleName.isEmpty() ? "LocalHero" : s.roleName, s.appearance, px, py, pz, po));
         fx.send(S2CPackets.serverLocation(
                 S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID, px, py, pz, po));
-        log.info("ChooseRole scene={} pos=({},{},{})", cfg, px, py, pz);
+        fx.send(actor.vitalUpdate());
+        log.info("ChooseRole scene={} pos=({},{},{}) faction={} silver={}",
+                cfg, px, py, pz, actor.faction, actor.silver);
     }
 
     // ---------- 0x09 ClientReady → 清界面 + UI bootstrap ----------
@@ -178,7 +205,15 @@ public final class LoginFlow {
         if (s.spawnResource.isEmpty()) {
             return;
         }
-        for (java.util.function.Consumer<LoginSession> hook : readyHooks) {
+        // 0x0C 重进场景后的 Ready：补 0x1F + 重授记录/视图 + NPC 重发
+        SceneFlow.SceneState st = fx.channel().attr(SceneFlow.STATE).get();
+        if (st != null && st.awaitingReentryReady) {
+            if (reentryHandler != null) {
+                reentryHandler.accept(fx);
+            }
+            return;
+        }
+        for (Consumer<LoginSession> hook : readyHooks) {
             try {
                 hook.accept(s);
             } catch (Exception e) {
@@ -190,40 +225,49 @@ public final class LoginFlow {
             fx.send(frame);
         }
         if (!s.uiBootstrapped) {
-            sendUiBootstrap(fx, s);
+            sendUiBootstrap(fx, s, st);
         }
     }
 
-    private void sendUiBootstrap(FxSession fx, LoginSession s) {
+    private void sendUiBootstrap(FxSession fx, LoginSession s, SceneFlow.SceneState st) {
         fx.send(S2CPackets.objectPropertyInt(223, s.operateMode));        // OperateMode
         fx.send(S2CPackets.objectPropertyInt(PropertyId.HAVE_MAIN_FORM_STYLES, -1));
         fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK, clockMinutes()));
         long elapsed = System.nanoTime() / 1_000_000L - s.bootSteadyMs;
         fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), s.timeSeq++));
-        fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, s.logicState));
-        fx.send(S2CPackets.objectPropertyInt(223, s.operateMode));
-        // 轻功种子（我的战斗/轻功 UI 有数据）
-        for (String id : new String[]{"qinggong_1", "qinggong_2", "qinggong_3", "qinggong_4",
-                "qinggong_5", "qinggong_6", "qinggong_gaojie"}) {
-            fx.send(S2CPackets.qinggongRowAdd(id));
+        fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, s.actor != null ? s.actor.logicState : 0));
+        // 轻功：QingGongRec 记录行 + View 46（18 分类 + 52 技能实例）
+        CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
+        // 主界面/内功面板前置任务（Task_Accepted + Task_Completed 位图）
+        CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames());
+        // 内功容器 View 43（6 本初始内功）
+        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames());
+        // 技能容器 View 40 + 技能开关 + 立即 0x38
+        CustomPackets.sendAll(fx, SkillPackets.starterSkillFrames());
+        // 快捷键：打坐（Ctrl+0）+ 心佛掌（数字页 2）+ 太极拳古谱（数字页 3）——同步进权威行
+        fx.send(BootstrapPackets.sitcrossShortcutRow());
+        if (s.actor != null) {
+            s.actor.setShortcut(BootstrapPackets.SITCROSS_SHORTCUT_INDEX, "skill", "zs_default_01");
+            for (BootstrapPackets.StarterShortcut sc : BootstrapPackets.starterShortcuts()) {
+                s.actor.setShortcut(sc.index(), "skill", sc.id());
+                fx.send(S2CPackets.shortcutAdd(sc.index(), "skill", sc.id()));
+            }
         }
-        // 默认打坐快捷键（栏位 9）
-        if (s.shortcuts.isEmpty()) {
-            s.shortcuts.add(new LoginSession.Shortcut(9, "skill", "zs_default_01"));
-        }
-        for (LoginSession.Shortcut sc : s.shortcuts) {
-            fx.send(S2CPackets.shortcutAdd(sc.index(), sc.kind(), sc.id()));
-        }
-        // 已学技能容器（SkillContainer View=40，官服 21 属性布局）+ 技能开关 + 立即 0x38
-        fx.send(SkillPackets.createView(SkillPackets.VIEW_SKILL, 800));
-        for (int i = 0; i < SkillPackets.STARTER_SKILLS.size(); i++) {
-            fx.send(SkillPackets.skillViewAdd(i + 1, SkillPackets.STARTER_SKILLS.get(i)));
-        }
-        fx.send(SkillPackets.skillActionSwitch());
+        fx.send(CustomPackets.skillActionSwitch());
         fx.send(S2CPackets.timeSync(0, 0));
+        // 权威状态全量同步（血蓝/轻功点/怒气/碎银/重力速度/内功面板字段）
+        if (s.actor != null) {
+            fx.send(s.actor.vitalUpdate());
+        }
+        if (st != null) {
+            st.qinggongGranted = true;
+            st.progressGranted = true;
+        }
         s.uiBootstrapped = true;
-        log.info("UI bootstrap mode={} shortcuts={} skills={} clockMin={}",
-                s.operateMode, s.shortcuts.size(), SkillPackets.STARTER_SKILLS.size(), clockMinutes());
+        log.info("UI bootstrap mode={} skills={} qinggong={} books={} clockMin={}",
+                s.operateMode, SkillPackets.STARTER_SKILLS.size(),
+                BootstrapPackets.STARTER_QINGGONG_IDS.size(),
+                BootstrapPackets.STARTER_BOOKS.size(), clockMinutes());
     }
 
     // ---------- C2S 解析 ----------
@@ -245,7 +289,7 @@ public final class LoginFlow {
         return sb.toString();
     }
 
-    /** 外观串：从 0x49 起扫描 type-6 长度前缀字符串（u32 长度含 NUL）。 */
+    /** 外观串：从 0x49 起扫描 type-6 长度前缀字符串（u32 长度含 NUL，GBK 窄串）。 */
     static List<String> createRoleStrings(byte[] msg) {
         List<String> values = new ArrayList<>();
         int offset = 0x49;
@@ -261,7 +305,7 @@ public final class LoginFlow {
                 offset++;
                 continue;
             }
-            values.add(new String(msg, offset + 5, size - 1, StandardCharsets.UTF_8));
+            values.add(FxText.narrow(msg, offset + 5, size - 1));
             offset += 5 + size;
         }
         return values;

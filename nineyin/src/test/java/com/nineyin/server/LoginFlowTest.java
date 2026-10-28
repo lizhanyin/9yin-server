@@ -147,39 +147,44 @@ class LoginFlowTest {
         assertEquals("测试侠客", roleStore.get(accountKey).getName());
         assertEquals("city05", roleStore.get(accountKey).getSceneResource());
 
-        // 3) 选角 → 进场景链：0x09 属性表 / 0x0A 记录表 / 0x0B 进场 / 0x0D AddObject / 0x1F 坐标
+        // 3) 选角 → 进场景链：0x09 属性表 / 0x0A 记录表 / 8 背包视图(0x15) / 0x0B / 0x0D / 0x1F / 权威 0x10
         send(new byte[]{0x04});
         List<byte[]> enter = drainOutbound();
-        assertEquals(5, enter.size());
+        assertEquals(14, enter.size());
         assertEquals(0x09, op(enter.get(0)));
         assertEquals(2424, (enter.get(0)[1] & 0xFF) | ((enter.get(0)[2] & 0xFF) << 8),
                 "official property table entry count");
         assertEquals(0x0A, op(enter.get(1)));
         assertEquals(116, enter.get(1).length);
-        assertEquals(0x0B, op(enter.get(2)));
-        byte[] entryScene = enter.get(2);
+        assertEquals(0x0B, op(enter.get(10)));
+        byte[] entryScene = enter.get(10);
         // 属性 1439 ConfigID 从头 15 字节之后：u16 索引 + u32 长度 + 串
         assertEquals(1439, (entryScene[15] & 0xFF) | ((entryScene[16] & 0xFF) << 8));
-        assertEquals(0x0D, op(enter.get(3)));
-        assertTrue(enter.get(3).length > 0x3F, "AddObject must carry property body");
-        assertEquals(0x1F, op(enter.get(4)));
-        assertEquals(25, enter.get(4).length);
+        assertEquals(0x0D, op(enter.get(11)));
+        assertTrue(enter.get(11).length > 0x3F, "AddObject must carry property body");
+        assertEquals(0x1F, op(enter.get(12)));
+        assertEquals(25, enter.get(12).length);
+        assertEquals(0x10, op(enter.get(13)), "authoritative vital batch");
+        // 8 个背包视图（121/2/123/125 容量 132；122/3/124/126 容量 16）
+        List<byte[]> bagViews = enter.stream().filter(f -> op(f) == 0x15).toList();
+        assertEquals(8, bagViews.size());
 
         // 4) ClientReady → 清菜单 + 清选区(0x10x4 + 0x1D) + UI bootstrap
         send(new byte[]{0x09});
         List<byte[]> ready = drainOutbound();
-        assertTrue(ready.size() >= 13, "expected menu-clear + selection-clear + bootstrap frames, got "
+        assertTrue(ready.size() >= 1700, "expected menu-clear + selection-clear + bootstrap frames, got "
                 + ready.size());
         assertEquals(0x1D, op(ready.get(0)));
         assertEquals(0x10, op(ready.get(1)));
-        // bootstrap 内含 2 个 0x38（时钟 + 技能容器后追加）、7 条轻功行 + 1 条快捷键行（0x11）
+        // bootstrap：2 个 0x38（时钟 + 技能容器后追加）；
+        // 0x11 行 = 18 轻功分类 + 20 已接任务 + ~1594 Task_Completed 位图行 + 1 打坐 + 15 起始快捷键
         long timeSync = ready.stream().filter(f -> op(f) == 0x38).count();
         long recordRows = ready.stream().filter(f -> op(f) == 0x11).count();
         assertEquals(2, timeSync);
-        assertEquals(8, recordRows);
-        // 技能容器：CreateView(0x15) + 8 条 ViewAdd(0x18) + 开关(0x1E)
-        assertEquals(1, ready.stream().filter(f -> op(f) == 0x15).count());
-        assertEquals(8, ready.stream().filter(f -> op(f) == 0x18).count());
+        assertTrue(recordRows >= 1600, "expected 1600+ record rows, got " + recordRows);
+        // 视图：轻功 View46 + 内功 View43 + 技能 View40（0x18 = 70 轻功 + 6 内功 + 8 技能）+ 开关(0x1E)
+        assertEquals(3, ready.stream().filter(f -> op(f) == 0x15).count());
+        assertEquals(84, ready.stream().filter(f -> op(f) == 0x18).count());
         assertEquals(1, ready.stream().filter(f -> op(f) == 0x1E).count());
     }
 

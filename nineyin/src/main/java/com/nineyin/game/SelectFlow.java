@@ -1,35 +1,51 @@
 package com.nineyin.game;
 
+import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
+import com.nineyin.protocol.CustomPackets;
+import com.nineyin.protocol.MenuPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
 import com.nineyin.protocol.SkillPackets;
+import com.nineyin.scene.DoorRoutes;
+import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
 import com.nineyin.scene.SceneWorld;
 import com.nineyin.server.FxOpcodeRouter;
 import com.nineyin.server.FxSession;
+import com.nineyin.shop.ShopRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.nineyin.game.SceneFlow.STATE;
 
 /**
- * 0x07 选中系统：33 字节包（seq@17 oid@21 owner@25 func@29）。
- * oid=0/owner=0 → 清选区；否则 ClearMenu + LastObject + SelectState=1；
- * func 为菜单动作（600000000 或负数 = 离开类 → 清选）。
- * 不下发 Npc_Func 对话菜单——残留剧情菜单会困住 ESC（对齐 C++ 决策）。
+ * 0x07 选中系统（33 字节包：seq@17 oid@21 owner@25 func@29）：
+ * - func=0 点击：门 NPC（Door/GotoDoor）执行传送路由；其余 NPC 设 LastObject +
+ *   有可玩服务（商店/仓库）时发帧对话菜单（custom 4/5/6/7）。
+ * - func!=0 菜单动作：600000000/负数=离开（custom 8 关帧对话），
+ *   805000000=开商店（View 61 + 商品行）、807000000=开仓库（View 4）。
+ * 对齐 Go objectRequest/selectNPCMenu 的两段式所有权边界。
  */
 public final class SelectFlow {
 
     public static final int OP_SELECT = 0x07;
     private static final float CLEAR_RADIUS = 28f;
+    private static final int SHOP_PAGE_SIZE = 10;
 
     private static final Logger log = LoggerFactory.getLogger(SelectFlow.class);
 
     private final SceneManager sceneManager;
+    private final ShopRepository shopRepository;
+    private final SceneSwitcher switcher;
 
-    public SelectFlow(SceneManager sceneManager) {
+    public SelectFlow(SceneManager sceneManager, ShopRepository shopRepository, SceneSwitcher switcher) {
         this.sceneManager = sceneManager;
+        this.shopRepository = shopRepository;
+        this.switcher = switcher;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -49,6 +65,7 @@ public final class SelectFlow {
         if (plain.length < 29) {
             return;
         }
+        LoginSession session = fx.channel().attr(LoginFlow.SESSION).get();
         SceneFlow.SceneState st = stateOf(fx);
         int seq = leU32(plain, 17);
         int oid = leU32(plain, 21);
@@ -60,6 +77,65 @@ public final class SelectFlow {
             log.info("Select clear target (ESC/deselect) seq={}", seq);
             return;
         }
+        if (func != 0) {
+            onMenuAction(fx, session, st, seq, oid, owner, func);
+            return;
+        }
+        onObjectClick(fx, session, st, seq, oid, owner);
+    }
+
+    /** 帧对话菜单动作。 */
+    private void onMenuAction(FxSession fx, LoginSession session, SceneFlow.SceneState st,
+                              int seq, int oid, int owner, int func) {
+        if (func == MenuPackets.FUNC_TALK_LEAVE || func < 0) {
+            fx.send(CustomPackets.cinematicClose());
+            clearSelection(fx, st);
+            clearMenuState(st);
+            log.info("cinematic talk leave seq={} npc={}", seq, oid);
+            return;
+        }
+        if (func == MenuPackets.FUNC_TALK_SHOP) {
+            NpcInstance npc = npcOf(st, oid, owner);
+            String shopId = npc != null ? shopIdOf(npc) : "";
+            if (shopId.isEmpty()) {
+                log.warn("shop menu npc={} has no ShopID", oid);
+                return;
+            }
+            fx.send(CustomPackets.cinematicClose());
+            clearMenuState(st);
+            openShop(fx, shopId);
+            return;
+        }
+        if (func == MenuPackets.FUNC_TALK_DEPOT) {
+            fx.send(CustomPackets.cinematicClose());
+            clearMenuState(st);
+            openDepot(fx);
+            return;
+        }
+        // 未知 func：清选区（保持旧行为，避免残留选中）
+        clearSelection(fx, st);
+        log.info("Select seq={} target={} func={} (unknown menu action)", seq, oid, func);
+    }
+
+    /** 点击（func=0）：门路由或选中 + 可玩服务菜单。 */
+    private void onObjectClick(FxSession fx, LoginSession session, SceneFlow.SceneState st,
+                               int seq, int oid, int owner) {
+        // 门：Door/GotoDoor 是直接对象交互，不进 NPC 菜单
+        DoorRoutes.Route portal = portalOf(st, oid);
+        if (portal != null && session != null) {
+            if (portal.sameScene()) {
+                switcher.teleportWithinScene(fx, session, st,
+                        portal.position().x(), portal.position().y(),
+                        portal.position().z(), portal.position().orient());
+            } else {
+                switcher.switchScene(fx, session, st, portal.config(), portal.resource(),
+                        portal.position().x(), portal.position().y(),
+                        portal.position().z(), portal.position().orient());
+            }
+            log.info("portal click npc={} source={} sameScene={}", oid, portal.source(), portal.sameScene());
+            return;
+        }
+
         // 先清残留菜单，避免 ESC 被对话 UI 困住
         fx.send(S2CPackets.clearMenu());
         fx.send(SkillPackets.lastObject(1, 1, oid, owner));
@@ -68,27 +144,141 @@ public final class SelectFlow {
         st.selectedOwner = owner;
         st.selectedX = 0;
         st.selectedZ = 0;
-        if (st.world != null) {
-            synchronized (st.world) {
-                for (var n : st.world.npcs) {
-                    if (n.objectId == oid && n.ownerId == owner) {
-                        st.selectedX = n.x;
-                        st.selectedZ = n.z;
-                        break;
-                    }
-                }
-            }
+        NpcInstance npc = npcOf(st, oid, owner);
+        if (npc != null) {
+            st.selectedX = npc.x;
+            st.selectedZ = npc.z;
         }
-        if (func != 0) {
-            if (func == 600000000 || func < 0) {
-                fx.send(SkillPackets.lastObject(1, 1, 0, 0));
-                st.selectedOid = 0;
-                st.selectedOwner = 0;
+        // 可玩服务（商店/仓库）→ 帧对话菜单
+        List<Integer> marks = playableMarks(npc);
+        if (!marks.isEmpty()) {
+            long now = System.currentTimeMillis();
+            if (npc != null && !(st.lastMenuOid == oid && st.lastMenuOwner == owner
+                    && now - st.lastMenuAtMs < 1000)) {
+                CustomPackets.sendAll(fx, MenuPackets.cinematicTalk(oid, owner, "", marks));
+                st.lastMenuOid = oid;
+                st.lastMenuOwner = owner;
+                st.lastMenuAtMs = now;
+                log.info("cinematic talk menu npc={} config={} marks={}", oid, npc.configId, marks);
             }
-            log.info("Select seq={} target={} owner={} func={} (menu action)", seq, oid, owner, func);
         } else {
             log.info("Select target={} -> LastObject only (no menu)", oid);
         }
+    }
+
+    /** 商店/仓库：仅暴露有服务端数据的服务（Go playableNPCServices）。 */
+    private List<Integer> playableMarks(NpcInstance npc) {
+        List<Integer> marks = new ArrayList<>(2);
+        if (npc == null) {
+            return marks;
+        }
+        String shopId = shopIdOf(npc);
+        if (!shopId.isEmpty() && shopRepository.get(shopId) != null) {
+            marks.add(MenuPackets.MARK_SHOP);
+        }
+        String depotId = depotIdOf(npc);
+        if (!depotId.isEmpty() && !"0".equals(depotId)) {
+            marks.add(MenuPackets.MARK_DEPOT);
+        }
+        return marks;
+    }
+
+    private String shopIdOf(NpcInstance npc) {
+        if (!npc.shopId.isEmpty()) {
+            return npc.shopId;
+        }
+        String fromTemplate = sceneManager.templates().lookup(npc.configId).shopId();
+        return fromTemplate == null ? "" : fromTemplate;
+    }
+
+    private String depotIdOf(NpcInstance npc) {
+        if (!npc.depotId.isEmpty()) {
+            return npc.depotId;
+        }
+        return sceneManager.templates().lookup(npc.configId).depotId();
+    }
+
+    // 商店视图（form_shop.lua 从 View 61 的 createview 属性读配置）
+    private void openShop(FxSession fx, String shopId) {
+        ShopRepository.Shop shop = shopRepository.get(shopId);
+        if (shop == null || shop.items().isEmpty()) {
+            log.warn("shop {} has no items", shopId);
+            return;
+        }
+        int pageCount = 1;
+        List<ShopRepository.ShopItem> items = new ArrayList<>();
+        for (ShopRepository.ShopItem item : shop.items()) {
+            int page = colInt(item, 5, 1);
+            if (page > pageCount) {
+                pageCount = page;
+            }
+            if (colStr(item, 0).isEmpty()) {
+                continue;
+            }
+            items.add(item);
+        }
+        com.nineyin.protocol.PacketWriter create = SkillPackets.createViewHeader(SkillPackets.VIEW_SHOP,
+                        100, 4)
+                .u16(PropertyId.SHOP_ID).string(shopId)
+                .u16(PropertyId.SHOP_PAGE_NUM).i32(SHOP_PAGE_SIZE)
+                .u16(PropertyId.SHOP_PAGE_COUNT).i32(pageCount)
+                .u16(PropertyId.SHOP_TYPE).i32(shop.type());
+        fx.send(create.toByteArray());
+        int index = 0;
+        for (ShopRepository.ShopItem item : items) {
+            index++;
+            int amount = colInt(item, 1, 1);
+            int page = colInt(item, 5, 1);
+            int position = colInt(item, 6, 0);
+            int objectIndex = (page - 1) * SHOP_PAGE_SIZE + position + 1;
+            // 官服属性表无 PriceGold/Silver/Card 名（Go 用自协商表索引 107-109）；
+            // 先发 ConfigID/Amount/MaxAmount 三属性，价格属性待抓包钉死后补
+            com.nineyin.protocol.PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_SHOP,
+                            objectIndex, 3)
+                    .u16(PropertyId.CONFIG_ID).string(colStr(item, 0))
+                    .u16(PropertyId.AMOUNT).i32(amount)
+                    .u16(PropertyId.MAX_AMOUNT).i32(99);
+            fx.send(w.toByteArray());
+            if (index >= 100) {
+                break;
+            }
+        }
+        log.info("shop view opened shop={} items={} pageCount={} type={}",
+                shopId, Math.min(items.size(), 100), pageCount, shop.type());
+    }
+
+    private void openDepot(FxSession fx) {
+        fx.send(SkillPackets.createView(SkillPackets.VIEW_DEPOT, 18));
+        log.info("depot view opened (capacity=18)");
+    }
+
+    private NpcInstance npcOf(SceneFlow.SceneState st, int oid, int owner) {
+        if (st.world == null) {
+            return null;
+        }
+        synchronized (st.world) {
+            return st.world.npcById(oid);
+        }
+    }
+
+    private DoorRoutes.Route portalOf(SceneFlow.SceneState st, int oid) {
+        if (st.world == null) {
+            return null;
+        }
+        synchronized (st.world) {
+            for (SceneWorld.Portal portal : st.world.portals) {
+                if (portal.objectId() == oid) {
+                    return portal.route();
+                }
+            }
+        }
+        return null;
+    }
+
+    private void clearMenuState(SceneFlow.SceneState st) {
+        st.lastMenuOid = 0;
+        st.lastMenuOwner = 0;
+        st.lastMenuAtMs = 0;
     }
 
     private void clearSelection(FxSession fx, SceneFlow.SceneState st) {
@@ -117,6 +307,19 @@ public final class SelectFlow {
             log.info("auto-clear LastObject (out of range) was={}", st.selectedOid);
             st.selectedOid = 0;
             st.selectedOwner = 0;
+        }
+    }
+
+    private static String colStr(ShopRepository.ShopItem item, int col) {
+        List<String> cols = item.columns();
+        return col < cols.size() ? cols.get(col) : "";
+    }
+
+    private static int colInt(ShopRepository.ShopItem item, int col, int def) {
+        try {
+            return Integer.parseInt(colStr(item, col));
+        } catch (NumberFormatException e) {
+            return def;
         }
     }
 

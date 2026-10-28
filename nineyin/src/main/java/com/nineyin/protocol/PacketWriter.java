@@ -53,9 +53,9 @@ public final class PacketWriter {
         return this;
     }
 
-    /** 普通字符串：u32 长度(含 NUL) + UTF-8 字节 + 0。 */
+    /** 普通字符串（窄串，客户端按 GBK 解释）：u32 长度(含 NUL) + GBK 字节 + 0。ASCII 与 UTF-8 字节一致。 */
     public PacketWriter string(String s) {
-        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = FxText.narrow(s);
         u32(bytes.length + 1);
         raw(bytes);
         u8(0);

@@ -33,8 +33,13 @@ public final class SceneWorld {
         }
     }
 
+    /** 传送门入口（door_data.ini / PlayerTransferPosition 解析结果）。 */
+    public record Portal(int objectId, DoorRoutes.Route route) {
+    }
+
     public final String sceneResource;
     public final List<NpcInstance> npcs = new ArrayList<>();
+    public final List<Portal> portals = new ArrayList<>();
     public final Map<String, List<Waypoint>> pathTable = new HashMap<>();
     public final Map<Integer, PendingLeg> legs = new HashMap<>();
 

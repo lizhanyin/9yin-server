@@ -50,7 +50,7 @@ class SceneFlowTest {
         roleStore = new JsonRoleStore(tempDir.resolve("roles.json"));
         FxOpcodeRouter router = new FxOpcodeRouter();
         LoginFlow loginFlow = new LoginFlow(roleStore);
-        SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore);
+        SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog());
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
@@ -237,13 +237,13 @@ class SceneFlowTest {
         assertTrue(afterArrive.stream().anyMatch(f -> op(f) == 0x1F),
                 "arrive confirm 0x1F expected");
 
-        // 快捷键：200 设 idx 5 → 0x11 增行
+        // 快捷键：200 设 idx 5 → 0x11 增行（权威行在 actor 上：打坐 1 + 心佛掌 7 + 太极 8 + 本次 1）
         send(shortcutSet(5, "skill", "CS_jh_xfz01"));
         List<byte[]> sc = drainOutbound();
         assertTrue(sc.stream().anyMatch(f -> op(f) == 0x11 && containsUtf8(f, "CS_jh_xfz01")),
                 "shortcut add row expected");
         LoginSession login = channel.attr(LoginFlow.SESSION).get();
-        assertEquals(2, login.shortcuts.size());
+        assertEquals(17, login.actor.shortcuts().size());
     }
 
     private static boolean containsUtf8(byte[] frame, String s) {

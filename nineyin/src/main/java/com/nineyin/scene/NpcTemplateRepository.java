@@ -57,6 +57,7 @@ public final class NpcTemplateRepository {
             int rows = 0;
             int idCol = -1, resCol = -1, nameCol = -1, levelCol = -1, hpCol = -1;
             int scriptCol = -1, actionCol = -1, weaponCol = -1;
+            int shopCol = -1, depotCol = -1, doorPkgCol = -1, transferCol = -1, springCol = -1;
             String data = new String(Files.readAllBytes(path), GBK);
             for (String line : data.split("\n")) {
                 if (line.isEmpty() || line.charAt(0) == '#' || line.charAt(0) == '/') {
@@ -75,6 +76,11 @@ public final class NpcTemplateRepository {
                             case "script", "Script", "ScriptClass" -> scriptCol = i;
                             case "ActionSet", "actionset" -> actionCol = i;
                             case "WeaponMode", "weaponmode" -> weaponCol = i;
+                            case "ShopID", "ShopId", "shopid" -> shopCol = i;
+                            case "DepotID", "DepotId", "depotid" -> depotCol = i;
+                            case "DoorPackageID", "DoorPackageId", "doorpackageid" -> doorPkgCol = i;
+                            case "PlayerTransferPosition", "playertransferposition" -> transferCol = i;
+                            case "SpringRange", "springrange" -> springCol = i;
                             default -> {
                             }
                         }
@@ -94,7 +100,10 @@ public final class NpcTemplateRepository {
                 NpcTemplate info = new NpcTemplate(id,
                         cell(cols, resCol), cell(cols, nameCol), cell(cols, scriptCol),
                         cell(cols, actionCol), cell(cols, weaponCol),
-                        parseIntOr(cell(cols, levelCol), 0), parseIntOr(cell(cols, hpCol), 0));
+                        parseIntOr(cell(cols, levelCol), 0), parseIntOr(cell(cols, hpCol), 0),
+                        cell(cols, shopCol), cell(cols, depotCol),
+                        cell(cols, doorPkgCol), cell(cols, transferCol),
+                        parseFloatOr(cell(cols, springCol), 0f));
                 templates.putIfAbsent(id, info);
                 rows++;
             }
@@ -153,6 +162,17 @@ public final class NpcTemplateRepository {
         }
         try {
             return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private static float parseFloatOr(String s, float def) {
+        if (s.isEmpty()) {
+            return def;
+        }
+        try {
+            return Float.parseFloat(s);
         } catch (NumberFormatException e) {
             return def;
         }

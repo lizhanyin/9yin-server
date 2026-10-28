@@ -1,5 +1,6 @@
 package com.swingfrog.summer.ecs;
 
+import com.swingfrog.summer.ecs.property.PropertySet;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractMap.SimpleEntry;

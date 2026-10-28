@@ -1,4 +1,4 @@
-package com.swingfrog.summer.ecs;
+package com.swingfrog.summer.ecs.crud;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

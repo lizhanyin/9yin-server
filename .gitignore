@@ -22,3 +22,4 @@
 *.rar
 
 hs_err_pid*
+mysql.env

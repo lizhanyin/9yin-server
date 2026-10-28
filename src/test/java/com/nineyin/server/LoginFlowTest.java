@@ -1,6 +1,7 @@
 package com.nineyin.server;
 
 import com.nineyin.auth.AccountKeys;
+import com.nineyin.db.JsonRoleStore;
 import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.protocol.PacketWriter;
@@ -42,7 +43,7 @@ class LoginFlowTest {
 
     @BeforeEach
     void setup() {
-        roleStore = new RoleStore(tempDir.resolve("roles.json"));
+        roleStore = new JsonRoleStore(tempDir.resolve("roles.json"));
         FxOpcodeRouter router = new FxOpcodeRouter();
         new LoginFlow(roleStore).register(router);
         connection = new FxConnection();

@@ -1,5 +1,8 @@
 package com.nineyin.server;
 
+import com.nineyin.db.JsonRoleStore;
+import com.nineyin.db.MySqlRoleStore;
+import com.nineyin.db.MysqlDsn;
 import com.nineyin.db.RoleStore;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.game.SelectFlow;
@@ -16,7 +19,7 @@ import com.nineyin.shop.ShopRepository;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.app.SummerApp;
 import com.swingfrog.summer.app.SummerConfig;
-import com.swingfrog.summer.ecs.TickScheduler;
+import com.swingfrog.summer.ecs.tick.TickScheduler;
 import com.swingfrog.summer.protocol.custom.ProtocolCustomMgr;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
@@ -53,7 +56,7 @@ public final class NineyinServer implements SummerApp {
     private TickScheduler clockScheduler;
 
     public NineyinServer() {
-        this.roleStore = new RoleStore(Path.of("data", "roles.json"));
+        this.roleStore = openRoleStore();
         this.sceneManager = new SceneManager();
         this.router = new FxOpcodeRouter();
         this.gmServer = new GmHttpServer(gmHub);
@@ -70,6 +73,25 @@ public final class NineyinServer implements SummerApp {
 
     public FxOpcodeRouter router() {
         return router;
+    }
+
+    /**
+     * 角色存储：优先 MySQL（NINEYIN_MYSQL_DSN，缺省同 mysql.env），
+     * 连不上自动退回 JSON 文件单后端。MySQL 后端同时双写 JSON 兜底。
+     */
+    private static RoleStore openRoleStore() {
+        String dsn = System.getenv("NINEYIN_MYSQL_DSN");
+        if (dsn == null || dsn.isEmpty()) {
+            dsn = "nineyin:nineyin123@tcp(127.0.0.1:3306)/nineyin";
+        }
+        try {
+            MySqlRoleStore mysql = new MySqlRoleStore(MysqlDsn.parse(dsn), Path.of("data", "roles.json"));
+            log.info("role store backend: MySQL (dsn db={})", MysqlDsn.parse(dsn).database());
+            return mysql;
+        } catch (Exception e) {
+            log.warn("MySQL unavailable ({}), falling back to JSON-only role store", e.getMessage());
+            return new JsonRoleStore(Path.of("data", "roles.json"));
+        }
     }
 
     @Override

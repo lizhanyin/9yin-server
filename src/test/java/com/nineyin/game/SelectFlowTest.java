@@ -1,5 +1,6 @@
 package com.nineyin.game;
 
+import com.nineyin.db.JsonRoleStore;
 import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.protocol.PacketWriter;
@@ -42,7 +43,7 @@ class SelectFlowTest {
     @BeforeEach
     void setup() throws Exception {
         Path share = buildShareRoot();
-        RoleStore roleStore = new RoleStore(tempDir.resolve("roles.json"));
+        RoleStore roleStore = new JsonRoleStore(tempDir.resolve("roles.json"));
         FxOpcodeRouter router = new FxOpcodeRouter();
         SceneManager sceneManager = new SceneManager(share);
         LoginFlow loginFlow = new LoginFlow(roleStore);

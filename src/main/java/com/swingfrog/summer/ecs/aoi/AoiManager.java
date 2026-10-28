@@ -1,4 +1,4 @@
-package com.swingfrog.summer.ecs;
+package com.swingfrog.summer.ecs.aoi;
 
 import java.util.ArrayList;
 import java.util.HashMap;

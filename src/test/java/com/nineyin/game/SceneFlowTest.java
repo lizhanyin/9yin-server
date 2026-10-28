@@ -1,6 +1,7 @@
 package com.nineyin.game;
 
 import com.nineyin.auth.AccountKeys;
+import com.nineyin.db.JsonRoleStore;
 import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
@@ -46,7 +47,7 @@ class SceneFlowTest {
     @BeforeEach
     void setup() throws Exception {
         Path share = buildShareRoot();
-        roleStore = new RoleStore(tempDir.resolve("roles.json"));
+        roleStore = new JsonRoleStore(tempDir.resolve("roles.json"));
         FxOpcodeRouter router = new FxOpcodeRouter();
         LoginFlow loginFlow = new LoginFlow(roleStore);
         SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore);

@@ -1,4 +1,4 @@
-package com.swingfrog.summer.ecs;
+package com.swingfrog.summer.ecs.tick;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

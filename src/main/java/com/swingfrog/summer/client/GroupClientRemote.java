@@ -9,7 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Type;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class GroupClientRemote implements ClientRemote {
 
@@ -67,12 +70,7 @@ public class GroupClientRemote implements ClientRemote {
     public <T> T syncRemote(String remote, String method, Object data, Type type) {
         SessionRequest sessionRequest = SessionRequest.buildRemote(ClientMgr.get().incrementCurrentId(), remote, method, data);
         String msg = sessionRequest.toJSONString();
-        try {
-            return sendSyncRemote(sessionRequest.getId(), msg, remote, method, type);
-        } catch (SyncRemoteTimeOutException e) {
-            PushDispatchMgr.get().discardSyncRemote(sessionRequest.getId());
-            throw e;
-        }
+        return sendSyncRemote(sessionRequest.getId(), msg, remote, method, type);
     }
 
     @Override
@@ -86,6 +84,33 @@ public class GroupClientRemote implements ClientRemote {
                 log.error(e.getMessage(), e);
             }
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public <T> CompletableFuture<T> futureRemote(String remote, String method, Object data, Type type) {
+        return futureRemote(remote, method, data).thenApply(resp -> {
+            if (resp == null) {
+                return null;
+            }
+            return (T) ParamUtil.convert(type, resp.toString());
+        });
+    }
+
+    @Override
+    public CompletableFuture<Object> futureRemote(String remote, String method, Object data) {
+        CompletableFuture<Object> future = new CompletableFuture<>();
+        asyncRemote(remote, method, data, new RemoteCallback() {
+            @Override
+            public void success(Object obj) {
+                future.complete(obj);
+            }
+            @Override
+            public void failure(long code, String msg) {
+                future.completeExceptionally(new CodeException((int) code, msg));
+            }
+        });
+        return future;
     }
 
     private void addAsyncRemoteTimeoutTask(long id, String msg, long afterTimeRetry, TimeUnit unit) {
@@ -105,43 +130,44 @@ public class GroupClientRemote implements ClientRemote {
 
     @SuppressWarnings("unchecked")
     private <T> T sendSyncRemote(long id, String msg, String remote, String method, Type type) {
+        CompletableFuture<SessionResponse> future = new CompletableFuture<>();
+        PushDispatchMgr.get().putSyncRemote(id, future);
+        long deadline = System.currentTimeMillis() + defaultClientContext.getConfig().getSyncRemoteTimeOutMs();
         try {
-            int count = 0;
             while (true) {
-                ClientContext clindClientContext = nextClientContext();
-                if (clindClientContext.isChannelActive()) {
-                    log.debug("client request serverName[{}] sync {}", clindClientContext.getConfig().getServerName(), msg);
-                    clindClientContext.getChannel().writeAndFlush(msg);
-                    while (true) {
-                        SessionResponse sessionResponse = PushDispatchMgr.get().getAndRemoveSyncRemote(id);
-                        if (sessionResponse != null) {
-                            if (sessionResponse.getCode() != 0) {
-                                throw new CodeException(sessionResponse.getCode(), sessionResponse.getData().toString());
-                            }
-                            Object resp = sessionResponse.getData();
-                            if (resp != null) {
-                                String res = resp.toString();
-                                return (T) ParamUtil.convert(type, res);
-                            }
-                            return null;
-                        }
-                        Thread.sleep(1);
-                        count ++;
-                        if (count > clindClientContext.getConfig().getSyncRemoteTimeOutMs()) {
-                            throw new SyncRemoteTimeOutException(remote, method);
-                        }
-                    }
+                ClientContext clientContext = nextClientContext();
+                if (clientContext.isChannelActive()) {
+                    log.debug("client request serverName[{}] sync {}", clientContext.getConfig().getServerName(), msg);
+                    clientContext.getChannel().writeAndFlush(msg);
+                    break;
                 }
-                Thread.sleep(1);
-                count ++;
-                if (count > defaultClientContext.getConfig().getSyncRemoteTimeOutMs()) {
+                if (System.currentTimeMillis() > deadline) {
                     throw new SyncRemoteTimeOutException(remote, method);
                 }
+                Thread.sleep(1);
             }
+            SessionResponse sessionResponse = future.get(Math.max(1, deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+            if (sessionResponse.getCode() != 0) {
+                throw new CodeException(sessionResponse.getCode(), sessionResponse.getData().toString());
+            }
+            Object resp = sessionResponse.getData();
+            if (resp != null) {
+                return (T) ParamUtil.convert(type, resp.toString());
+            }
+            return null;
+        } catch (TimeoutException e) {
+            throw new SyncRemoteTimeOutException(remote, method);
+        } catch (ExecutionException e) {
+            throw new SyncRemoteTimeOutException(remote, method);
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             log.error(e.getMessage(), e);
+            return null;
+        } finally {
+            if (PushDispatchMgr.get().removeSyncRemote(id) != null) {
+                PushDispatchMgr.get().discardSyncRemote(id);
+            }
         }
-        return null;
     }
 
 }

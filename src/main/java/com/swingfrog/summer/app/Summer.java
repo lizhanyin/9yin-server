@@ -30,6 +30,7 @@ import com.swingfrog.summer.client.ClientRemote;
 import com.swingfrog.summer.concurrent.SessionQueueMgr;
 import com.swingfrog.summer.concurrent.SingleQueueMgr;
 import com.swingfrog.summer.concurrent.SynchronizedMgr;
+import com.swingfrog.summer.concurrent.VirtualThreadMgr;
 import com.swingfrog.summer.config.ConfigMgr;
 import com.swingfrog.summer.db.DataBaseMgr;
 import com.swingfrog.summer.event.EventBusMgr;
@@ -251,6 +252,7 @@ public class Summer {
 			if (MODULES.contains(MODULE_DB)) {
 				AsyncCacheRepositoryMgr.get().shutdown();
 			}
+			VirtualThreadMgr.get().shutdown();
 			if (MODULES.contains(MODULE_NET)) {
 				RemoteStatistics.print();
 			}
@@ -284,6 +286,14 @@ public class Summer {
 
 	public static Executor getSessionTokenExecutor(Object SessionToken) {
 		return SessionTokenQueueMgr.get().getExecutor(SessionToken);
+	}
+
+	public static ExecutorService getVirtualExecutor() {
+		return VirtualThreadMgr.get().getExecutor();
+	}
+
+	public static void virtualExecute(Runnable runnable) {
+		VirtualThreadMgr.get().execute(runnable);
 	}
 	
 	public static void addComponent(Object obj) {

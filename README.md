@@ -26,6 +26,17 @@
 
 
 ## 更新说明
+### 2026-10-28 基础设施：JDK 25 + 虚拟线程
+
+- JDK 21 → 25：`synchronized` 钉住载体线程问题自 JDK 24 起修复（JEP 491），虚拟线程配套就绪。
+- MySQL 驱动迁移至新坐标 `com.mysql:mysql-connector-j:9.4.0`（原 `mysql:mysql-connector-java` 已停更）。
+- 同步 RPC（`syncRemote`/`rsyncRemote`）由 `Thread.sleep(1)` 忙等轮询改为 `CompletableFuture` 阻塞等待：等待在虚拟线程上零载体占用，平台线程不再空转；中断时恢复中断标志并清理挂起请求（修复原先吞中断、泄漏响应表项的问题）。
+- `ClientRemote` 新增 `futureRemote` 变体（返回 `CompletableFuture`），配合虚拟线程可写阻塞式调用代码。
+- 新增框架级虚拟线程执行器：`Summer.getVirtualExecutor()` / `Summer.virtualExecute(Runnable)`，用于承载 JDBC、同步 RPC 等阻塞型调用；随框架关闭钩子停机（30 秒宽限后中断残余任务）。
+- 新增 `src/test` 单元测试（JUnit 5，`./mvnw test` 运行，共 15 例）：基于 Netty `EmbeddedChannel` 无网络验证 syncRemote 成功/错误码/超时丢弃/断线/重试/中断、futureRemote 原始与类型转换、PushDispatchMgr 响应表、虚拟线程执行器并发性。
+
+约束不变：业务逻辑不得在会话队列/单队列的平台线程（ServerEvent 池）上同步阻塞；跨实体流程继续用 Promise 编排。
+
 ### 1.1.19 - 2024-08-23
 0. 升级 JDK 版本至 21，同步升级构建插件与依赖（javassist 3.30.2-GA、netty 4.1.115.Final），代理实现由已停更的 cglib 替换为 byte-buddy 1.15.10，无需任何 JVM 开放参数。 - 2026-10-28
 0. 构建与文档编码统一为 UTF-8，修复 Windows 控制台中文乱码问题；新增 Maven Wrapper（3.9.6），无需本地安装 Maven 即可构建。 - 2026-10-28
@@ -232,7 +243,7 @@
 2. 当作为web服务器时，若接口返回的类型不是WebView，则将返数据序列化成Json，并返回TextView。
 
 ## 环境介绍与安装说明
-JDK 21 (LTS)<br/>
+JDK 25 (LTS)<br/>
 Maven 3.9.x (项目自带 Maven Wrapper，可直接使用 mvnw / mvnw.cmd，无需安装)<br/>
 MySql 5.7 (仅供参考)<br/>
 Redis 5.0 (仅供参考)<br/>

@@ -4,6 +4,7 @@ import java.lang.reflect.*;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledFuture;
 
@@ -27,7 +28,7 @@ public class PushDispatchMgr {
 
 	private static final Logger log = LoggerFactory.getLogger(PushDispatchMgr.class);
 	private final Map<String, PushClass> pushClassMap;
-	private final ConcurrentMap<Long, SessionResponse> syncRemote;
+	private final ConcurrentMap<Long, CompletableFuture<SessionResponse>> syncRemote;
 	private final ConcurrentMap<Long, RemoteCallback> asyncRemote;
 	private final Set<Long> syncRemoteDiscard;
 	
@@ -144,10 +145,13 @@ public class PushDispatchMgr {
 				}
 			}
 		} else {
-			if (syncRemoteDiscard.remove(sessionResponse.getId())) {
+			CompletableFuture<SessionResponse> future = syncRemote.remove(sessionResponse.getId());
+			if (future != null) {
+				future.complete(sessionResponse);
+			} else if (syncRemoteDiscard.remove(sessionResponse.getId())) {
 				log.warn("client discard response id[{}]", sessionResponse.getId());
 			} else {
-				syncRemote.put(sessionResponse.getId(), sessionResponse);
+				log.warn("client unknown response id[{}]", sessionResponse.getId());
 			}
 		}
 	}
@@ -238,7 +242,11 @@ public class PushDispatchMgr {
 		return asyncRemote.containsKey(id);
 	}
 	
-	public SessionResponse getAndRemoveSyncRemote(long id) {
+	public void putSyncRemote(long id, CompletableFuture<SessionResponse> future) {
+		syncRemote.put(id, future);
+	}
+
+	public CompletableFuture<SessionResponse> removeSyncRemote(long id) {
 		return syncRemote.remove(id);
 	}
 

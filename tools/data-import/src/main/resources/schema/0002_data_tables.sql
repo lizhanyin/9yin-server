@@ -340,7 +340,7 @@ CREATE TABLE IF NOT EXISTS game_item_effects (
 CREATE TABLE IF NOT EXISTS game_feature_switches (
   switch_id INT UNSIGNED NOT NULL,
   desc_key VARCHAR(64) NOT NULL DEFAULT '',
-  label VARCHAR(128) NOT NULL DEFAULT '',
+  label VARCHAR(512) NOT NULL DEFAULT '',
   enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
   PRIMARY KEY (switch_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

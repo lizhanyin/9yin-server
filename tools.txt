@@ -1,2 +1,0 @@
-data-migrate.exe -dsn "nineyin:nineyin123@tcp(127.0.0.1:3306)/nineyin"
-role-migrate.exe -dsn "nineyin:nineyin123@tcp(127.0.0.1:3306)/nineyin"

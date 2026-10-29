@@ -154,6 +154,9 @@ public final class NineyinServer implements SummerApp {
 
     @Override
     public void start() {
+        if (roleStore instanceof MySqlRoleStore mysql) {
+            mysql.logTableStats();
+        }
         GmHub.ServerStatus status = gmHub.status();
         status.listenAddr = "0.0.0.0:19061 (game), 0.0.0.0:4000 (area)";
         status.serverRoot = SceneManager.locateShareRoot().toString();

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  九阴服务端日志：控制台 + 按天滚动文件双输出。
+  控制台编码默认 GBK（中文 Windows 控制台代码页 CP936），避免 UTF-8 字节显示乱码；
+  可用环境变量 CONSOLE_LOG_CHARSET 覆盖（如 UTF-8 终端下设为 UTF-8）。
+  文件恒为 UTF-8，目录可用 -DLOG_DIR=... 或环境变量 LOG_DIR 覆盖，缺省 CWD 下 logs/
+  （bat 启动时 CWD 为服务根目录，与 Go 版 logs/ 习惯一致）。
+-->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <charset>${CONSOLE_LOG_CHARSET:-GBK}</charset>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR:-logs}/nineyin-server.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR:-logs}/nineyin-server.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root level="DEBUG">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+</configuration>

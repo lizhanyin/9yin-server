@@ -294,6 +294,50 @@ public final class MySqlRoleStore implements RoleStore {
         dataSource.close();
     }
 
+    /**
+     * 启动时逐表统计行数并输出加载摘要（当前库 SHOW TABLES 全量），
+     * 失败只告警不影响启动。
+     */
+    public void logTableStats() {
+        try (Connection conn = dataSource.getConnection();
+             Statement st = conn.createStatement()) {
+            List<String> tables = new java.util.ArrayList<>();
+            try (ResultSet rs = st.executeQuery("SHOW TABLES")) {
+                while (rs.next()) {
+                    tables.add(rs.getString(1));
+                }
+            }
+            if (tables.isEmpty()) {
+                log.warn("表数据加载：库中无表");
+                return;
+            }
+            StringBuilder line = new StringBuilder();
+            long totalRows = 0;
+            int printed = 0;
+            for (String table : tables) {
+                try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM `" + table + "`")) {
+                    rs.next();
+                    long n = rs.getLong(1);
+                    totalRows += n;
+                    if (line.length() > 0) {
+                        line.append(", ");
+                    }
+                    line.append(table).append('=').append(n);
+                    if (++printed % 4 == 0) {
+                        log.info("表数据加载: {}", line);
+                        line.setLength(0);
+                    }
+                }
+            }
+            if (line.length() > 0) {
+                log.info("表数据加载: {}", line);
+            }
+            log.info("表数据加载完成: {} 张表, 合计 {} 行", tables.size(), totalRows);
+        } catch (SQLException e) {
+            log.warn("表数据加载统计失败: {}", e.getMessage());
+        }
+    }
+
     /** 测试用：原始连接池。 */
     com.zaxxer.hikari.HikariDataSource dataSourceForTest() {
         return dataSource;

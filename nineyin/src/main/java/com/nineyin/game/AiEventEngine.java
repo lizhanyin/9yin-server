@@ -1,12 +1,19 @@
 package com.nineyin.game;
 
+import com.nineyin.login.LoginFlow;
+import com.nineyin.login.LoginSession;
+import com.nineyin.protocol.PropertyId;
+import com.nineyin.protocol.S2CPackets;
 import com.nineyin.rule.AiRuleData;
 import com.nineyin.rule.AiRuleData.AiEvent;
 import com.nineyin.rule.AiRuleData.AiPackage;
+import com.nineyin.rule.BuffCatalog;
 import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.NpcTemplate;
 import com.nineyin.scene.NpcTemplateRepository;
 import com.nineyin.scene.SceneWorld;
+import com.nineyin.server.FxSession;
+import com.nineyin.server.GameScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,11 +28,13 @@ import java.util.concurrent.TimeUnit;
 /**
  * AI 事件引擎（数据驱动，规则来自 AiRuleData 四表）：
  * 挂 pump（每场景 1s）驱动 EventType 1=出生 / 4=周期 / 6=战斗中；
- * 战斗管线 hp=0 时回调 onNpcDeath 驱动 EventType=3（死亡掉宝箱矩阵）。
+ * 战斗管线 hp=0 时回调 onNpcDeath 驱动 EventType=3（死亡掉宝箱矩阵），
+ * 受击时回调 onNpcDamaged 记录仇恨目标。
  *
  * 本切片已执行 OpEvent：2=加 buff（记录到 NpcInstance.buffs）、19=设属性
- * （BornAction）、25=召唤 NPC/宝箱（动态 oid + 广播）；23/24/70/71 等出招类
- * 仅记日志（原逻辑在丢失的服务器 Lua，后续按攻略近似重建）。
+ * （BornAction）、25=召唤 NPC/宝箱（动态 oid + 广播）、23/24=立刻对仇恨目标
+ * 释放 Para1 技能。BOSS 出招循环按 table@SkillRec 轮转近似（原逻辑在丢失
+ * 的服务器 Lua）：拼音后缀大招（如 sxks/byft）伤害加倍并触发嗜血回血。
  */
 public final class AiEventEngine {
 
@@ -54,6 +63,10 @@ public final class AiEventEngine {
     /** 动态生成 NPC 已入世界：向该场景全部会话广播 0x0D + 0x1F。 */
     public interface Broadcaster {
         void onSpawned(SceneWorld world, NpcInstance n);
+
+        /** BOSS 出招动作帧广播给同场景会话（含目标）。 */
+        default void onBossAction(SceneWorld world, byte[] frame) {
+        }
     }
 
     /** 每场景（世界对象为键，resetWorld 重建后自动换新状态）的 AI 状态。 */
@@ -64,23 +77,39 @@ public final class AiEventEngine {
 
     private static final class NpcState {
         volatile boolean bornFired;
+        FxSession lastAttacker;
+        long lastAttackMs;
+        int rotationIdx;
         final Map<Integer, Long> lastFired = new ConcurrentHashMap<>();
     }
 
     private static final long PUMP_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
     private static final long EVENT_REFIRE_MS = TimeUnit.SECONDS.toMillis(5);
     private static final long COMBAT_WINDOW_MS = TimeUnit.SECONDS.toMillis(8);
+    /** 出招间隔与伤害近似（原值在丢失 Lua；普通技 120 / 拼音大招 260）。 */
+    private static final long ATTACK_INTERVAL_MS = TimeUnit.SECONDS.toMillis(3);
+    private static final int BOSS_ATTACK_DAMAGE = 120;
+    private static final int BIG_SKILL_DAMAGE = 260;
+    /** 嗜血被动：大招命中回 1000（WushuWiki：被格挡也回）。 */
+    private static final int XIXUE_HEAL = 1000;
+    private static final long PLAYER_REVIVE_MS = TimeUnit.SECONDS.toMillis(8);
 
     private final AiRuleData rules;
     private final NpcTemplateRepository templates;
+    private final BuffCatalog buffs;
     private final Map<SceneWorld, WorldState> worlds =
             Collections.synchronizedMap(new java.util.WeakHashMap<>());
     private volatile Broadcaster broadcaster = (w, n) -> {
     };
 
     public AiEventEngine(AiRuleData rules, NpcTemplateRepository templates) {
+        this(rules, templates, null);
+    }
+
+    public AiEventEngine(AiRuleData rules, NpcTemplateRepository templates, BuffCatalog buffs) {
         this.rules = rules;
         this.templates = templates;
+        this.buffs = buffs;
     }
 
     public void setBroadcaster(Broadcaster broadcaster) {
@@ -109,7 +138,17 @@ public final class AiEventEngine {
         }
     }
 
-    /** 每场景秒级泵：出生（含重生后再出生）、周期、战斗中事件。 */
+    /** 战斗管线回调：NPC 受击（仇恨目标 = 攻击者会话）。 */
+    public void onNpcDamaged(SceneWorld world, NpcInstance npc, FxSession attacker, long now) {
+        npc.lastCombatMs = now;
+        if (!isBoundBoss(npc.configId)) {
+            return;
+        }
+        WorldState ws = worlds.computeIfAbsent(world, k -> new WorldState());
+        ws.npcs.computeIfAbsent(npc.objectId, k -> new NpcState()).lastAttacker = attacker;
+    }
+
+    /** 每场景秒级泵：出生（含重生后再出生）、周期、战斗中事件、出招循环。 */
     public void pump(SceneWorld world, long now) {
         WorldState ws = worlds.computeIfAbsent(world, k -> new WorldState());
         synchronized (ws) {
@@ -135,7 +174,9 @@ public final class AiEventEngine {
                 }
                 fireTyped(pkg, 4, world, n, 0, now, ns, EVENT_REFIRE_MS);
                 if (now - n.lastCombatMs < COMBAT_WINDOW_MS) {
+                    regenTick(n, ns);
                     fireTyped(pkg, 6, world, n, 0, now, ns, EVENT_REFIRE_MS);
+                    bossAttack(world, n, ns, now);
                 }
             }
         }
@@ -175,7 +216,9 @@ public final class AiEventEngine {
             case 2 -> {
                 if (!ev.para1().isEmpty()) {
                     npc.buffs.add(ev.para1());
-                    log.info("ai buff {} -> {} ({})", ev.para1(), npc.configId, npc.objectId);
+                    log.info("ai buff {} (static={}) -> {} ({})", ev.para1(),
+                            buffs != null ? buffs.staticDataOf(ev.para1()) : 0,
+                            npc.configId, npc.objectId);
                 }
             }
             case 19 -> {
@@ -186,6 +229,15 @@ public final class AiEventEngine {
                 }
             }
             case 25 -> spawnDynamic(world, npc, ev.para1());
+            case 23, 24 -> {
+                // 技能使用/切换（原逻辑在丢失 Lua）：近似为立刻对仇恨目标释放
+                if (!ev.para1().isEmpty()) {
+                    WorldState ws = worlds.get(world);
+                    NpcState ns = ws != null ? ws.npcs.get(npc.objectId) : null;
+                    castSkill(world, npc, ns != null ? ns : new NpcState(), ev.para1(),
+                            isBigSkill(ev.para1()) ? BIG_SKILL_DAMAGE : BOSS_ATTACK_DAMAGE);
+                }
+            }
             case 27, 29 -> log.info("ai talk npc={} line={} difficulty={}",
                     npc.configId, ev.para1(), world.dungeonDifficulty);
             default -> log.debug("ai op {} not implemented (para1={}) npc={}",
@@ -193,8 +245,7 @@ public final class AiEventEngine {
         }
     }
 
-    /** OpEvent=25：在源 NPC 位置动态生成（宝箱/召唤物），经广播器下发全场景会话。 */
-    private void spawnDynamic(SceneWorld world, NpcInstance src, String configId) {
+    /** OpEvent=25：在源 NPC 位置动态生成（宝箱/召唤物），经广播器下发全场景会话。 */    private void spawnDynamic(SceneWorld world, NpcInstance src, String configId) {
         if (configId == null || configId.isEmpty()) {
             return;
         }
@@ -217,6 +268,88 @@ public final class AiEventEngine {
         broadcaster.onSpawned(world, n);
         log.info("ai spawn {} (oid={}) at ({},{},{}) difficulty={} rating={}",
                 configId, n.objectId, n.x, n.y, n.z, world.dungeonDifficulty, world.dungeonRating);
+    }
+
+    // ---------- 出招循环（近似：原服务器 Lua 已丢失） ----------
+
+    /** 回血类 buff（HPMP）战斗中每秒 2% 上限内回复（近似值）。 */
+    private void regenTick(NpcInstance n, NpcState ns) {
+        if (n.hp >= n.maxHp || n.buffs.stream().noneMatch(b -> b.contains("HPMP"))) {
+            return;
+        }
+        n.hp = Math.min(n.maxHp, n.hp + Math.max(1, n.maxHp / 50));
+        if (ns.lastAttacker != null) {
+            sendBossHp(ns.lastAttacker, n);
+        }
+    }
+
+    /** 出招：按 table@SkillRec 轮转；拼音后缀大招（sxks/byft 等）伤害加倍。 */
+    private void bossAttack(SceneWorld world, NpcInstance boss, NpcState ns, long now) {
+        if (now - ns.lastAttackMs < ATTACK_INTERVAL_MS) {
+            return;
+        }
+        List<NpcTemplate.SkillRef> skills = templates.lookup(boss.configId).skills();
+        if (skills.isEmpty()) {
+            return;
+        }
+        NpcTemplate.SkillRef ref = skills.get(ns.rotationIdx++ % skills.size());
+        castSkill(world, boss, ns, ref.id(), isBigSkill(ref.id()) ? BIG_SKILL_DAMAGE : BOSS_ATTACK_DAMAGE);
+        ns.lastAttackMs = now;
+    }
+
+    /** 对仇恨目标释放技能：动作帧广播 + 玩家伤害 + 嗜血回血 + 死亡缓复活。 */
+    private void castSkill(SceneWorld world, NpcInstance boss, NpcState ns, String skillId, int damage) {
+        FxSession target = ns.lastAttacker;
+        if (target == null) {
+            return;
+        }
+        LoginSession login = target.channel().attr(LoginFlow.SESSION).get();
+        if (login == null || login.actor == null || login.actor.hp <= 0) {
+            return;
+        }
+        if (world != null) {
+            broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(boss.objectId, boss.ownerId,
+                    skillId, S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID));
+        }
+        boolean justDied = login.actor.applyDamage(damage);
+        target.send(login.actor.vitalUpdate());
+        log.info("boss {} cast {} -> {} damage={} hp={}", boss.configId, skillId,
+                login.roleName, damage, login.actor.hp);
+        if (isBigSkill(skillId) && boss.buffs.stream().anyMatch(b -> b.contains("xixue"))) {
+            boss.hp = Math.min(boss.maxHp, boss.hp + XIXUE_HEAL);
+            sendBossHp(target, boss);
+        }
+        if (justDied) {
+            log.info("player {} defeated by {} (skill {}), revive in {}ms",
+                    login.roleName, boss.configId, skillId, PLAYER_REVIVE_MS);
+            GameScheduler.schedule(PLAYER_REVIVE_MS, () -> {
+                login.actor.revive();
+                target.send(login.actor.vitalUpdate());
+            });
+        }
+    }
+
+    /** BOSS 血量同步给攻击者（0x10 批量，npc oid）。 */
+    private void sendBossHp(FxSession fx, NpcInstance n) {
+        fx.send(S2CPackets.batch(n.objectId, n.ownerId)
+                .i32(PropertyId.HP, n.hp)
+                .i32(PropertyId.HP_RATIO, n.maxHp > 0 ? (int) ((long) n.hp * 100 / n.maxHp) : 0)
+                .build());
+    }
+
+    /** 拼音后缀 = 命名大招（clone003_zhoulifeng_sxks）；数字后缀 = 常规轮转技（..._01）。 */
+    static boolean isBigSkill(String skillId) {
+        String low = skillId.toLowerCase(Locale.ROOT);
+        int us = low.lastIndexOf('_');
+        if (us < 0) {
+            return false;
+        }
+        for (int i = us + 1; i < low.length(); i++) {
+            if (!Character.isDigit(low.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ---------- 条件求值 ----------

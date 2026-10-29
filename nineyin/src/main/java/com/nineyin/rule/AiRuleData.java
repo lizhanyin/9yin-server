@@ -178,8 +178,8 @@ public final class AiRuleData {
         }
     }
 
-    /** GBK ini 节解析：每节一个 LinkedHashMap，节头 ID 放 "" 键。 */
-    private static List<Map<String, String>> sections(Path file) {
+    /** GBK ini 节解析：每节一个 LinkedHashMap，节头 ID 放 "" 键（BuffCatalog 复用）。 */
+    static List<Map<String, String>> sections(Path file) {
         List<Map<String, String>> out = new ArrayList<>();
         if (!Files.isRegularFile(file)) {
             log.warn("ai rule file missing: {}", file);

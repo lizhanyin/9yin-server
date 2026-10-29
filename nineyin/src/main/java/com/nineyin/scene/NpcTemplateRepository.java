@@ -8,6 +8,7 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -58,6 +59,7 @@ public final class NpcTemplateRepository {
             int idCol = -1, resCol = -1, nameCol = -1, levelCol = -1, hpCol = -1;
             int scriptCol = -1, actionCol = -1, weaponCol = -1;
             int shopCol = -1, depotCol = -1, doorPkgCol = -1, transferCol = -1, springCol = -1;
+            int skillCol = -1;
             String data = new String(Files.readAllBytes(path), GBK);
             for (String line : data.split("\n")) {
                 if (line.isEmpty() || line.charAt(0) == '#' || line.charAt(0) == '/') {
@@ -81,6 +83,7 @@ public final class NpcTemplateRepository {
                             case "DoorPackageID", "DoorPackageId", "doorpackageid" -> doorPkgCol = i;
                             case "PlayerTransferPosition", "playertransferposition" -> transferCol = i;
                             case "SpringRange", "springrange" -> springCol = i;
+                            case "table@SkillRec" -> skillCol = i;
                             default -> {
                             }
                         }
@@ -103,7 +106,8 @@ public final class NpcTemplateRepository {
                         parseIntOr(cell(cols, levelCol), 0), parseIntOr(cell(cols, hpCol), 0),
                         cell(cols, shopCol), cell(cols, depotCol),
                         cell(cols, doorPkgCol), cell(cols, transferCol),
-                        parseFloatOr(cell(cols, springCol), 0f));
+                        parseFloatOr(cell(cols, springCol), 0f),
+                        parseSkills(cell(cols, skillCol)));
                 templates.putIfAbsent(id, info);
                 rows++;
             }
@@ -178,8 +182,24 @@ public final class NpcTemplateRepository {
         }
     }
 
-    private static String[] splitTsv(String line) {
-        StringBuilder cur = new StringBuilder();
+    /** table@SkillRec：`skillId,level,?;skillId,level,?`（引号内整段）。 */
+    private static List<NpcTemplate.SkillRef> parseSkills(String cell) {
+        if (cell.isEmpty()) {
+            return List.of();
+        }
+        java.util.List<NpcTemplate.SkillRef> out = new java.util.ArrayList<>();
+        for (String part : cell.split(";")) {
+            String[] seg = part.trim().split(",");
+            String id = seg.length > 0 ? trim(seg[0]) : "";
+            if (id.isEmpty()) {
+                continue;
+            }
+            out.add(new NpcTemplate.SkillRef(id, seg.length > 1 ? parseIntOr(trim(seg[1]), 1) : 1));
+        }
+        return out;
+    }
+
+    private static String[] splitTsv(String line) {        StringBuilder cur = new StringBuilder();
         java.util.List<String> cols = new java.util.ArrayList<>();
         boolean inQuote = false;
         for (int i = 0; i < line.length(); i++) {

@@ -144,17 +144,20 @@
 - **需近似**：转阶段表演（烈焰真罡读条、春泥护花火圈、黑白双煞合体）按攻略描述手写为技能释放规则，套用数据表里的技能 ID 与 CD。
 - **不可还原**：台词文本（客户端文件）、原版 Lua 精确手感。
 
-## 8. 实现进度（Step 3 第一切片，已落地）
+## 8. 实现进度（Step 3 前两切片，已落地）
 
 | 组件 | 状态 |
 | --- | --- |
 | `com.nineyin.rule.AiRuleData` | ✅ 四表加载（真实数据 4963 包 / 37450 事件 / 40182 条件 / 11143 公式） |
-| `com.nineyin.game.AiEventEngine` | ✅ 出生/死亡/周期/战斗事件运行时；OpEvent 2=加 buff（记录 ID）、19=设属性（BornAction）、25=召唤（动态 oid + 全场景广播）；概率 OpRate；公式从左到右求值 |
+| `com.nineyin.rule.BuffCatalog` | ✅ buff_new.ini 加载（buffId→StaticData；真实数据验证 buf_boss_immunity→2938、xixue→7946） |
+| `com.nineyin.game.AiEventEngine` | ✅ 出生/死亡/周期/战斗事件运行时；OpEvent 2=加 buff、19=设属性（BornAction）、25=召唤（动态 oid + 全场景广播）、23/24=立即对仇恨目标出招；概率 OpRate；公式从左到右求值 |
 | 难度维度 | ✅ `SceneWorld.dungeonDifficulty`（1~4）/`dungeonRating`（1~3），GM 面板"难度：普通/困难/地狱/修罗"按钮 |
 | BOSS 绑定 | ✅ BossClone003001~008 →（新）包 4399~4407；BossCloneTZ001~005 →【挑战】包 5976~5980（原映射在丢失 Lua，按包 Text 复原） |
-| 战斗管线接线 | ✅ `applySkillDamage` hp=0 → `onNpcDeath`；每秒 `tick` → `pump`（含重生后再出生） |
-| 验证 | ✅ AiEventEngineTest 8 用例：fixture 全机制 + 真实数据冒烟（韩似锦出生 buff、难度 1 死亡掉 BossBox003005A） |
-| 待办 | buff 属性加成与视觉帧、OpEvent 23/24（技能释放）、OpEvent 70/71（召唤组/台词组文本）、宝箱开启交互、玩家等级建模（修罗等级分箱） |
+| 技能表 | ✅ NpcTemplate 解析 `table@SkillRec`（BOSS 出招表；周厉风 01/02/03+嗜血狂杀等） |
+| 出招循环（近似） | ✅ 战斗窗口内每 3s 按 table@SkillRec 轮转；拼音后缀大招（sxks/byft 等）260 伤、常规 120；动作帧全场景广播；嗜血被动大招回 1000（WushuWiki 佐证）；HPMP 回血 buff 战斗中 2%/s；玩家死亡 8s 缓复活 |
+| 战斗管线接线 | ✅ `applySkillDamage` 受击→`onNpcDamaged`（仇恨）、hp=0→`onNpcDeath`；每秒 `tick`→`pump`（含重生后再出生） |
+| 验证 | ✅ AiEventEngineTest 13 用例：fixture 全机制（含出招伤害/嗜血/回血/OpEvent24）+ 真实数据冒烟 |
+| 待办 | buff 属性加成与 NPC buff 视觉帧、OpEvent 70/71（召唤组/台词组文本）、宝箱开启交互、玩家等级建模（修罗等级分箱）、转阶段表演（读条/火圈等按攻略近似） |
 
 ## 附：数据来源
 

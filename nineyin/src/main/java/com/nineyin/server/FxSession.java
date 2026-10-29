@@ -19,6 +19,11 @@ public final class FxSession {
         this.connection = connection;
     }
 
+    /** 裸通道会话（测试用：无编解码管线，send 直写出站队列）。 */
+    public static FxSession attach(Channel channel) {
+        return new FxSession(channel, new FxConnection());
+    }
+
     public Channel channel() {
         return channel;
     }

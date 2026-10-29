@@ -509,7 +509,11 @@ public final class SceneFlow {
 
         int damage = 150;
         npc.hp = Math.max(0, npc.hp - damage);
-        npc.lastCombatMs = now;
+        if (ai != null) {
+            ai.onNpcDamaged(st.world, npc, fx, now);
+        } else {
+            npc.lastCombatMs = now;
+        }
         S2CPackets.Batch npcBatch = S2CPackets.batch(npc.objectId, npc.ownerId);
         npcBatch.i32(PropertyId.HP, npc.hp)
                 .i32(PropertyId.HP_RATIO, npc.maxHp > 0 ? (int) ((long) npc.hp * 100 / npc.maxHp) : 0);

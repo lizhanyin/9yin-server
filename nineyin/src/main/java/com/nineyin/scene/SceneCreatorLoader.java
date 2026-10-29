@@ -29,7 +29,9 @@ public final class SceneCreatorLoader {
     private static final Pattern POSITION_TAG = Pattern.compile("<position\\b[^>]*>");
     private static final Pattern ATTR = Pattern.compile("(\\w+)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')");
 
-    /** 已知资源 → npc_creator 子目录映射，缺失时模糊前缀匹配。 */
+    /** 已知资源 → npc_creator 子目录映射，缺失时模糊前缀匹配。
+     *  多变体短名必须显式映射：模糊匹配按目录序会选错（school07 → school07_fangong
+     *  反攻版而非武当本图，scene08 → scene08_2_damoguicheng 内景而非塞外大漠）。 */
     private static Path creatorDirForResource(String sceneResource, Path creatorRoot) {
         String res = sceneResource.toLowerCase(Locale.ROOT);
         String folder = switch (res) {
@@ -40,7 +42,17 @@ public final class SceneCreatorLoader {
             case "city02" -> "city02_suzhou";
             case "city04" -> "city04_luoyang";
             case "city05" -> "city05_chengdu";
-            case "school09" -> "school09_gaibang";
+            case "scene04" -> "scene04_xiangyangpo";
+            case "scene08" -> "scene08_saiwaidamo";
+            case "school01" -> "school01_jinyiwei";
+            case "school02" -> "school02_gaibang";
+            case "school03" -> "school03_junzitang";
+            case "school04" -> "school04_jilegu";
+            case "school05" -> "school05_tangmen";
+            case "school06" -> "school06_emei";
+            case "school07" -> "school07_wudang";
+            case "school08" -> "school08_shaolin";
+            case "school09" -> "school09_yihuagong";
             default -> res;
         };
         Path direct = creatorRoot.resolve(folder);

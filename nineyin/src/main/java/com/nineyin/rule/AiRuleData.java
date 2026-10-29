@@ -195,7 +195,7 @@ public final class AiRuleData {
         Map<String, String> cur = new LinkedHashMap<>();
         cur.put("", "");
         for (String line : text.split("\n")) {
-            line = line.trim();
+            line = line.strip();
             if (line.isEmpty()) {
                 continue;
             }
@@ -206,13 +206,14 @@ public final class AiRuleData {
                         out.add(cur);
                     }
                     cur = new LinkedHashMap<>();
-                    cur.put("", line.substring(1, end).trim());
+                    cur.put("", line.substring(1, end).strip());
                 }
                 continue;
             }
             Matcher m = KV.matcher(line);
             if (m.find()) {
-                cur.put(m.group(1), m.group(2).trim());
+                // strip 而非 trim：全角空格 U+3000 等空白 trim 不删（GBK 表真实存在）
+                cur.put(m.group(1), m.group(2).strip());
             }
         }
         if (!cur.get("").isEmpty()) {

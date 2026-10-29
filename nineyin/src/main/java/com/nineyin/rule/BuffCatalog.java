@@ -27,7 +27,7 @@ public final class BuffCatalog {
             }
             String sd = sec.getOrDefault("StaticData", "");
             try {
-                staticData.put(id, Integer.valueOf(sd.trim()));
+                staticData.put(id, Integer.valueOf(sd.strip()));
             } catch (NumberFormatException e) {
                 staticData.put(id, 0);
             }

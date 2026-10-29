@@ -144,20 +144,22 @@
 - **需近似**：转阶段表演（烈焰真罡读条、春泥护花火圈、黑白双煞合体）按攻略描述手写为技能释放规则，套用数据表里的技能 ID 与 CD。
 - **不可还原**：台词文本（客户端文件）、原版 Lua 精确手感。
 
-## 8. 实现进度（Step 3 前两切片，已落地）
+## 8. 实现进度（Step 3 前三切片，已落地）
 
 | 组件 | 状态 |
 | --- | --- |
-| `com.nineyin.rule.AiRuleData` | ✅ 四表加载（真实数据 4963 包 / 37450 事件 / 40182 条件 / 11143 公式） |
+| `com.nineyin.rule.AiRuleData` | ✅ 四表加载（真实数据 4963 包 / 37450 事件 / 40182 条件 / 11143 公式）；节值解析用 `strip()`（GBK 表存在全角空格 U+3000，`trim()` 不删会导致 buff ID 多一个不可见字符） |
 | `com.nineyin.rule.BuffCatalog` | ✅ buff_new.ini 加载（buffId→StaticData；真实数据验证 buf_boss_immunity→2938、xixue→7946） |
-| `com.nineyin.game.AiEventEngine` | ✅ 出生/死亡/周期/战斗事件运行时；OpEvent 2=加 buff、19=设属性（BornAction）、25=召唤（动态 oid + 全场景广播）、23/24=立即对仇恨目标出招；概率 OpRate；公式从左到右求值 |
+| `com.nineyin.game.AiEventEngine` | ✅ 出生/死亡/周期/战斗事件运行时；OpEvent 2=加 buff（BufferInfo 视觉帧广播）、19=设属性（BornAction）、25=召唤（动态 oid + 全场景广播）、23/24=立即对仇恨目标出招、70=召唤组（散开站位）、71=台词；概率 OpRate；公式从左到右求值 |
+| `com.nineyin.game.CombatFormulas`/`CombatStats` | ✅ 社区逆向伤害公式（外防对数减免/破防/暴击/瘀血层），玩家与 NPC 共用；BOSS 出招走公式结算（攻击=模板 attack 列或 120，拼音大招 ×260/120） |
 | 难度维度 | ✅ `SceneWorld.dungeonDifficulty`（1~4）/`dungeonRating`（1~3），GM 面板"难度：普通/困难/地狱/修罗"按钮 |
 | BOSS 绑定 | ✅ BossClone003001~008 →（新）包 4399~4407；BossCloneTZ001~005 →【挑战】包 5976~5980（原映射在丢失 Lua，按包 Text 复原） |
-| 技能表 | ✅ NpcTemplate 解析 `table@SkillRec`（BOSS 出招表；周厉风 01/02/03+嗜血狂杀等） |
-| 出招循环（近似） | ✅ 战斗窗口内每 3s 按 table@SkillRec 轮转；拼音后缀大招（sxks/byft 等）260 伤、常规 120；动作帧全场景广播；嗜血被动大招回 1000（WushuWiki 佐证）；HPMP 回血 buff 战斗中 2%/s；玩家死亡 8s 缓复活 |
-| 战斗管线接线 | ✅ `applySkillDamage` 受击→`onNpcDamaged`（仇恨）、hp=0→`onNpcDeath`；每秒 `tick`→`pump`（含重生后再出生） |
-| 验证 | ✅ AiEventEngineTest 13 用例：fixture 全机制（含出招伤害/嗜血/回血/OpEvent24）+ 真实数据冒烟 |
-| 待办 | buff 属性加成与 NPC buff 视觉帧、OpEvent 70/71（召唤组/台词组文本）、宝箱开启交互、玩家等级建模（修罗等级分箱）、转阶段表演（读条/火圈等按攻略近似） |
+| 技能表 | ✅ NpcTemplate 解析 `table@SkillRec`（BOSS 出招表；周厉风 01/02/03+嗜血狂杀等）与 attack/defense 列 |
+| 出招循环（近似） | ✅ 战斗窗口内每 3s 轮转；拼音大招倍率放大；动作帧全场景广播；嗜血被动大招回 1000；HPMP 回血 buff 战斗中 2%/s；玩家死亡 8s 缓复活；**30% 血转阶段**（立即首个命名大招 + 全场喊话 worldInfo） |
+| 宝箱开启 | ✅ NpcTemplate 解析 OpenRange/OpenAction/DelayTime（3m/interact041/5s）；点击出"打开宝箱"菜单 → 距离校验 → 开箱动作 + 读条 → 移除 + 掉落 worldInfo（A/B/C 评价档掉落池，地狱/修罗 +1 件；真实组合表 comb_PassDrop_* 已丢失） |
+| 战斗管线接线 | ✅ `applySkillDamage` 受击→`onNpcDamaged`（仇恨）、hp=0→`onNpcDeath`；每秒 `tick`→`pump`（快照迭代防召唤组 CME，含重生后再出生） |
+| 验证 | ✅ AiEventEngineTest 19 用例 + CombatFormulasTest：fixture 全机制 + 真实数据冒烟 |
+| 待办 | buff 属性加成数值接入（VarProp 表）、OpEvent 20（行为状态机）、多会话开箱互斥广播、转阶段表演细化（读条火圈） |
 
 ## 附：数据来源
 

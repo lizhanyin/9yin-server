@@ -112,8 +112,12 @@ public final class SelectFlow {
             openDepot(fx);
             return;
         }
-        // 未知 func：暮色验证流程（拿出钥匙/跟我走）优先分发，其余清选区（保持旧行为）
+        // 未知 func：暮色验证流程（拿出钥匙/跟我走）与副本宝箱开启优先分发，其余清选区
         if (TwilightVerify.handleMenuAction(fx, session, st, sceneManager, oid, func)) {
+            clearMenuState(st);
+            return;
+        }
+        if (CloneLoot.handleMenuAction(fx, session, st, sceneManager, oid, func)) {
             clearMenuState(st);
             return;
         }
@@ -153,11 +157,15 @@ public final class SelectFlow {
             st.selectedX = npc.x;
             st.selectedZ = npc.z;
         }
-        // 可玩服务（商店/仓库）→ 帧对话菜单；暮色验证 tagged NPC 强制出验证菜单
+        // 可玩服务（商店/仓库）→ 帧对话菜单；暮色验证 tagged NPC 与副本宝箱强制出专用菜单
         List<Integer> marks = playableMarks(npc);
         Integer verifyMark = TwilightVerify.menuMarkFor(npc);
         if (verifyMark != null) {
             marks = List.of(verifyMark);
+        }
+        Integer boxMark = CloneLoot.menuMarkFor(npc, sceneManager.templates());
+        if (boxMark != null) {
+            marks = List.of(boxMark);
         }
         if (!marks.isEmpty()) {
             long now = System.currentTimeMillis();

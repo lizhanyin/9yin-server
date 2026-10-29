@@ -57,9 +57,10 @@ public final class NpcTemplateRepository {
         try {
             int rows = 0;
             int idCol = -1, resCol = -1, nameCol = -1, levelCol = -1, hpCol = -1;
+            int atkCol = -1, defCol = -1, accCol = -1, evaCol = -1;
             int scriptCol = -1, actionCol = -1, weaponCol = -1;
             int shopCol = -1, depotCol = -1, doorPkgCol = -1, transferCol = -1, springCol = -1;
-            int skillCol = -1;
+            int skillCol = -1, openRangeCol = -1, openActionCol = -1, delayCol = -1;
             String data = new String(Files.readAllBytes(path), GBK);
             for (String line : data.split("\n")) {
                 if (line.isEmpty() || line.charAt(0) == '#' || line.charAt(0) == '/') {
@@ -75,6 +76,10 @@ public final class NpcTemplateRepository {
                             case "Name", "name" -> nameCol = i;
                             case "Level", "level" -> levelCol = i;
                             case "MaxHP", "maxhp", "HP" -> hpCol = i;
+                            case "AttackPower", "Attack", "attack", "WaiGong" -> atkCol = i;
+                            case "Defence", "Defense", "defence", "WaiFang" -> defCol = i;
+                            case "Accuracy", "Hit", "hit" -> accCol = i;
+                            case "Evasion", "Dodge", "dodge", "Miss" -> evaCol = i;
                             case "script", "Script", "ScriptClass" -> scriptCol = i;
                             case "ActionSet", "actionset" -> actionCol = i;
                             case "WeaponMode", "weaponmode" -> weaponCol = i;
@@ -84,6 +89,9 @@ public final class NpcTemplateRepository {
                             case "PlayerTransferPosition", "playertransferposition" -> transferCol = i;
                             case "SpringRange", "springrange" -> springCol = i;
                             case "table@SkillRec" -> skillCol = i;
+                            case "OpenRange", "openrange" -> openRangeCol = i;
+                            case "OpenAction", "openaction" -> openActionCol = i;
+                            case "DelayTime", "delaytime" -> delayCol = i;
                             default -> {
                             }
                         }
@@ -104,10 +112,14 @@ public final class NpcTemplateRepository {
                         cell(cols, resCol), cell(cols, nameCol), cell(cols, scriptCol),
                         cell(cols, actionCol), cell(cols, weaponCol),
                         parseIntOr(cell(cols, levelCol), 0), parseIntOr(cell(cols, hpCol), 0),
+                        parseIntOr(cell(cols, atkCol), 0), parseIntOr(cell(cols, defCol), 0),
+                        parseIntOr(cell(cols, accCol), 0), parseIntOr(cell(cols, evaCol), 0),
                         cell(cols, shopCol), cell(cols, depotCol),
                         cell(cols, doorPkgCol), cell(cols, transferCol),
                         parseFloatOr(cell(cols, springCol), 0f),
-                        parseSkills(cell(cols, skillCol)));
+                        parseSkills(cell(cols, skillCol)),
+                        parseBox(cell(cols, openRangeCol),
+                                cell(cols, openActionCol), cell(cols, delayCol)));
                 templates.putIfAbsent(id, info);
                 rows++;
             }
@@ -197,6 +209,29 @@ public final class NpcTemplateRepository {
             out.add(new NpcTemplate.SkillRef(id, seg.length > 1 ? parseIntOr(trim(seg[1]), 1) : 1));
         }
         return out;
+    }
+
+    /** 宝箱表列：OpenRange/OpenAction/DelayTime（缺省 3m / interact041 / 5s）。 */
+    private static NpcTemplate.BoxInfo parseBox(String openRange, String openAction, String delay) {
+        boolean any = !openRange.isEmpty() || !openAction.isEmpty() || !delay.isEmpty();
+        if (!any) {
+            return null;
+        }
+        return new NpcTemplate.BoxInfo(
+                parseFloatOr(openRange, 3f),
+                openAction.isEmpty() ? "interact041" : openAction,
+                parseLongOr(delay, 5000L));
+    }
+
+    private static long parseLongOr(String s, long def) {
+        if (s.isEmpty()) {
+            return def;
+        }
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     private static String[] splitTsv(String line) {        StringBuilder cur = new StringBuilder();

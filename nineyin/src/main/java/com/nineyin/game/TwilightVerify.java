@@ -86,6 +86,10 @@ public final class TwilightVerify {
         NpcTemplate tmpl = sceneManager.templates().lookup(configId);
         n.maxHp = tmpl.maxHp() > 0 ? tmpl.maxHp() : 1000;
         n.hp = n.maxHp;
+        n.attack = tmpl.attack();
+        n.defense = tmpl.defense();
+        n.accuracy = tmpl.accuracy();
+        n.evasion = tmpl.evasion();
         synchronized (world) {
             world.addDynamic(n);
         }

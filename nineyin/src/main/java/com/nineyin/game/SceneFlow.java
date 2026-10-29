@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 场景同步与自定义消息总线：
@@ -469,7 +470,7 @@ public final class SceneFlow {
         log.info("use skill id={} action={}", skillId, action);
     }
 
-    /** 轻量战斗：选中单位 150 固定伤害；死亡 0x0E 移除 + 15s 重生（tick 内补发）。 */
+    /** 轻量战斗：选中单位按 CombatFormulas 结算（攻防减免/破防/暴击）；死亡 0x0E 移除 + 15s 重生（tick 内补发）。 */
     private void applySkillDamage(FxSession fx, LoginSession session, SceneState st, String skillId) {
         if (session.actor == null || st.world == null || st.selectedOid == 0) {
             return;
@@ -507,8 +508,23 @@ public final class SceneFlow {
         });
         fx.send(session.actor.vitalUpdate());
 
-        int damage = 150;
+        CombatFormulas.DamageResult hit = CombatFormulas.calc(session.actor.combatStats(),
+                CombatStats.defender(npc.defense, npc.evasion),
+                CombatFormulas.skillRatio(skillId), ThreadLocalRandom.current(), false);
+        if (hit.miss()) {
+            // 未命中：不掉血，但攻击意图仍拉仇恨/进战斗窗口
+            log.info("skill {} -> npc {} MISS", skillId, npc.configId);
+            if (ai != null) {
+                ai.onNpcDamaged(st.world, npc, fx, now);
+            } else {
+                npc.lastCombatMs = now;
+            }
+            return;
+        }
+        int damage = hit.damage();
         npc.hp = Math.max(0, npc.hp - damage);
+        log.info("skill {} -> npc {} damage={} crit={} reductionPct={}",
+                skillId, npc.configId, damage, hit.crit(), String.format(Locale.ROOT, "%.1f", hit.reductionPct() * 100));
         if (ai != null) {
             ai.onNpcDamaged(st.world, npc, fx, now);
         } else {
@@ -601,7 +617,7 @@ public final class SceneFlow {
         }
     }
 
-    /** 218 招架：记录最近一次请求（600ms 窗口），无视觉副作用（对齐 Go）。 */
+    /** 218 招架：subtype≠0 开启招架（耗耐力减伤，见 CombatFormulas.parryMultiplier），=0 收招。 */
     private void handleActiveParry(FxSession fx, LoginSession session, CustomMsg msg) {
         if (session.actor == null || msg.size() < 3) {
             return;
@@ -610,7 +626,10 @@ public final class SceneFlow {
         if (!subtype.asExactInt()) {
             return;
         }
-        log.info("accepted active parry subtype={} argument={}", subtype.intOrZero(), msg.val(2));
+        session.actor.parrying = subtype.intOrZero() != 0;
+        log.info("active parry {} (subtype={} argument={} endurance={})",
+                session.actor.parrying ? "on" : "off", subtype.intOrZero(), msg.val(2),
+                session.actor.parryEndurance);
     }
 
     /** 0x1E msg=20 原生技能动作帧。 */

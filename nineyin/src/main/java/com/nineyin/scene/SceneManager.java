@@ -90,6 +90,10 @@ public final class SceneManager {
             NpcTemplate tmpl = templates.lookup(n.configId);
             n.maxHp = tmpl.maxHp() > 0 ? tmpl.maxHp() : 1000;
             n.hp = n.maxHp;
+            n.attack = tmpl.attack();
+            n.defense = tmpl.defense();
+            n.accuracy = tmpl.accuracy();
+            n.evasion = tmpl.evasion();
             String script = tmpl.scriptClass().toLowerCase(Locale.ROOT);
             if (script.contains("attack") || script.contains("boss")) {
                 n.monster = true;

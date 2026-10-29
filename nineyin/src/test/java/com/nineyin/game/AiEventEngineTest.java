@@ -7,6 +7,7 @@ import com.nineyin.rule.BuffCatalog;
 import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.NpcTemplate;
 import com.nineyin.scene.NpcTemplateRepository;
+import com.nineyin.scene.SceneManager;
 import com.nineyin.scene.SceneWorld;
 import com.nineyin.server.FxSession;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -19,12 +20,14 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -61,7 +64,7 @@ class AiEventEngineTest {
     @Test
     void loaderParsesFourTables() {
         assertEquals(2, rules.packageCount());
-        assertEquals(7, rules.eventCount());
+        assertEquals(8, rules.eventCount());
         assertEquals(3, rules.conditionCount());
         assertEquals(1, rules.formulaCount());
         var pkg = rules.pkg(4407);
@@ -91,7 +94,7 @@ class AiEventEngineTest {
         BuffCatalog catalog = new BuffCatalog();
         catalog.load(tempDir.resolve("share").resolve("skill"));
         assertEquals(1, catalog.size());
-        assertEquals(123, catalog.staticDataOf("buf_test_hsj"));
+        assertEquals(123, catalog.staticDataOf("buff_test_hsj"));
         assertEquals(0, catalog.staticDataOf("unknown"));
     }
 
@@ -99,14 +102,31 @@ class AiEventEngineTest {
     void rotationDamagesPlayerWithXixueHeal() {
         FxSession fx = attachPlayer();
         LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        engine.useRngForTest(new Random(42));   // 每次出招两掷（未命中 10%/暴击 5%），42 序列均不触发
         engine.onNpcDamaged(world, boss, fx, 4000L);
-        engine.pump(world, 4000L);   // 出招第 1 拍：常规技 _01，伤害 120
-        assertEquals(1000 - 120, login.actor.hp);
+        engine.pump(world, 4000L);   // 出招第 1 拍：常规技 _01 攻击 120（25% 进瘀血，扣血 90）
+        assertEquals(1000 - 90, login.actor.hp);
+        assertEquals(30, login.actor.hitHp, "瘀血层应累计 25% 伤害");
         boss.hp = boss.maxHp / 2;
         boss.buffs.add("buff_bossclone003001_xixue");
-        engine.pump(world, 8000L);   // 第 2 拍（间隔 4s）：拼音大招 260 + 嗜血回 1000
-        assertEquals(1000 - 120 - 260, login.actor.hp);
+        engine.pump(world, 8000L);   // 第 2 拍（间隔 4s）：拼音大招攻击 260（扣血 195）+ 嗜血回 1000
+        assertEquals(1000 - 90 - 195, login.actor.hp);
         assertTrue(boss.hp > boss.maxHp / 2, "嗜血大招应回复 1000");
+    }
+
+    @Test
+    void parryHalvesBossDamageAndBreaksOnEmpty() {
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        engine.useRngForTest(new Random(42));
+        login.actor.parrying = true;
+        engine.onNpcDamaged(world, boss, fx, 4000L);
+        engine.pump(world, 4000L);   // 120 攻击 × 0.5 招架穿透 = 60（扣血 45/瘀血 15）；耐力 100−120 → 0 破招
+        assertEquals(1000 - 45, login.actor.hp);
+        assertEquals(15, login.actor.hitHp);
+        assertEquals(0, login.actor.parryEndurance, "耐力耗尽招架被破");
+        engine.pump(world, 8000L);   // 招架已破（耐力 0）：拼音大招全额 260 → 扣血 195
+        assertEquals(1000 - 45 - 195, login.actor.hp);
     }
 
     @Test
@@ -115,6 +135,7 @@ class AiEventEngineTest {
         LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
         boss.buffs.add("buff_clone003_hanshijin_HPMP");
         boss.hp = 1000;
+        engine.useRngForTest(new Random(42));
         engine.onNpcDamaged(world, boss, fx, 4000L);
         engine.pump(world, 4000L);
         assertTrue(boss.hp > 1000, "HPMP 回血 buff 战斗中每秒回复");
@@ -127,9 +148,131 @@ class AiEventEngineTest {
         world.addDynamic(zlf);
         FxSession fx = attachPlayer();
         LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        engine.useRngForTest(new Random(42));
         engine.onNpcDamaged(world, zlf, fx, 1000L);
-        engine.pump(world, 1000L);   // 9007(OpEvent=24) 立即释放拼音大招 260
-        assertEquals(1000 - 260, login.actor.hp);
+        engine.pump(world, 1000L);   // 9007(OpEvent=24) 立即释放拼音大招（攻击 260，扣血 195）
+        assertEquals(1000 - 195, login.actor.hp);
+    }
+
+    @Test
+    void opEvent70SummonsGroupWithSpread() {
+        NpcInstance zlf = bossNpc("BossClone003001");   // 包 4399 含 9008 召唤组
+        world.addDynamic(zlf);
+        engine.pump(world, 1000L);
+        List<NpcInstance> summons = world.npcs.stream()
+                .filter(n -> "ai_spawn".equals(n.tag)).toList();
+        assertEquals(3, summons.size(), "召唤组应生成 3 只");
+        assertTrue(summons.stream().anyMatch(n -> Math.abs(n.x - zlf.x) > 0.1f), "散开站位");
+    }
+
+    @Test
+    void buffVisualFrameBroadcast() throws Exception {
+        BuffCatalog catalog = new BuffCatalog();
+        catalog.load(tempDir.resolve("share").resolve("skill"));
+        List<byte[]> frames = new java.util.ArrayList<>();
+        AiEventEngine visualEngine = new AiEventEngine(rules, templates, catalog);
+        visualEngine.setBroadcaster(new AiEventEngine.Broadcaster() {
+            @Override
+            public void onSpawned(SceneWorld w, NpcInstance n) {
+            }
+
+            @Override
+            public void onBossAction(SceneWorld w, byte[] frame) {
+                frames.add(frame);
+            }
+        });
+        visualEngine.pump(world, 1000L);   // 出生 9001 加 buff_test_hsj(static=123) → BufferInfo 帧
+        assertTrue(frames.stream().anyMatch(f -> f.length > 0 && f[0] == 0x10),
+                "应广播 0x10 BufferInfo 属性帧");
+    }
+
+    @Test
+    void phaseTriggerCastsBigSkillAt30Percent() {
+        List<byte[]> frames = new java.util.ArrayList<>();
+        engine.setBroadcaster(new AiEventEngine.Broadcaster() {
+            @Override
+            public void onSpawned(SceneWorld w, NpcInstance n) {
+            }
+
+            @Override
+            public void onBossAction(SceneWorld w, byte[] frame) {
+                frames.add(frame);
+            }
+        });
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        engine.useRngForTest(new Random(42));
+        boss.hp = boss.maxHp / 4;   // 25% ≤ 30%
+        engine.onNpcDamaged(world, boss, fx, 4000L);
+        engine.pump(world, 4000L);  // 阶段大招（扣血 195）+ 轮转常规（扣血 90）
+        assertEquals(1000 - 195 - 90, login.actor.hp);
+        assertTrue(frames.stream().anyMatch(f -> f.length > 0 && f[0] == 0x05),
+                "应广播 0x05 喊话 worldInfo");
+    }
+
+    @Test
+    void rollLootGradesByBoxLetter() {
+        String aLoot = CloneLoot.rollLoot("BossBox003005A", "韩似锦", world);
+        assertTrue(aLoot.startsWith("打开「韩似锦的宝箱」，获得了："));
+        List<String> rares = List.of("上天梯", "雁行功", "三才阵秘籍", "门派一阶内功书页",
+                "天魔追魂刀残卷", "铜制装备图谱", "铁制装备图谱");
+        assertTrue(rares.stream().anyMatch(aLoot::contains), "甲等箱必含珍稀掉落");
+        assertTrue(CloneLoot.rollLoot("BossBox003005C", "韩似锦", world).startsWith("打开「韩似锦的宝箱」"));
+    }
+
+    @Test
+    void boxOpenFlowRemovesBoxAndAnnouncesLoot() throws Exception {
+        NpcInstance box = new NpcInstance();
+        box.configId = "BossBox003005A";
+        box.x = 10;
+        box.y = 0;
+        box.z = -20;
+        world.addDynamic(box);
+        assertEquals(0x2103, CloneLoot.menuMarkFor(box, templates));
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 10;
+        login.z = -20;
+        SceneFlow.SceneState st = new SceneFlow.SceneState();
+        st.world = world;
+        st.sentIds.add(box.objectId);
+        SceneManager sm = new SceneManager(tempDir.resolve("share"));
+        CloneLoot.delayOverrideMs = 50;
+        try {
+            assertTrue(CloneLoot.handleMenuAction(fx, login, st, sm,
+                    box.objectId, CloneLoot.FUNC_OPEN_BOX));
+            for (int i = 0; i < 50 && world.npcById(box.objectId) != null; i++) {
+                Thread.sleep(20);
+            }
+            assertNull(world.npcById(box.objectId), "开箱读条后宝箱应移除");
+            List<byte[]> out = new java.util.ArrayList<>();
+            byte[] m;
+            EmbeddedChannel ch = (EmbeddedChannel) fx.channel();
+            while ((m = ch.readOutbound()) != null) {
+                out.add(m);
+            }
+            assertTrue(out.stream().anyMatch(b -> b[0] == 0x05), "应发掉落 worldInfo");
+        } finally {
+            CloneLoot.delayOverrideMs = -1;
+        }
+    }
+
+    @Test
+    void boxOpenRejectedWhenTooFar() {
+        NpcInstance box = new NpcInstance();
+        box.configId = "BossBox003005A";
+        box.x = 10;
+        box.z = -20;
+        world.addDynamic(box);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 40;
+        login.z = -20;   // 距离 30m > OpenRange 3m
+        SceneFlow.SceneState st = new SceneFlow.SceneState();
+        st.world = world;
+        SceneManager sm = new SceneManager(tempDir.resolve("share"));
+        assertTrue(CloneLoot.handleMenuAction(fx, login, st, sm, box.objectId, CloneLoot.FUNC_OPEN_BOX));
+        assertNotNull(world.npcById(box.objectId), "距离不足不应移除宝箱");
     }
 
     @Test
@@ -229,6 +372,14 @@ class AiEventEngineTest {
         assertEquals(2938, realBuffs.staticDataOf("buf_boss_immunity"));
         assertEquals(7946, realBuffs.staticDataOf("buff_bossclone003001_xixue"));
 
+        NpcTemplate realBox = realTemplates.lookup("BossBox003001A");
+        assertEquals("BoxNpc", realBox.scriptClass());
+        assertEquals("周厉风", realBox.name());
+        assertNotNull(realBox.box(), "宝箱交互参数");
+        assertEquals(3f, realBox.box().openRange());
+        assertEquals("interact041", realBox.box().openAction());
+        assertEquals(5000L, realBox.box().delayMs());
+
         realEngine = new AiEventEngine(real, realTemplates);
         SceneWorld realWorld = new SceneWorld("clone003", true);
         NpcInstance hsj = bossNpc("BossClone003005");
@@ -296,7 +447,7 @@ class AiEventEngineTest {
                 Text=暮色之村韩似锦（新）
 
                 [4399]
-                EventGroup=9007
+                EventGroup=9007,9008
                 Text=暮色之村周厉风（新）
                 """, GBK);
         Files.writeString(rule.resolve("ai_editor_event.ini"), """
@@ -347,6 +498,12 @@ class AiEventEngineTest {
                 OpRate=100
                 OpEvent=24
                 Para1=clone003_hsj_sx
+
+                [9008]
+                EventType=1
+                OpRate=100
+                OpEvent=70
+                Para1=SummonA,SummonB,SummonC
                 """, GBK);
         Files.writeString(rule.resolve("condition.ini"), """
                 [100]
@@ -372,17 +529,17 @@ class AiEventEngineTest {
                 Formula=101&102
                 """, GBK);
         Files.writeString(skill.resolve("buff_new.ini"), """
-                [buf_test_hsj]
+                [buff_test_hsj]
                 StaticData=123
                 TargetAddSelf=1
                 """, GBK);
         Files.writeString(npcconfig.resolve("boxnpc.txt"), """
-                编号\t脚本\t名字\t资源\tMaxHP\t技能表
-                ID\tscript\tName\tResource\tMaxHP\ttable@SkillRec
-                BossClone003005\tbossnpc\t韩似锦\tclonenpc\\boss005\t50000\tclone003_hsj_01,1,0;clone003_hsj_sx,1,0
-                BossBox003005A\tboxnpc\t暮色宝箱甲\tclonenpc\\box005a\t1\t
-                BossBox003005B\tboxnpc\t暮色宝箱乙\tclonenpc\\box005b\t1\t
-                BossBox003005C\tboxnpc\t暮色宝箱丙\tclonenpc\\box005c\t1\t
+                编号\t脚本\t名字\t资源\tMaxHP\t技能表\t开箱距离\t开箱动作\t读条
+                ID\tscript\tName\tResource\tMaxHP\ttable@SkillRec\tOpenRange\tOpenAction\tDelayTime
+                BossClone003005\tbossnpc\t韩似锦\tclonenpc\\boss005\t50000\tclone003_hsj_01,1,0;clone003_hsj_sx,1,0\t\t\t
+                BossBox003005A\tboxnpc\t韩似锦\tclonenpc\\box005a\t1\t\t3\tinteract041\t5000
+                BossBox003005B\tboxnpc\t韩似锦\tclonenpc\\box005b\t1\t\t3\tinteract041\t5000
+                BossBox003005C\tboxnpc\t韩似锦\tclonenpc\\box005c\t1\t\t3\tinteract041\t5000
                 """, GBK);
         return share;
     }

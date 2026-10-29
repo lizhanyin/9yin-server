@@ -63,6 +63,30 @@ public final class PlayerActor {
     public int hp = 1000;
     public int mp = 500;
     public int hitHp;
+
+    // 战斗属性骨架（默认对齐旧固定伤害 150；后续接装备/内功/经脉表）
+    public int attack = 150;              // 外功攻击
+    public int defense;                   // 外功防御
+    public int pierce;                    // 破防
+    public int critValue;                 // 暴击值（外功暴击 ← 臂力 1:1；全 0 仍有 5% 基础暴击）
+    public int resilience;                // 坚韧（Resilience，社区名封禁值）：压低来袭基础暴击率
+    public float critDamageBonus;         // 暴伤%加成（基础 100% 之上加算）
+    public float critDamageReduction;     // 暴伤减免%（受击方）
+    public float critRateBonus;           // 暴击率%加成（无上限，可到 100%）
+    public float critRateReduction;       // 被暴击率降低%（受击方）
+    public int accuracy;                  // 命中值（身法换算 1:1，接装备时生效）
+    public int evasion;                   // 闪避值
+    public float hitRateBonus;            // 命中率加成（0.05 = +5%）
+    public float dodgeRateBonus;          // 闪避率加成（0.05 = +5%，受 24% 上限约束）
+    public int damageReduction;           // 外功伤害减免（每 10 点减 1 点伤害）
+
+    // 招架（Wiki Parry Attributes；耐力/恢复默认值为骨架近似，官服基础值未公开）
+    public boolean parrying;              // 218 招架开关
+    public int parryEndurance = 100;      // 招架耐力（当前）
+    public int maxParryEndurance = 100;   // 招架耐力上限
+    public int parryEnduranceRecovery = 5;// 招架耐力每秒被动恢复
+    public int blockRating = 50;          // 格挡值（Wiki：基础 50）
+    public int internalConversion = 100;  // 化劲（近似基础 100 → 招架减半）
     public int qinggongPoint = 150;
     public int maxQinggongPoint = 150;
     public int maxQinggongPointAdd;
@@ -140,12 +164,38 @@ public final class PlayerActor {
 
     // ---------- 战斗（轻量） ----------
 
-    /** 伤害进瘀血/血量层；返回是否刚死亡。 */
+    /** 瘀血占比：受击伤害的 25% 先进瘀血层（骨架近似，官服比例未公开）。 */
+    static final double BRUISE_SPLIT_RATIO = 0.25;
+    /** 瘀血上限：最大血量的 30%，超出部分直接扣血量。 */
+    static final double BRUISE_CAP_RATIO = 0.30;
+
+    /** 当前战斗属性档案（喂给 CombatFormulas）。 */
+    public CombatStats combatStats() {
+        return new CombatStats(attack, defense, pierce,
+                critDamageBonus, critDamageReduction, critRateBonus, critRateReduction,
+                accuracy, evasion, hitRateBonus, dodgeRateBonus,
+                damageReduction, blockRating, internalConversion,
+                critValue, resilience);
+    }
+
+    /** 招架耐力消耗（按来袭攻击力计）：返回是否刚被打破（耐力归零）。 */
+    public boolean drainParry(int cost) {
+        if (cost <= 0 || parryEndurance <= 0) {
+            return false;
+        }
+        parryEndurance = Math.max(0, parryEndurance - cost);
+        return parryEndurance == 0;
+    }
+
+    /** 伤害进瘀血/血量层：25% 进瘀血（战斗中每秒消退 10 点），其余扣血量；返回是否刚死亡。 */
     public boolean applyDamage(int damage) {
         if (damage <= 0 || hp <= 0) {
             return false;
         }
-        hp = Math.max(0, hp - damage);
+        int bruiseCap = (int) (baseMaxHp * BRUISE_CAP_RATIO);
+        int bruise = Math.min((int) (damage * BRUISE_SPLIT_RATIO), Math.max(0, bruiseCap - hitHp));
+        hitHp += bruise;
+        hp = Math.max(0, hp - (damage - bruise));
         return hp == 0;
     }
 
@@ -176,6 +226,11 @@ public final class PlayerActor {
         if (logicState == LOGIC_STATE_FIGHTING && hitHp > 0) {
             hitHp = Math.max(0, hitHp - BRUISE_RECOVERY_PER_SECOND);
             changed = true;
+        }
+        // 招架耐力被动恢复（每秒，不在 vitalUpdate 中同步）
+        if (parryEndurance < maxParryEndurance) {
+            parryEndurance = Math.min(maxParryEndurance,
+                    parryEndurance + Math.max(0, parryEnduranceRecovery));
         }
         if (qinggongPoint < maxQinggongPoint + maxQinggongPointAdd) {
             qinggongPoint = Math.min(maxQinggongPoint + maxQinggongPointAdd,

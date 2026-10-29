@@ -32,6 +32,10 @@ public final class NpcInstance {
     // 轻量战斗
     public int hp;
     public int maxHp;
+    public int attack;        // 外功攻击（模板缺列时 0，走运行时默认值）
+    public int defense;       // 外功防御
+    public int accuracy;      // 命中值
+    public int evasion;       // 闪避值
     public boolean dead;
     public long respawnAtMs;
     public long lastCombatMs;   // 最近一次受击（AI 事件 EventType=6 战斗窗口判据）

@@ -25,7 +25,11 @@ class SvrListHandlerTest {
         byte[] data = new byte[out.readableBytes()];
         out.readBytes(data);
         out.release();
-        assertEquals("svrlist #LocalTest $127.0.0.1 19061 0\r\n",
+        // 应答须与 Go 部署的 loopback-lister.ps1 字节级一致：$ 前缀 + 反斜杠u转义服名（真实 fxlaunch 要求）。
+        // 反斜杠用变量拼接，避免 Java 编译期的 Unicode 转义预处理吃掉字面转义序列。
+        String bs = "\\";
+        assertEquals("$svrlist #" + bs + "u672C" + bs + "u5730" + bs + "u6D4B" + bs + "u8BD5"
+                        + " $127.0.0.1 19061 0\r\n",
                 new String(data, StandardCharsets.US_ASCII));
         channel.runPendingTasks();
         assertFalse(channel.isOpen(), "connection should close after response");

@@ -105,7 +105,8 @@ public final class LoginFlow {
             s.y = stored.getY();
             s.z = stored.getZ();
             s.orient = stored.getOrient();
-            fx.send(S2CPackets.loginSuccessOneRole(s.roleName, s.appearance, epochSec()));
+            fx.send(S2CPackets.loginSuccessOneRole(s.roleName, s.appearance,
+                    s.spawnConfig, s.spawnResource, epochSec()));
             log.info("login account={} role={} (loaded)", s.accountKey, s.roleName);
         } else {
             s.hasRole = false;
@@ -130,14 +131,14 @@ public final class LoginFlow {
         if (name.isEmpty()) {
             name = "LocalHero";
         }
-        List<String> appearance = createRoleStrings(plain);
-        fx.send(S2CPackets.loginSuccessOneRole(name, appearance, epochSec()));
+        List<String> appearance = normalizeCreateAppearance(createRoleStrings(plain));
+        String book = Appearance.get(appearance, 0, "book1");
+        SpawnPoints.SpawnPoint sp = SpawnPoints.forBook(book);
+        fx.send(S2CPackets.loginSuccessOneRole(name, appearance, sp.config(), sp.resource(), epochSec()));
 
         s.roleName = name;
         s.appearance = appearance;
         s.hasRole = true;
-        String book = Appearance.get(appearance, 0, "book1");
-        SpawnPoints.SpawnPoint sp = SpawnPoints.forBook(book);
         s.spawnConfig = sp.config();
         s.spawnResource = sp.resource();
         s.x = sp.x();
@@ -186,10 +187,10 @@ public final class LoginFlow {
             pz = sp.z();
             po = sp.orient();
         }
-        // 权威玩家状态：名字 + 门派（appearance[3]）+ 初始碎银
+        // 权威玩家状态：名字 + 门派（appearance[8]，对齐 Go roleFaction）+ 初始碎银
         PlayerActor actor = new PlayerActor();
         actor.name = s.roleName.isEmpty() ? "LocalHero" : s.roleName;
-        actor.faction = Appearance.get(s.appearance, 3, "");
+        actor.faction = Appearance.faction(s.appearance);
         actor.silver = STARTER_SILVER;
         s.actor = actor;
 
@@ -283,6 +284,16 @@ public final class LoginFlow {
     }
 
     // ---------- C2S 解析 ----------
+
+    /** 建角外观归一化（对齐 Go defaultRoleAppearance）：补齐到 9 段并固定门派段 force_yihua。 */
+    static List<String> normalizeCreateAppearance(List<String> values) {
+        List<String> out = new ArrayList<>(values);
+        while (out.size() < 9) {
+            out.add("");
+        }
+        out.set(8, Appearance.DEFAULT_FACTION);
+        return out;
+    }
 
     /** 角色名：偏移 5 起 UTF-16LE，最长 72 字节，遇 NUL 截断。 */
     static String createRoleName(byte[] msg) {

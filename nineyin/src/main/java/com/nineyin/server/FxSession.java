@@ -1,6 +1,7 @@
 package com.nineyin.server;
 
 import com.nineyin.transport.FxConnection;
+import com.nineyin.transport.FxWireLog;
 import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
 
@@ -34,12 +35,17 @@ public final class FxSession {
 
     /** 发送一个明文 S2C 包（opcode + 载荷），内部完成 XOR/转义/终止符编码。 */
     public void send(byte[] plain) {
+        if (FxWireLog.enabled()) {
+            FxWireLog.send(remoteAddress(), plain);
+        }
         channel.writeAndFlush(plain);
     }
 
     public String remoteAddress() {
-        InetSocketAddress addr = (InetSocketAddress) channel.remoteAddress();
-        return addr == null ? "unknown" : addr.getAddress().getHostAddress() + ":" + addr.getPort();
+        if (channel.remoteAddress() instanceof InetSocketAddress addr) {
+            return addr.getAddress().getHostAddress() + ":" + addr.getPort();
+        }
+        return channel.remoteAddress() == null ? "unknown" : String.valueOf(channel.remoteAddress());
     }
 
     public void close() {

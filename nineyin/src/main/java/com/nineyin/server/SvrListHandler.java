@@ -10,15 +10,16 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 4000 区服列表端口的纯文本协议：客户端发 svrlist\r\n，
- * 服务端回 svrlist #LocalTest $127.0.0.1 19061 0\r\n 后关闭连接。
- * 名字必须 ASCII（中文名会导致部分客户端构建显示异常）。
+ * 4000 区服列表端口的纯文本协议：客户端发 svrlist 后跟 CRLF，
+ * 服务端回 "$svrlist #<SERVER_NAME_ESCAPED> $127.0.0.1 19061 0" + CRLF 后关闭连接。
+ * 应答与 Go 部署的 loopback-lister.ps1 字节级一致（logs/lister/response.bin 实测）：
+ * 真实 fxlaunch 要求 $ 前缀 + 反斜杠u跟4位十六进制的转义服名（客户端解码显示"本地测试"），
+ * 缺一样都解析失败、进不了服务器列表。
  */
 final class SvrListHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(SvrListHandler.class);
-    private static final byte[] RESPONSE =
-            "svrlist #LocalTest $127.0.0.1 19061 0\r\n".getBytes(StandardCharsets.US_ASCII);
+    private static final String SERVER_NAME_ESCAPED = "\\u672C\\u5730\\u6D4B\\u8BD5";
 
     private final String gameHost;
     private final int gamePort;
@@ -34,7 +35,7 @@ final class SvrListHandler extends ChannelInboundHandlerAdapter {
             String req = buf.toString(StandardCharsets.US_ASCII).trim();
             buf.release();
             if (req.contains("svrlist")) {
-                byte[] resp = ("svrlist #LocalTest $" + gameHost + " " + gamePort + " 0\r\n")
+                byte[] resp = ("$svrlist #" + SERVER_NAME_ESCAPED + " $" + gameHost + " " + gamePort + " 0\r\n")
                         .getBytes(StandardCharsets.US_ASCII);
                 ctx.writeAndFlush(Unpooled.wrappedBuffer(resp))
                         .addListener(future -> ctx.close());

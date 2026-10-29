@@ -27,6 +27,25 @@
         </encoder>
     </appender>
 
+    <!-- 线缆级收发包日志（FxWireLog）：独立文件，不进主日志/控制台。
+         TRACE=摘要+全量hex转储（对齐 Go 观测），DEBUG=只留摘要，OFF=关闭。
+         级别可用 -DWIRE_LOG_LEVEL=... 或环境变量覆盖。 -->
+    <appender name="WIRE_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR:-logs}/wire.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR:-logs}/wire.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <logger name="nineyin.wire" level="${WIRE_LOG_LEVEL:-TRACE}" additivity="false">
+        <appender-ref ref="WIRE_FILE"/>
+    </logger>
+
     <root level="DEBUG">
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="FILE"/>

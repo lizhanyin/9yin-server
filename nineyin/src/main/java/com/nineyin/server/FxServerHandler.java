@@ -1,6 +1,7 @@
 package com.nineyin.server;
 
 import com.nineyin.transport.FxConnection;
+import com.nineyin.transport.FxWireLog;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import org.slf4j.Logger;
@@ -38,6 +39,9 @@ public final class FxServerHandler extends SimpleChannelInboundHandler<byte[]> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, byte[] plain) {
         FxSession session = ctx.channel().attr(FxSession.ATTR).get();
+        if (FxWireLog.enabled()) {
+            FxWireLog.recv(session.remoteAddress(), plain);
+        }
         router.dispatch(session, plain);
     }
 

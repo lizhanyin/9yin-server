@@ -17,6 +17,7 @@ public final class SchemaApplier {
     private static final String[] SCHEMA_SCRIPTS = {
             "/schema/0001_init_roles.sql",
             "/schema/0002_data_tables.sql",
+            "/schema/0003_server_list_and_terms.sql",
     };
 
     public int apply(DsnParser.Dsn dsn) throws SQLException {

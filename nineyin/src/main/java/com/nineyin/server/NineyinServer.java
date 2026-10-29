@@ -258,6 +258,7 @@ public final class NineyinServer implements SummerApp {
                 snap.sessionId = id;
                 snap.remote = session.remoteAddress();
                 gmHub.attach(id, snap);
+                log.info("session={} remote={} opened", id, session.remoteAddress());
             }
 
             @Override
@@ -265,6 +266,7 @@ public final class NineyinServer implements SummerApp {
                 sessions.remove(session);
                 Long id = session.channel().attr(GM_SESSION_ID).get();
                 if (id != null) {
+                    log.info("session={} remote={} closed", id, session.remoteAddress());
                     sessionById.remove(id);
                     gmHub.detach(id);
                 }

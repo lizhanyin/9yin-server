@@ -336,24 +336,26 @@ public final class S2CPackets {
     /**
      * 单角色登录成功包。角色条目为 6 个类型化字段：
      * (2,i32=0) (2,i32=0) (7,ucs2 角色名) (7,ucs2 role_para 36 段) (2,i32=0) (5,f64=0)。
+     * sceneConfig/sceneResource 为角色所在（下线）场景，f[24] 背景名键由 scenes.ini 解析。
      */
     public static byte[] loginSuccessOneRole(String name, java.util.List<String> appearance,
-                                             long epochSec) {
+                                             String sceneConfig, String sceneResource, long epochSec) {
         byte[] base = loginSuccessNoRole(epochSec);
         base[0x25] = 1; // 角色数 u32 @0x25
 
         Appearance.RoleVisual visual = Appearance.resolveVisual(appearance);
         String book = Appearance.get(appearance, 0, "book1");
-        String faction = Appearance.get(appearance, 3, "0");
 
+        // 字段位对齐 Go oneRoleLoginSuccess：门派取 appearance[8]（force_yihua 缺省），
+        // f24 场景名用客户端本地化键，f25/f32 下发 book 原值，f33 发外观 hair 原值。
         String[] fields = new String[36];
         java.util.Arrays.fill(fields, "");
         fields[0] = String.valueOf(visual.sex());
-        fields[1] = faction.isEmpty() ? "0" : faction;
+        fields[1] = Appearance.faction(appearance);
         fields[2] = "0";
         fields[3] = "0";
         fields[4] = "1";
-        fields[5] = visual.face();
+        fields[5] = Appearance.get(appearance, 2, "");
         fields[6] = "1";
         fields[7] = visual.hair();
         fields[9] = visual.cloth();
@@ -362,11 +364,11 @@ public final class S2CPackets {
         fields[21] = "stand";
         fields[22] = "127.0.0.1";
         fields[23] = "title001";
-        fields[24] = Appearance.sceneDisplayName(book);
-        fields[25] = Appearance.bookDisplayName(book);
+        fields[24] = SceneNames.sceneNameKey(sceneConfig, sceneResource);
+        fields[25] = book;
         fields[31] = "0";
-        fields[32] = Appearance.bookDisplayName(book);
-        fields[33] = visual.hair();
+        fields[32] = book;
+        fields[33] = Appearance.get(appearance, 4, "obj\\char\\b_hair\\b_hair1");
         fields[35] = "0";
         String rolePara = String.join(",", fields);
 

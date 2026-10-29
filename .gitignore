@@ -4,8 +4,11 @@ target/
 /logs/
 /test/
 /statistics/
-
+build
 *.iml
+
+/__pycache__/
+/logs/
 -----
 
 *.ctxt

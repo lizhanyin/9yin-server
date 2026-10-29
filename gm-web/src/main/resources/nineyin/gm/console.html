@@ -876,6 +876,16 @@
           onclick="preset('tiguan_34')">冥岳</button><button onclick="preset('tiguan_35')">净天宫</button>
       </section>
       <section>
+        <h2>世界 BOSS</h2>
+        <p class="muted">
+          定时刷新由 normalboss/jhsceneboss 四表驱动：门派固定点按每日时间档刷新，
+          江湖 BOSS 每日 12:00 在随机场景随机坐标降世、24:00 前未被击败则消失。击杀不重生，等下个时间档。
+        </p>
+        <button onclick="command({ action: 'worldboss_spawn' })">强制生成全部</button>
+        <button onclick="command({ action: 'worldboss_clear' })">清除在场BOSS</button>
+        <button onclick="command({ action: 'worldboss_list' })">查看在场情况</button>
+      </section>
+      <section>
         <h2>副本</h2>
         <p class="muted">
           列表来自服务端已安装的 cloneinfo、clonecolset

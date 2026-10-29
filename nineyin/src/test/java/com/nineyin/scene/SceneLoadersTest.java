@@ -212,11 +212,67 @@ class SceneLoadersTest {
         assertEquals(101.95f, synth.get(0).x, 0.01f);
         assertEquals(-100f, synth.get(0).z, 0.01f);
 
-        // 世界模式（旧行为不变）：SubSceneNo 跳过、_creator 清单过滤、活动 id 由 SceneManager 剥离
+        // 世界模式：SubSceneNo 静态摆放跳过、attack 系 _creator 照常展开（野外随机刷怪），
+        // 活动 id 不在加载器剥离（SceneManager 职责）
         List<NpcInstance> world = SceneCreatorLoader.load("clone003", tempDir.resolve("npc_creator"), false);
-        assertEquals(5, world.size());
-        assertTrue(world.stream().noneMatch(n -> n.x == 40f), "SubSceneNo 摆放在世界模式跳过");
-        assertTrue(world.stream().noneMatch(n -> "NpcClone003015".equals(n.configId)), "_creator 文件跳过");
+        assertEquals(8, world.size(), "5 条常驻静态 + creator 展开 3 条");
+        assertTrue(world.stream().noneMatch(n -> n.x == 40f), "SubSceneNo 静态摆放在世界模式跳过");
+        assertEquals(2, world.stream().filter(n -> "NpcClone003015".equals(n.configId)).count(),
+                "amount=2 圆周展开条目应加载");
+        assertTrue(world.stream().anyMatch(n -> "NpcClone003005".equals(n.configId) && n.x == 101f),
+                "creator 显式 position 条目应加载");
+    }
+
+    /** 世界模式（野外图）：attacknpc_creator 随机刷怪点展开，SubSceneNo 副本子摆位与采集系 _creator 跳过。 */
+    @Test
+    void creatorLoaderWorldModeExpandsWildAttackCreators() throws Exception {
+        Path dir = tempDir.resolve("npc_creator/scene08_test");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("file.ini"), """
+                [file]
+                0=FuncNpc.xml
+                1=AttackNpc_Creator.xml
+                2=GatherNpc_Creator.xml
+                """, GBK);
+        Files.writeString(dir.resolve("FuncNpc.xml"), """
+                <root><item x="1" y="1" z="1" id="npc_guard_001"/></root>
+                """, GBK);
+        Files.writeString(dir.resolve("AttackNpc_Creator.xml"), """
+                <root><randomcreator>
+                  <creator No="c1" x="1000" y="39" z="400" radius="3.0" WakeupRange="10.0" ChaseRange="30.0">
+                    <item No="1" id="monf080100" amount="2" refreshtime="30000" desc="马贼"/>
+                  </creator>
+                  <creator No="c2" x="271" y="30" z="-330" radius="3.0" SubSceneNo="232">
+                    <item No="1" id="monf080200" amount="2" refreshtime="30000"/>
+                  </creator>
+                  <creator No="c3" x="300" y="30" z="-400" radius="3.0">
+                    <item No="1" id="monf080300" amount="1" refreshtime="30000" SubSceneNo="234"/>
+                  </creator>
+                </randomcreator></root>
+                """, GBK);
+        Files.writeString(dir.resolve("GatherNpc_Creator.xml"), """
+                <root><randomcreator>
+                  <creator No="g1" x="50" y="1" z="50" radius="2.0">
+                    <item No="1" id="gather_herbs_01" amount="4"/>
+                  </creator>
+                </randomcreator></root>
+                """, GBK);
+
+        List<NpcInstance> npcs = SceneCreatorLoader.load("scene08_test", tempDir.resolve("npc_creator"));
+        // 1 个功能 NPC + c1 圆周展开 2 条；c2/c3（SubSceneNo）与采集 creator 不加载
+        assertEquals(3, npcs.size());
+        List<NpcInstance> wild = npcs.stream()
+                .filter(n -> "monf080100".equals(n.configId)).toList();
+        assertEquals(2, wild.size(), "amount=2 圆周展开");
+        assertTrue(wild.get(0).monster, "attack 文件 → 怪物");
+        assertEquals(30000L, wild.get(0).refreshMs, "refreshtime=30000 视为毫秒");
+        assertEquals(1001.95f, wild.get(0).x, 0.01f, "半径 3*0.65 圆周首点");
+        assertEquals(400f, wild.get(0).z, 0.01f);
+        assertEquals(39f, wild.get(0).y, "y 取 creator 值");
+        assertTrue(npcs.stream().noneMatch(n -> n.configId.startsWith("monf0802") || n.configId.startsWith("monf0803")),
+                "SubSceneNo 副本子摆位在世界模式跳过");
+        assertTrue(npcs.stream().noneMatch(n -> n.configId.startsWith("gather")),
+                "采集系 _creator 在世界模式仍跳过");
     }
 
     /** 副本场景世界：不剥离 clone/event 摆放，dungeonProgress 从 1 开始，resetWorld 重建。 */
@@ -347,6 +403,31 @@ class SceneLoadersTest {
                 "叶楼凯等 Boss 常驻摆位");
         long refreshed = world.npcs.stream().filter(n -> n.refreshMs > 0).count();
         assertTrue(refreshed >= 10, "宝箱/水桶等 RefreshTime 摆位应 ≥10，实际 " + refreshed);
+    }
+
+    /** 真实 share 数据冒烟：野外大地图随机刷怪点应展开（scene01 静态 42 + creator 736 条 ≈ 1082）。 */
+    @Test
+    void realWildSceneRandomCreatorsSmoke() {
+        String env = System.getenv("NINEYIN_SERVER_ROOT");
+        Assumptions.assumeTrue(env != null && !env.isEmpty(), "NINEYIN_SERVER_ROOT 未设置，跳过真实数据冒烟");
+        Path share = Path.of(env, "resources", "modern", "share");
+        Assumptions.assumeTrue(Files.isDirectory(share.resolve("creator/npc_creator/scene01_youyunshiliuzhou")),
+                "share 数据缺 scene01 摆放目录");
+
+        SceneManager mgr = new SceneManager(share);
+        SceneWorld world = mgr.world("scene01_youyunshiliuzhou");
+        assertFalse(world.cloneScene, "scene01 应识别为野外场景");
+        assertTrue(world.npcs.size() >= 1000,
+                "scene01 静态+随机刷怪应 ≥1000，实际 " + world.npcs.size());
+        long monsters = world.npcs.stream().filter(n -> n.monster).count();
+        assertTrue(monsters >= 900, "怪物（monf 系）应 ≥900，实际 " + monsters);
+        long refreshed = world.npcs.stream().filter(n -> n.refreshMs > 0).count();
+        assertTrue(refreshed >= 900, "带 RefreshTime 重生的随机刷怪点应 ≥900，实际 " + refreshed);
+
+        // scene08 混有 630 个 SubSceneNo 副本子摆位 creator，野外加载时应被剔除
+        SceneWorld saiwei = mgr.world("scene08_saiwaidamo");
+        assertFalse(saiwei.cloneScene);
+        assertTrue(saiwei.npcs.size() >= 800, "scene08 野外刷怪应 ≥800，实际 " + saiwei.npcs.size());
     }
 
     /** 构造完整 share 根：npcconfig + creator + mappath（book1 → born04）。 */

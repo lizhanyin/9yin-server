@@ -63,9 +63,12 @@ public final class SceneCreatorLoader {
         return p.getFileName().toString();
     }
 
-    /** 清单/目录里跳过的非永久摆放文件；副本模式下 *_creator（randomcreator）保留。 */
+    /**
+     * 清单/目录里跳过的非永久摆放文件。*_creator（randomcreator）副本模式全保留；
+     * 世界模式仅放行 attack 系（attacknpc_creator = 野外随机刷怪点），采集/宝箱系仍跳过。
+     */
     private static boolean skippedName(String lowName, boolean cloneScene) {
-        if (cloneScene && lowName.contains("_creator")) {
+        if (lowName.contains("_creator") && (cloneScene || lowName.contains("attack"))) {
             return false;
         }
         return lowName.contains("eventtrigger") || lowName.contains("_creator")
@@ -81,6 +84,8 @@ public final class SceneCreatorLoader {
      * cloneScene=true 为副本模式：保留 SubSceneNo 副本摆放、展开 *_creator 的
      * randomcreator（显式 position 优先，无 position 时按中心+半径圆周展开），
      * 并解析 NpcProgress 波次门控与 RefreshTime 重生间隔。
+     * 世界模式下 attacknpc_creator（野外随机刷怪点）同样展开，但跳过带
+     * SubSceneNo 的副本子摆位；其余 *_creator（采集/宝箱）不进本方法。
      */
     public static List<NpcInstance> load(String sceneResource, Path creatorRoot, boolean cloneScene) {
         List<NpcInstance> npcs = new ArrayList<>();
@@ -115,9 +120,9 @@ public final class SceneCreatorLoader {
             } catch (IOException e) {
                 continue;
             }
-            if (cloneScene && fname.contains("_creator")) {
+            if (fname.contains("_creator")) {
                 int[] oid = {nextOid};
-                expandRandomCreators(content, isAttack, npcs, oid);
+                expandRandomCreators(content, isAttack, npcs, oid, cloneScene);
                 nextOid = oid[0];
                 continue;
             }
@@ -187,12 +192,16 @@ public final class SceneCreatorLoader {
      * randomcreator 展开：&lt;creator x y z radius NpcProgress&gt; 内的 &lt;item id amount&gt;
      * 带 &lt;position x z ay&gt; 用显式坐标；无 position 时按 amount 在中心+radius*0.65
      * 圆周均匀展开（对齐 Go expandRandomCreatorItem 的确定性分布）。
+     * 世界模式跳过带 SubSceneNo 的副本子摆位（scene08 等野外目录混有副本 creator）。
      */
     private static void expandRandomCreators(String content, boolean isAttack,
-                                             List<NpcInstance> out, int[] oid) {
+                                             List<NpcInstance> out, int[] oid, boolean cloneScene) {
         Matcher creators = CREATOR_OPEN_TAG.matcher(content);
         while (creators.find()) {
             MapAttr creatorAttr = parseAttrs(creators.group());
+            if (!cloneScene && creatorAttr.floatOr("SubSceneNo", 0) > 0.5f) {
+                continue;
+            }
             int bodyStart = creators.end();
             int bodyEnd = content.indexOf("</creator>", bodyStart);
             if (bodyEnd < 0) {
@@ -208,6 +217,9 @@ public final class SceneCreatorLoader {
                 MapAttr item = parseAttrs(body.substring(itemTags.get(i)[0], itemTags.get(i)[1]));
                 String cfg = item.get("id");
                 if (cfg == null || cfg.isEmpty()) {
+                    continue;
+                }
+                if (!cloneScene && item.floatOr("SubSceneNo", 0) > 0.5f) {
                     continue;
                 }
                 int chunkEnd = i + 1 < itemTags.size() ? itemTags.get(i + 1)[0] : body.length();

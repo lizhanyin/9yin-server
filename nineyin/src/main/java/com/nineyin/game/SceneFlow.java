@@ -550,7 +550,9 @@ public final class SceneFlow {
                 .i32(PropertyId.HP_RATIO, npc.maxHp > 0 ? (int) ((long) npc.hp * 100 / npc.maxHp) : 0);
         if (npc.hp == 0) {
             npc.dead = true;
-            npc.respawnAtMs = now + respawnDelay(npc);
+            // 世界 BOSS 不走固定摆位重生（WorldBossManager 负责回收与下轮时间档）
+            npc.respawnAtMs = WorldBossManager.TAG.equals(npc.tag)
+                    ? Long.MAX_VALUE : now + respawnDelay(npc);
             npcBatch.u8(PropertyId.DEAD, 1);
         }
         fx.send(npcBatch.build());

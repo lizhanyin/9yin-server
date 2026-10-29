@@ -102,13 +102,50 @@ public final class GmActions {
             Map.entry("shenji", "ini\\scene\\school21_shenjiying,school21,-45.400,18.600,-46.900,0.000"),
             Map.entry("xingmiao", "ini\\scene\\school23_xingmiaoge,school23,259.598,246.446,70.540,0.000"),
             Map.entry("tianya", "ini\\scene\\school25_tianya,school25,1745.635,18.729,1066.640,0.000"),
-            Map.entry("shenjihui", "ini\\scene\\school31_shenjihui,school31,-48.765,-153.637,-4770.149,0.000"));
+            Map.entry("shenjihui", "ini\\scene\\school31_shenjihui,school31,-48.765,-153.637,-4770.149,0.000"),
+            // 踢馆传送（GM 网页「踢馆传送」面板，34 个；坐标取各势力 NPC 簇质心，
+            // 双龙堡数据实际摆在君子堂（面板标峨眉，峨眉地图无摆位））
+            Map.entry("tiguan_1", "ini\\scene\\city05_ChengDu,city05,907.800,22.400,775.800,0.000"),
+            Map.entry("tiguan_2", "ini\\scene\\born04_QianDengZhen,born04,401.300,-4.600,986.100,0.000"),
+            Map.entry("tiguan_3", "ini\\scene\\city05_ChengDu,city05,278.000,76.400,776.800,0.000"),
+            Map.entry("tiguan_4", "ini\\scene\\city05_ChengDu,city05,584.800,38.800,282.900,0.000"),
+            Map.entry("tiguan_5", "ini\\scene\\city05_ChengDu,city05,296.300,105.800,214.600,0.000"),
+            Map.entry("tiguan_6", "ini\\scene\\born02_ERenGU,born02,-50.700,8.400,-32.100,0.000"),
+            Map.entry("tiguan_7", "ini\\scene\\born03_YanYuZhuang,born03,266.400,26.500,1271.300,0.000"),
+            Map.entry("tiguan_8", "ini\\scene\\scene02_PengLaiXianJing,scene02,-114.700,49.400,610.400,0.000"),
+            Map.entry("tiguan_9", "ini\\scene\\scene05_NianLuoBa,scene05,1773.700,89.300,1065.500,0.000"),
+            Map.entry("tiguan_10", "ini\\scene\\scene07_MeiHuaLing,scene07,780.400,36.500,574.700,0.000"),
+            Map.entry("tiguan_11", "ini\\scene\\school02_GaiBang,school02,550.500,53.200,885.100,0.000"),
+            Map.entry("tiguan_12", "ini\\scene\\school08_ShaoLin,school08,-220.000,40.000,484.400,0.000"),
+            Map.entry("tiguan_13", "ini\\scene\\born03_YanYuZhuang,born03,1009.800,80.700,499.300,0.000"),
+            Map.entry("tiguan_14", "ini\\scene\\scene03_FanHuangPingYuan,scene03,1102.800,-14.400,897.400,0.000"),
+            Map.entry("tiguan_15", "ini\\scene\\city01_YanJing,city01,1540.200,-3.100,1489.900,0.000"),
+            Map.entry("tiguan_16", "ini\\scene\\school05_TangMen,school05,823.300,30.500,751.900,0.000"),
+            Map.entry("tiguan_17", "ini\\scene\\school05_TangMen,school05,72.300,16.800,765.400,0.000"),
+            Map.entry("tiguan_18", "ini\\scene\\city01_YanJing,city01,349.100,-143.700,1375.000,0.000"),
+            Map.entry("tiguan_20", "ini\\scene\\city04_LuoYang,city04,1459.200,17.000,-195.600,0.000"),
+            Map.entry("tiguan_21", "ini\\scene\\born02_ERenGU,born02,-391.500,43.200,843.600,0.000"),
+            Map.entry("tiguan_22", "ini\\scene\\scene06_LingXiaoCheng,scene06,580.400,152.400,125.300,0.000"),
+            Map.entry("tiguan_23", "ini\\scene\\city01_YanJing,city01,1451.600,107.400,-87.100,0.000"),
+            Map.entry("tiguan_24", "ini\\scene\\scene08_SaiWaiDaMo,scene08,181.000,31.600,-312.000,0.000"),
+            Map.entry("tiguan_25", "ini\\scene\\born03_YanYuZhuang,born03,-608.600,13.600,703.700,0.000"),
+            Map.entry("tiguan_26", "ini\\scene\\city04_LuoYang,city04,422.700,-0.400,943.700,0.000"),
+            Map.entry("tiguan_27", "ini\\scene\\born01_MoHeZhen,born01,-205.800,164.900,841.900,0.000"),
+            Map.entry("tiguan_28", "ini\\scene\\city04_LuoYang,city04,18.500,-4.100,320.000,0.000"),
+            Map.entry("tiguan_29", "ini\\scene\\school05_TangMen,school05,995.800,40.400,345.300,0.000"),
+            Map.entry("tiguan_30", "ini\\scene\\school07_WuDang,school07,884.600,-6.300,764.500,0.000"),
+            Map.entry("tiguan_31", "ini\\scene\\school01_JinYiWei,school01,1088.200,44.900,649.400,0.000"),
+            Map.entry("tiguan_32", "ini\\scene\\scene08_SaiWaiDaMo,scene08,1322.000,44.500,928.100,0.000"),
+            Map.entry("tiguan_33", "ini\\scene\\school03_JunZiTang,school03,31.300,0.700,1074.600,0.000"),
+            Map.entry("tiguan_34", "ini\\scene\\adv148,adv148,-75.800,17.100,-142.300,0.000"),
+            Map.entry("tiguan_35", "ini\\scene\\adv153,adv153,-13.000,54.700,-150.400,0.000"));
 
     private final SceneManager sceneManager;
     private final RoleStore roleStore;
     private final SceneSwitcher switcher;
     private final SceneFlow sceneFlow;
     private final NinJiuZhi ninjiuzhi;
+    private final WorldBossManager worldBoss;
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher) {
         this(sceneManager, roleStore, switcher, null, null);
@@ -121,11 +158,17 @@ public final class GmActions {
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
                      SceneFlow sceneFlow, NinJiuZhi ninjiuzhi) {
+        this(sceneManager, roleStore, switcher, sceneFlow, ninjiuzhi, null);
+    }
+
+    public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
+                     SceneFlow sceneFlow, NinJiuZhi ninjiuzhi, WorldBossManager worldBoss) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.switcher = switcher;
         this.sceneFlow = sceneFlow;
         this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
+        this.worldBoss = worldBoss;
     }
 
     /** 执行一条命令；返回错误消息（null = 成功）。未知动作返回提示。 */
@@ -259,6 +302,31 @@ public final class GmActions {
             }
             case "action_native_fishing" -> {
                 fx.send(CustomPackets.nativeAction(1, 1, "interact268"));
+                return null;
+            }
+            // ---------- 世界 BOSS（定时刷新由 WorldBossManager 周期驱动） ----------
+            case "worldboss_spawn" -> {
+                if (worldBoss == null) {
+                    return "世界BOSS模块未启用";
+                }
+                int spawned = worldBoss.forceSpawnAll();
+                fx.send(S2CPackets.worldInfo(0,
+                        "世界BOSS：强制生成 " + spawned + " 个刷新点。" + worldBoss.describe()));
+                return null;
+            }
+            case "worldboss_clear" -> {
+                if (worldBoss == null) {
+                    return "世界BOSS模块未启用";
+                }
+                int removed = worldBoss.clearAll();
+                fx.send(S2CPackets.worldInfo(0, "世界BOSS：已清除 " + removed + " 只在场BOSS"));
+                return null;
+            }
+            case "worldboss_list" -> {
+                if (worldBoss == null) {
+                    return "世界BOSS模块未启用";
+                }
+                fx.send(S2CPackets.worldInfo(0, worldBoss.describe()));
                 return null;
             }
             // ---------- 暮色剧情验证（clone003） ----------

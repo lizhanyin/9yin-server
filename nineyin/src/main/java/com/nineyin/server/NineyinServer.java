@@ -10,6 +10,7 @@ import com.nineyin.game.NinJiuZhi;
 import com.nineyin.game.QinggongCatalog;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.game.SelectFlow;
+import com.nineyin.game.WorldBossManager;
 import com.nineyin.gm.GmCatalog;
 import com.nineyin.gm.GmCommand;
 import com.nineyin.gm.GmHttpServer;
@@ -67,6 +68,7 @@ public final class NineyinServer implements SummerApp {
     private final ShopRepository shopRepository;
     private final GmActions gmActions;
     private final SceneFlow sceneFlow;
+    private final WorldBossManager worldBossManager;
     private final List<FxSession> sessions = new CopyOnWriteArrayList<>();
     private final Map<Long, FxSession> sessionById = new ConcurrentHashMap<>();
     private final AtomicLong sessionIds = new AtomicLong();
@@ -74,6 +76,7 @@ public final class NineyinServer implements SummerApp {
     private final GmHttpServer gmServer;
     private TickScheduler clockScheduler;
     private TickScheduler actorScheduler;
+    private TickScheduler bossScheduler;
 
     public NineyinServer() {
         this.roleStore = openRoleStore();
@@ -96,6 +99,25 @@ public final class NineyinServer implements SummerApp {
         buffCatalog.load(shareRoot.resolve("skill"));
         AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates(), buffCatalog);
         sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi);
+        worldBossManager = new WorldBossManager(sceneManager);
+        worldBossManager.load(shareRoot);
+        worldBossManager.setListener(new WorldBossManager.Listener() {
+            @Override
+            public void onSpawned(SceneWorld world, NpcInstance boss, String notice) {
+                broadcastSpawn(world, boss);
+                broadcastWorldNotice(notice);
+            }
+
+            @Override
+            public void onDefeated(SceneWorld world, NpcInstance boss, String notice) {
+                broadcastWorldNotice(notice);
+            }
+
+            @Override
+            public void onDespawned(SceneWorld world, NpcInstance boss) {
+                removeNpcFromSessions(world, boss);
+            }
+        });
         aiEngine.setBroadcaster(new AiEventEngine.Broadcaster() {
             @Override
             public void onSpawned(SceneWorld world, NpcInstance n) {
@@ -118,7 +140,7 @@ public final class NineyinServer implements SummerApp {
         sceneFlow.register(router);
         new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher()).register(router);
         gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow,
-                sceneFlow.ninjiuzhi());
+                sceneFlow.ninjiuzhi(), worldBossManager);
     }
 
     public FxOpcodeRouter router() {
@@ -174,6 +196,34 @@ public final class NineyinServer implements SummerApp {
             sent++;
         }
         log.info("ninjiuzhi stage {} -> {} broadcast to {} sessions", oldStage, newStage, sent);
+    }
+
+    /** 全服系统通告（世界 BOSS 降世/被击败）。 */
+    private void broadcastWorldNotice(String text) {
+        byte[] notice = S2CPackets.worldInfo(0, text);
+        for (FxSession fx : sessions) {
+            LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+            if (login == null || !login.uiBootstrapped) {
+                continue;
+            }
+            fx.send(notice);
+        }
+    }
+
+    /** 从同场景已下发会话移除 NPC（BOSS 存在时段结束回收）。 */
+    private void removeNpcFromSessions(SceneWorld world, NpcInstance npc) {
+        byte[] remove = S2CPackets.removeObject(npc.objectId, npc.ownerId);
+        for (FxSession fx : sessions) {
+            LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+            if (login == null) {
+                continue;
+            }
+            SceneFlow.SceneState st = sceneFlow.stateOf(fx);
+            if (st.world != world || !st.sentIds.remove(npc.objectId)) {
+                continue;
+            }
+            fx.send(remove);
+        }
     }
 
     /**
@@ -279,6 +329,17 @@ public final class NineyinServer implements SummerApp {
             }
         });
         actorScheduler.start();
+
+        // 世界 BOSS 定时刷新（10s 粒度对齐分钟级时间档足够）
+        bossScheduler = new TickScheduler("nineyin-worldboss", 10000);
+        bossScheduler.addTask((tick, now) -> {
+            try {
+                worldBossManager.tick(LocalDateTime.now());
+            } catch (Exception e) {
+                log.error("world boss tick error", e);
+            }
+        });
+        bossScheduler.start();
         log.info("nineyin server started (share root: {}, gm: {})",
                 status.serverRoot, gmServer.url());
     }
@@ -339,6 +400,9 @@ public final class NineyinServer implements SummerApp {
         }
         if (actorScheduler != null) {
             actorScheduler.close();
+        }
+        if (bossScheduler != null) {
+            bossScheduler.close();
         }
         gmServer.stop();
         roleStore.flush();

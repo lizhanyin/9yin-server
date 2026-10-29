@@ -61,6 +61,11 @@ public final class SceneManager {
         return worlds.computeIfAbsent(key, k -> loadWorld(sceneResource));
     }
 
+    /** 已加载场景查询（不触发加载）；世界 BOSS 回收等只处理在场场景。 */
+    public SceneWorld worldOrNull(String sceneResource) {
+        return worlds.get(sceneResource.toLowerCase(Locale.ROOT));
+    }
+
     /** 丢弃场景缓存（GM 重置副本用）：下次 world() 会从数据重建。 */
     public void resetWorld(String sceneResource) {
         worlds.remove(sceneResource.toLowerCase(Locale.ROOT));

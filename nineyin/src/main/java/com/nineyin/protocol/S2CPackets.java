@@ -364,8 +364,8 @@ public final class S2CPackets {
         fields[21] = "stand";
         fields[22] = "127.0.0.1";
         fields[23] = "title001";
-        fields[24] = SceneNames.sceneNameKey(sceneConfig, sceneResource);
-        fields[25] = book;
+        fields[24] = SceneNames.sceneDisplayName(sceneConfig, sceneResource);
+        fields[25] = SceneNames.bookIntroKey(book);
         fields[31] = "0";
         fields[32] = book;
         fields[33] = Appearance.get(appearance, 4, "obj\\char\\b_hair\\b_hair1");

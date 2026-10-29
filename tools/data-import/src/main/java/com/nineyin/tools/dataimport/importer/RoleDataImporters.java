@@ -3,12 +3,17 @@ package com.nineyin.tools.dataimport.importer;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 /**
@@ -47,6 +52,10 @@ public final class RoleDataImporters {
         list.add(ConfigImporters.simple("stances", "待机站姿.json → role_stances", RoleDataImporters::stances));
         list.add(ConfigImporters.simple("skill-progress", "skills.json → role_skill_progress（level>0 或 fill>0）",
                 RoleDataImporters::skillProgress));
+        list.add(ConfigImporters.simple("equip",
+                "equip.json(+equip.recovered.json) → role_equip_items/role_bag_items", RoleDataImporters::equip));
+        list.add(ConfigImporters.simple("shortcuts", "快捷栏位按键.json → role_shortcuts",
+                RoleDataImporters::shortcuts));
         list.add(ConfigImporters.simple("origin-progress", "origin/身份进度.json → role_origin_progress",
                 RoleDataImporters::originProgress));
         list.add(ConfigImporters.simple("repute", "repute/声望进度.json → role_repute", RoleDataImporters::repute));
@@ -796,5 +805,245 @@ public final class RoleDataImporters {
             }
         }
         System.out.printf("  声望 %d 行%n", rows[0]);
+    }
+
+    /** 快捷栏位按键.json → role_shortcuts（技能栏/物品栏/功能键，kind: skill/item/func/zhenfa）。 */
+    private static void shortcuts(ImportContext ctx) throws SQLException {
+        JSONObject root = ctx.readJson("快捷栏位按键.json");
+        int[] rows = counter();
+        if (root != null) {
+            ctx.clearTable("role_shortcuts");
+            try (ImportContext.Batcher b = ctx.batch(
+                    "INSERT INTO role_shortcuts (role_id, seq, shortcut_index, kind, id) "
+                            + "VALUES (?, ?, ?, ?, ?)")) {
+                eachRole(ctx, root.getJSONObject("roles"), (id, v) -> {
+                    JSONObject o = obj(v);
+                    JSONArray list = o != null ? o.getJSONArray("shortcuts") : arr(v);
+                    if (list == null) {
+                        return;
+                    }
+                    try {
+                        int seq = 0;
+                        for (int i = 0; i < list.size(); i++) {
+                            JSONObject sc = list.getJSONObject(i);
+                            if (sc == null || ConfigImporters.str(sc, "id").isEmpty()) {
+                                continue;
+                            }
+                            b.ps().setLong(1, id);
+                            b.ps().setInt(2, ++seq);
+                            b.ps().setInt(3, sc.getIntValue("index"));
+                            b.ps().setString(4, ConfigImporters.str(sc, "kind"));
+                            b.ps().setString(5, ConfigImporters.str(sc, "id"));
+                            b.add();
+                            rows[0]++;
+                        }
+                    } catch (SQLException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                });
+            }
+        }
+        System.out.printf("  快捷栏 %d 行%n", rows[0]);
+    }
+
+    /** game_items 里可用的物品补充信息（缺列时的默认来源）。 */
+    private static final class ItemInfo {
+        int itemType;
+        int viewId;
+        String equipType = "";
+        String script = "";
+        String name = "";
+        int maxAmount;
+        int artPack;
+        int hardiness;
+        int maxHardiness;
+    }
+
+    /** equip.json 的条目（equip/bag 共用字段形态）。 */
+    private static final class EquipEntry {
+        int slot;
+        String configId = "";
+        int itemType;
+        int amount = 1;
+        String equipType = "";
+        JSONArray affixes;
+    }
+
+    /**
+     * equip.json → role_equip_items/role_bag_items。
+     * equip.recovered.json（若存在）按角色覆盖 equip.json 的 roles 条目——
+     * 用于从损坏备份抢救回来的存档。装备条目补充 hardiness/max_hardiness/
+     * art_pack/equip_type（源缺列时取 game_items 默认值），词缀进 affixes JSON。
+     */
+    private static void equip(ImportContext ctx) throws SQLException {
+        JSONObject root = ctx.readJson("equip.json");
+        if (root == null) {
+            System.out.println("  equip.json 缺失，跳过");
+            return;
+        }
+        JSONObject roles = root.getJSONObject("roles");
+        if (roles == null) {
+            roles = new JSONObject();
+        }
+        JSONObject recovered = ctx.readJson("equip.recovered.json");
+        if (recovered != null && recovered.getJSONObject("roles") != null) {
+            for (Map.Entry<String, Object> e : recovered.getJSONObject("roles").entrySet()) {
+                roles.put(e.getKey(), e.getValue());
+            }
+            System.out.println("  已叠加 equip.recovered.json 的 "
+                    + recovered.getJSONObject("roles").size() + " 个角色");
+        }
+        Map<String, ItemInfo> items = loadItemInfos(ctx, roles);
+        ensureAffixesColumn(ctx);
+        ctx.clearTable("role_bag_items");
+        ctx.clearTable("role_equip_items");
+        int[] equipRows = counter();
+        int[] bagRows = counter();
+        try (ImportContext.Batcher be = ctx.batch(
+                "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                        + "hardiness, max_hardiness, slot, art_pack, affixes) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))");
+             ImportContext.Batcher bb = ctx.batch(
+                     "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                             + "view_id, name, script) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+            eachRole(ctx, roles, (id, v) -> {
+                JSONObject o = obj(v);
+                if (o == null) {
+                    return;
+                }
+                try {
+                    int seq = 0;
+                    for (EquipEntry e : parseEntries(o.getJSONArray("equip"))) {
+                        ItemInfo info = items.get(e.configId);
+                        be.ps().setLong(1, id);
+                        be.ps().setInt(2, ++seq);
+                        be.ps().setString(3, e.configId);
+                        be.ps().setInt(4, info != null && e.itemType == 0 ? info.itemType : e.itemType);
+                        be.ps().setString(5, e.equipType.isEmpty() && info != null ? info.equipType : e.equipType);
+                        be.ps().setInt(6, info != null ? info.hardiness : 0);
+                        be.ps().setInt(7, info != null ? info.maxHardiness : 0);
+                        be.ps().setInt(8, e.slot);
+                        be.ps().setInt(9, info != null ? info.artPack : 0);
+                        ConfigImporters.setJson(be, 10, e.affixes);
+                        be.add();
+                        equipRows[0]++;
+                    }
+                    for (EquipEntry e : parseEntries(o.getJSONArray("bag"))) {
+                        ItemInfo info = items.get(e.configId);
+                        bb.ps().setLong(1, id);
+                        bb.ps().setInt(2, ++seq);
+                        bb.ps().setInt(3, e.slot);
+                        bb.ps().setString(4, e.configId);
+                        bb.ps().setInt(5, info != null && e.itemType == 0 ? info.itemType : e.itemType);
+                        bb.ps().setInt(6, e.amount);
+                        bb.ps().setInt(7, info != null ? info.viewId : 1);
+                        bb.ps().setString(8, info != null ? info.name : "");
+                        bb.ps().setString(9, info != null ? info.script : "");
+                        bb.add();
+                        bagRows[0]++;
+                    }
+                } catch (SQLException ex) {
+                    throw new RuntimeException(ex);
+                }
+            });
+        }
+        System.out.printf("  装备 %d 行，背包 %d 行%n", equipRows[0], bagRows[0]);
+    }
+
+    private static List<EquipEntry> parseEntries(JSONArray arr) {
+        List<EquipEntry> out = new ArrayList<>();
+        if (arr == null) {
+            return out;
+        }
+        for (int i = 0; i < arr.size(); i++) {
+            JSONObject e = arr.getJSONObject(i);
+            if (e == null || ConfigImporters.str(e, "config_id").isEmpty()) {
+                continue;
+            }
+            EquipEntry entry = new EquipEntry();
+            entry.slot = e.getIntValue("slot");
+            entry.configId = ConfigImporters.str(e, "config_id");
+            entry.itemType = e.getIntValue("item_type");
+            entry.amount = e.getIntValue("amount") <= 0 ? 1 : e.getIntValue("amount");
+            entry.equipType = ConfigImporters.str(e, "equip_type");
+            entry.affixes = e.getJSONArray("affixes");
+            out.add(entry);
+        }
+        return out;
+    }
+
+    /** 汇总 roles 里出现过的 config_id，一次性从 game_items 捞补充信息。 */
+    private static Map<String, ItemInfo> loadItemInfos(ImportContext ctx, JSONObject roles) throws SQLException {
+        Set<String> wanted = new java.util.HashSet<>();
+        for (Map.Entry<String, Object> e : roles.entrySet()) {
+            JSONObject o = obj(e.getValue());
+            if (o == null) {
+                continue;
+            }
+            for (EquipEntry entry : parseEntries(o.getJSONArray("equip"))) {
+                wanted.add(entry.configId);
+            }
+            for (EquipEntry entry : parseEntries(o.getJSONArray("bag"))) {
+                wanted.add(entry.configId);
+            }
+        }
+        Map<String, ItemInfo> out = new HashMap<>();
+        if (wanted.isEmpty()) {
+            return out;
+        }
+        List<String> ids = new ArrayList<>(wanted);
+        for (int from = 0; from < ids.size(); from += 200) {
+            List<String> chunk = ids.subList(from, Math.min(ids.size(), from + 200));
+            StringBuilder in = new StringBuilder();
+            for (int i = 0; i < chunk.size(); i++) {
+                if (i > 0) {
+                    in.append(',');
+                }
+                in.append('?');
+            }
+            try (PreparedStatement ps = ctx.conn.prepareStatement(
+                    "SELECT item_id, item_type, view_id, equip_type, script, item_name, "
+                            + "max_amount, art_pack, hardiness, max_hardiness "
+                            + "FROM game_items WHERE item_id IN (" + in + ")")) {
+                for (int i = 0; i < chunk.size(); i++) {
+                    ps.setString(i + 1, chunk.get(i));
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ItemInfo info = new ItemInfo();
+                        info.itemType = rs.getInt(2);
+                        info.viewId = rs.getInt(3);
+                        info.equipType = rs.getString(4);
+                        info.script = rs.getString(5);
+                        info.name = rs.getString(6);
+                        info.maxAmount = rs.getInt(7);
+                        info.artPack = rs.getInt(8);
+                        info.hardiness = rs.getInt(9);
+                        info.maxHardiness = rs.getInt(10);
+                        out.put(rs.getString(1), info);
+                    }
+                }
+            }
+        }
+        System.out.printf("  game_items 匹配 %d/%d 个 config_id%n", out.size(), ids.size());
+        return out;
+    }
+
+    /** role_equip_items 补挂 affixes JSON 列（词缀 pack_rec/prop_built），幂等。 */
+    private static void ensureAffixesColumn(ImportContext ctx) {
+        try (PreparedStatement ps = ctx.conn.prepareStatement(
+                "SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() "
+                        + "AND table_name = 'role_equip_items' AND column_name = 'affixes'");
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                return;
+            }
+            try (Statement st = ctx.conn.createStatement()) {
+                st.execute("ALTER TABLE role_equip_items ADD COLUMN affixes JSON NULL");
+            }
+            System.out.println("  role_equip_items.affixes 列已补挂");
+        } catch (SQLException e) {
+            throw new RuntimeException("affixes 列检查/补挂失败: " + e.getMessage(), e);
+        }
     }
 }

@@ -4,6 +4,7 @@ import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
+import com.nineyin.protocol.InventoryPackets;
 import com.nineyin.protocol.S2CPackets;
 import com.nineyin.protocol.SkillPackets;
 import com.nineyin.scene.SceneManager;
@@ -99,11 +100,18 @@ public final class SceneSwitcher {
 
     /** 0x0C 销毁玩家对象后必须重授的记录行与视图（九阴志门控与登录链一致）。 */
     public void restorePlayerAttachments(FxSession fx, LoginSession login, SceneFlow.SceneState st) {
+        // 参考实现：重进场景后重建 16 背包视图 + 装备纸娃娃 View 1 并重发物品
+        CustomPackets.sendAll(fx, InventoryPackets.bagViewCreateFrames());
+        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames());
+        if (login.inventoryFrames != null) {
+            CustomPackets.sendAll(fx, login.inventoryFrames);
+        }
         CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
         CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames(ninjiuzhi::taskOpen));
         CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
                 id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
-        CustomPackets.sendAll(fx, SkillPackets.starterSkillFrames());
+        CustomPackets.sendAll(fx, login.roleSkillFrames != null
+                ? login.roleSkillFrames : SkillPackets.starterSkillFrames());
         if (login.actor != null) {
             fx.send(BootstrapPackets.sitcrossShortcutRow());
             for (PlayerActor.Shortcut sc : login.actor.shortcuts()) {

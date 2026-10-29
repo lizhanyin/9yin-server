@@ -1,0 +1,152 @@
+package com.nineyin.protocol;
+
+import com.nineyin.db.RoleInventoryStore;
+import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/** 库存 view 帧（对齐 F 盘参考 exe 抓包的布局）。 */
+class InventoryPacketsTest {
+
+    @Test
+    void bagViewCreates() {
+        List<byte[]> frames = InventoryPackets.bagViewCreateFrames();
+        assertEquals(17, frames.size());
+        // 首个主页：cap 90 + BaseCap 属性
+        byte[] v121 = frames.get(0);
+        assertEquals(0x15, v121[0]);
+        assertEquals(121, leU16(v121, 1));
+        assertEquals(90, leU16(v121, 3));
+        assertEquals(1, leU16(v121, 5));                 // 属性数
+        assertEquals(2213, leU16(v121, 7));              // BaseCap
+        assertEquals(18, leU32(v121, 9));
+        // 装备纸娃娃 View 1：cap 48 无属性
+        byte[] doll = frames.get(16);
+        assertEquals(1, leU16(doll, 1));
+        assertEquals(48, leU16(doll, 3));
+        assertEquals(0, leU16(doll, 5));
+
+        List<byte[]> bags = InventoryPackets.itemBagFrames();
+        assertEquals(4, bags.size());
+        byte[] ib = bags.get(0);
+        assertEquals(0x18, ib[0]);
+        assertEquals(3, leU16(ib, 1));                    // 扩展页 view 3
+        assertEquals(4, leU16(ib, 5));
+        assertTrue(new String(ib, 13, 11, StandardCharsets.US_ASCII).startsWith("ITEMBAG"));
+    }
+
+    @Test
+    void viewRemoveLayout() {
+        byte[] v = InventoryPackets.viewRemove(2, 3);
+        assertEquals(0x19, v[0]);
+        assertEquals(5, v.length);
+        assertEquals(2, leU16(v, 1));
+        assertEquals(3, leU16(v, 3));
+    }
+
+    @Test
+    void equipmentViewAddLayout() {
+        RoleInventoryStore.Equipped hat = new RoleInventoryStore.Equipped(
+                1, "helmet_sell_10101", 140, "Hat", 100, 100, "");
+        byte[] msg = InventoryPackets.equipmentViewAdd(hat, "147dd5f2efa2e6bf");
+        assertEquals(0x18, msg[0]);
+        assertEquals(1, leU16(msg, 1));     // View 1 纸娃娃
+        assertEquals(1, leU16(msg, 3));     // 对象索引 = 身体槽位
+        int count = leU16(msg, 5);
+        // 测试环境无 resources 时 Photo/EffectPackID 缺省省略（14），有资源时 16
+        assertTrue(count >= 14 && count <= 16, "count=" + count);
+        assertTrue(containsProp(msg, 1439));
+        assertTrue(containsProp(msg, 1887));
+        assertTrue(containsProp(msg, 1891));
+        assertEquals(140, propValue(msg, 1887));
+        assertEquals(100, propValue(msg, 1933));   // Hardiness
+        assertEquals(100, propValue(msg, 1934));   // MaxHardiness
+    }
+
+    @Test
+    void bagViewRoutesAndFrames() {
+        assertEquals(2, InventoryPackets.bagViewOf(1));
+        assertEquals(121, InventoryPackets.bagViewOf(2));
+        assertEquals(123, InventoryPackets.bagViewOf(3));
+        assertEquals(125, InventoryPackets.bagViewOf(4));
+
+        List<byte[]> frames = InventoryPackets.inventoryFrames(2,
+                List.of(new RoleInventoryStore.Equipped(1, "helmet_sell_10101", 140, "Hat", 100, 100, "")),
+                List.of(new RoleInventoryStore.Bagged(8, "yaopin_00200", 1, 10, 1, "止血草")));
+        // 1 装备 + 道具页成对版本帧（0x19 view2 + add + 0x19 view174）
+        assertEquals(4, frames.size());
+        assertEquals(0x18, frames.get(0)[0]);
+        assertEquals(1, leU16(frames.get(0), 1));       // View 1
+        assertEquals(0x19, frames.get(1)[0]);
+        assertEquals(2, leU16(frames.get(1), 1));
+        assertEquals(0x18, frames.get(2)[0]);
+        assertEquals(2, leU16(frames.get(2), 1));       // 道具页
+        assertEquals(8, leU16(frames.get(2), 3));       // 背包格位
+        assertEquals(6, leU16(frames.get(2), 5));       // 道具 6 属性
+        assertEquals(0x19, frames.get(3)[0]);
+        assertEquals(174, leU16(frames.get(3), 1));     // 镜像页
+    }
+
+    @Test
+    void roleSkillFramesReferenceLayout() {
+        List<byte[]> skills = InventoryPackets.roleSkillFrames(List.of(
+                new RoleInventoryStore.SkillRow("CS_yhwq_hsqs01", 1, 11, 0, 156550, 12636, 1000, 0)));
+        assertEquals(2, skills.size());
+        assertEquals(0x15, skills.get(0)[0]);
+        assertEquals(1, leU16(skills.get(0), 3));       // capacity = 1
+        byte[] add = skills.get(1);
+        assertEquals(40, leU16(add, 1));
+        assertEquals(10, leU16(add, 5));                // 参考抓包的 10 属性布局
+        assertTrue(containsProp(add, 2235));            // StaticData
+        assertEquals(12636, propValue(add, 2235));
+        assertEquals(156550, propValue(add, 764));      // TotalFillValue
+        assertEquals(11, propValue(add, 2081));         // MaxLevel
+    }
+
+    // ---- 解析辅助：按 u16 索引在属性区线性找值（u8/i32 通吃小值） ----
+
+    private static boolean containsProp(byte[] msg, int want) {
+        return propOffset(msg, want) >= 0;
+    }
+
+    private static int propValue(byte[] msg, int want) {
+        int off = propOffset(msg, want);
+        int idx = leU16(msg, off);
+        int after = off + 2;
+        // 官方表：Level(1464)/RecoverFlag(1969) 为 u8，其余 i32/f32
+        return idx == 1464 || idx == 1969 ? msg[after] : leU32(msg, after);
+    }
+
+    private static int propOffset(byte[] msg, int want) {
+        int p = 7;
+        while (p + 2 <= msg.length) {
+            int idx = leU16(msg, p);
+            if (idx == want) {
+                return p;
+            }
+            p += 2;
+            if (idx == 1439 || idx == 1891 || idx == 184 || idx == 1936 || idx == 1952) {
+                int len = leU32(msg, p);
+                p += 4 + len;
+            } else if (idx == 1464 || idx == 1969) {
+                p += 1;
+            } else {
+                p += 4;
+            }
+        }
+        return -1;
+    }
+
+    private static int leU16(byte[] b, int off) {
+        return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8);
+    }
+
+    private static int leU32(byte[] b, int off) {
+        return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8)
+                | ((b[off + 2] & 0xFF) << 16) | ((b[off + 3] & 0xFF) << 24);
+    }
+}

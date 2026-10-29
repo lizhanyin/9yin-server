@@ -17,6 +17,25 @@ public interface RoleStore {
     default void flush() {
     }
 
+    /**
+     * 用户须知签署状态：{agreed(0/1), agreedAtEpochSec(0=未知)}；账号无行按未同意。
+     */
+    default long[] termsState(String accountKey) {
+        return new long[]{0, 0};
+    }
+
+    /**
+     * 标记账号已同意用户须知（幂等，重复同意不刷新时间；账号无行则补建）。
+     * 返回 true = 本次由未同意转为同意。
+     */
+    default boolean markTermsAgreed(String accountKey) {
+        return false;
+    }
+
+    /** 重置为未同意（清 agreed_terms 与时间）。 */
+    default void resetTermsAgreed(String accountKey) {
+    }
+
     default String backendName() {
         return getClass().getSimpleName();
     }

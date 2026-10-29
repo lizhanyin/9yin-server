@@ -33,3 +33,17 @@ SET @ddl_agreed_terms = IF(@has_agreed_terms = 0,
 PREPARE stmt_agreed_terms FROM @ddl_agreed_terms;
 EXECUTE stmt_agreed_terms;
 DEALLOCATE PREPARE stmt_agreed_terms;
+
+-- agreed_terms_at：同意时间（2026-10-29 补，监控访问数据；服务端 MySqlRoleStore 启动亦幂等补挂）
+SET @has_agreed_terms_at = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'accounts'
+    AND COLUMN_NAME = 'agreed_terms_at'
+);
+SET @ddl_agreed_terms_at = IF(@has_agreed_terms_at = 0,
+  'ALTER TABLE accounts ADD COLUMN agreed_terms_at TIMESTAMP(6) NULL COMMENT ''同意用户须知时间'' AFTER agreed_terms',
+  'SELECT 1');
+PREPARE stmt_agreed_terms_at FROM @ddl_agreed_terms_at;
+EXECUTE stmt_agreed_terms_at;
+DEALLOCATE PREPARE stmt_agreed_terms_at;

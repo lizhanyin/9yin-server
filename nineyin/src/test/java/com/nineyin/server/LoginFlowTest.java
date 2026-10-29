@@ -147,27 +147,34 @@ class LoginFlowTest {
         assertEquals("测试侠客", roleStore.get(accountKey).getName());
         assertEquals("city05", roleStore.get(accountKey).getSceneResource());
 
-        // 3) 选角 → 进场景链：0x09 属性表 / 0x0A 记录表 / 8 背包视图(0x15) / 0x0B / 0x0D / 0x1F / 权威 0x10
+        // 3) 选角 → 进场景链：0x09 属性表 / 0x0A 记录表 / 17 视图(8主页+8扩展页+装备纸娃娃)
+        //     + 4 扩展包对象 / 0x0B / 0x0D / 0x1F / 权威 0x10
         send(new byte[]{0x04});
         List<byte[]> enter = drainOutbound();
-        assertEquals(14, enter.size());
+        assertEquals(27, enter.size());
         assertEquals(0x09, op(enter.get(0)));
         assertEquals(2424, (enter.get(0)[1] & 0xFF) | ((enter.get(0)[2] & 0xFF) << 8),
                 "official property table entry count");
         assertEquals(0x0A, op(enter.get(1)));
         assertEquals(116, enter.get(1).length);
-        assertEquals(0x0B, op(enter.get(10)));
-        byte[] entryScene = enter.get(10);
+        assertEquals(0x0B, op(enter.get(23)));
+        byte[] entryScene = enter.get(23);
         // 属性 1439 ConfigID 从头 15 字节之后：u16 索引 + u32 长度 + 串
         assertEquals(1439, (entryScene[15] & 0xFF) | ((entryScene[16] & 0xFF) << 8));
-        assertEquals(0x0D, op(enter.get(11)));
-        assertTrue(enter.get(11).length > 0x3F, "AddObject must carry property body");
-        assertEquals(0x1F, op(enter.get(12)));
-        assertEquals(25, enter.get(12).length);
-        assertEquals(0x10, op(enter.get(13)), "authoritative vital batch");
-        // 8 个背包视图（121/2/123/125 容量 132；122/3/124/126 容量 16）
+        assertEquals(0x0D, op(enter.get(24)));
+        assertTrue(enter.get(24).length > 0x3F, "AddObject must carry property body");
+        assertEquals(0x1F, op(enter.get(25)));
+        assertEquals(25, enter.get(25).length);
+        assertEquals(0x10, op(enter.get(26)), "authoritative vital batch");
+        // 17 个视图：8 主页(cap 90+BaseCap) + 8 扩展页(cap 2) + 装备纸娃娃 View 1(cap 48)
         List<byte[]> bagViews = enter.stream().filter(f -> op(f) == 0x15).toList();
-        assertEquals(8, bagViews.size());
+        assertEquals(17, bagViews.size());
+        // 4 个扩展包对象（道具/装备扩展页各 2 个 ITEMBAG_006）
+        List<byte[]> itemBags = enter.stream()
+                .filter(f -> op(f) == 0x18 && ((f[1] & 0xFF) | ((f[2] & 0xFF) << 8)) == 3
+                        || op(f) == 0x18 && ((f[1] & 0xFF) | ((f[2] & 0xFF) << 8)) == 122)
+                .toList();
+        assertEquals(4, itemBags.size());
 
         // 4) ClientReady → 清菜单 + 清选区(0x10x4 + 0x1D) + UI bootstrap
         send(new byte[]{0x09});

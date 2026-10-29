@@ -7,6 +7,8 @@ import java.util.Map;
 /** 已持久化的角色（对应 C++ StoredRole / roles.json 条目）。 */
 public final class StoredRole {
 
+    /** 库内角色 ID（get() 回填；0 表示未知/尚未入库）。 */
+    private long roleId;
     private String name = "";
     private List<String> appearance = List.of();
     private String sceneConfig = "";
@@ -21,6 +23,14 @@ public final class StoredRole {
      * Java 端不解释其含义，读写均原样透传，保证与原生 C++ 版互通不丢数据。
      */
     private Map<String, Object> extra = new LinkedHashMap<>();
+
+    public long getRoleId() {
+        return roleId;
+    }
+
+    public void setRoleId(long roleId) {
+        this.roleId = roleId;
+    }
 
     public String getName() {
         return name;

@@ -5,6 +5,7 @@ import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
+import com.nineyin.protocol.InventoryPackets;
 import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
@@ -68,6 +69,8 @@ public final class SceneFlow {
     private final SceneSwitcher switcher;
     private final AiEventEngine ai;   // 可空：未接线时无 AI 事件（测试旧路径）
     private final NinJiuZhi ninjiuzhi;  // 全服阶段门控（缺省 alwaysOpen）
+    /** 库存查询（MySQL 后端；JSON 后端为 null，msgId=30 移动回退日志）。 */
+    private final com.nineyin.db.RoleInventoryStore inventory;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -121,6 +124,7 @@ public final class SceneFlow {
         this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
         this.switcher = new SceneSwitcher(sceneManager, roleStore, this, this.ninjiuzhi);
         this.ai = ai;
+        this.inventory = com.nineyin.db.RoleInventoryStore.from(roleStore);
     }
 
     /** 九阴志全局门控（GM / 广播接线用）。 */
@@ -375,6 +379,7 @@ public final class SceneFlow {
         int mid = msg.msgId();
         switch (mid) {
             case 240 -> handleSit(fx, session, msg);
+            case 30 -> handleMoveItem(fx, session, msg);
             case 200 -> handleShortcutSet(fx, session, msg);
             case 201 -> handleShortcutRemove(fx, session, msg);
             case 211 -> handleSkill(fx, session, msg);
@@ -388,13 +393,57 @@ public final class SceneFlow {
                     fx.send(S2CPackets.objectPropertyInt(223, session.operateMode));
                 }
             }
+            // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认）
+            case 819 -> handleTermsSign(fx, session);
             // 商店购买流程（64 打开 / 70 购买 / 71 关闭）：S2C 响应格式待抓包钉死，先对齐 C++ 记日志
             case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
             case 70 -> log.info("shop msg=70 buy argc={} (response pending capture)", msg.size());
             case 71 -> log.info("shop msg=71 close argc={}", msg.size());
             default -> {
+                // 监控：未识别 custom 消息按会话首现打 INFO（含解析后的参数），
+                // 用于发现"同意用户协议"等稀疏客户端事件的 msgId；重复出现降为 DEBUG 防刷屏
+                if (session.seenCustomMsgIds.add(mid)) {
+                    log.info("custom msgId={} first this session account={} argc={} vals={}",
+                            mid, session.accountKey, msg.size(), summarizeVals(msg));
+                } else {
+                    log.debug("custom msgId={} argc={} vals={}", mid, msg.size(), summarizeVals(msg));
+                }
             }
         }
+    }
+
+    /**
+     * 819 用户须知签署：落库 agreed_terms/agreed_terms_at（幂等，重复点击不刷新时间），
+     * 回推属性 269 签署时间 / 270 签署标志，客户端据此停止周期性重弹协议框。
+     */
+    private void handleTermsSign(FxSession fx, LoginSession session) {
+        if (session.accountKey.isEmpty()) {
+            return;
+        }
+        boolean first = roleStore.markTermsAgreed(session.accountKey);
+        long[] t = roleStore.termsState(session.accountKey);
+        session.termsAgreed = (int) t[0];
+        session.termsAgreedAtSec = t[1];
+        fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_LAST_SIGN_TIME, (int) t[1]));
+        fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_SIGN_COUNT, (int) t[0]));
+        log.info("terms sign accepted account={} first={} signCount={} at={} ip={}",
+                session.accountKey, first, t[0], t[1], fx.remoteAddress());
+    }
+
+    /** 参数摘要：全部值以空格连接，单值与总长截断（移动/按键串等长参数不至于淹没日志）。 */
+    private static String summarizeVals(CustomMsg msg) {
+        StringBuilder sb = new StringBuilder(48);
+        for (int i = 0; i < msg.size() && sb.length() < 160; i++) {
+            if (i > 0) {
+                sb.append(' ');
+            }
+            String v = msg.val(i).toString();
+            if (v.length() > 48) {
+                v = v.substring(0, 48) + "…";
+            }
+            sb.append(v);
+        }
+        return sb.toString();
     }
 
     /** 打坐：cmd 1=坐下(102) 0/2=起身(0)；权威状态在 actor，并按 tick 恢复血蓝。 */
@@ -421,6 +470,196 @@ public final class SceneFlow {
     }
 
     /** 200 设快捷键：idx, kind(str 或 int→skill), id；同 index 替换（先 0x12 删旧行）。 */
+    /**
+     * msgId=30 移动物品（参考服日志钉死语义）：args=[fromView, fromSlot, toView, toSlot]。
+     * 卸下=[1,槽位,121,0]（0=自动选格）；穿上=[121,格位,1,身体槽位]；背包页间移动同构。
+     * 帧：源/目标按 0x19 ViewRemove 清格（页与镜像成对），0x18 ViewAdd 落位；
+     * 库内同步移动并重建 inventoryFrames 缓存（0x0C 重进场景用）。
+     */
+    private void handleMoveItem(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (msg.size() < 5 || session.roleId == 0 || session.liveBagged == null
+                || session.liveEquipped == null || inventory == null) {
+            log.info("move 30 ignored: no live inventory role={} argc={}",
+                    session.roleId, msg.size());
+            return;
+        }
+        int fromView = intArg(msg, 1);
+        int fromSlot = intArg(msg, 2);
+        int toView = intArg(msg, 3);
+        int toSlot = intArg(msg, 4);
+        long roleId = session.roleId;
+        java.util.List<byte[]> out = new java.util.ArrayList<>();
+        if (fromView == InventoryPackets.VIEW_EQUIP_DOLL) {
+            // 卸下：装备栏 → 背包装备页
+            com.nineyin.db.RoleInventoryStore.Equipped item = removeEquipped(session, fromSlot);
+            if (item == null) {
+                log.info("move 30 equip[{}] empty", fromSlot);
+                return;
+            }
+            int view = bagWireToCategory(toView) != 0 ? toView : InventoryPackets.VIEW_EQUIP_BAG;
+            int slot = toSlot > 0 ? toSlot : freeBagSlot(session.liveBagged, view);
+            out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_DOLL, fromSlot));
+            out.add(InventoryPackets.viewRemove(view, slot));
+            out.add(InventoryPackets.bagViewAdd(
+                    new com.nineyin.db.RoleInventoryStore.Bagged(
+                            slot, item.configId(), item.itemType(), 1,
+                            bagWireToCategory(view), ""),
+                    InventoryPackets.uniqueId(roleId, "bag", slot), view));
+            int mirror = InventoryPackets.mirrorOf(view);
+            if (mirror != 0) {
+                out.add(InventoryPackets.viewRemove(mirror, slot));
+            }
+            session.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
+                    slot, item.configId(), item.itemType(), 1, bagWireToCategory(view), ""));
+            if (!inventory.moveEquipToBag(roleId, fromSlot, slot)) {
+                log.warn("move 30 equip[{}]->bag[{}] persist failed", fromSlot, slot);
+            }
+            log.info("move 30 equip[{}]->bag[{}] config={}", fromSlot, slot, item.configId());
+        } else if (toView == InventoryPackets.VIEW_EQUIP_DOLL) {
+            // 穿上：背包页 → 装备栏（目标槽被占时旧装备让位到空闲背包格）
+            int category = bagWireToCategory(fromView);
+            com.nineyin.db.RoleInventoryStore.Bagged item = removeBagged(session, fromSlot, category);
+            if (item == null) {
+                log.info("move 30 bag[{}:{}] empty", fromView, fromSlot);
+                return;
+            }
+            com.nineyin.db.RoleInventoryStore.Equipped old = removeEquipped(session, toSlot);
+            int fromMirror = InventoryPackets.mirrorOf(fromView);
+            out.add(InventoryPackets.viewRemove(fromView, fromSlot));
+            if (fromMirror != 0) {
+                out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
+            }
+            if (old != null) {
+                int oldSlot = freeBagSlot(session.liveBagged, InventoryPackets.VIEW_EQUIP_BAG);
+                out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_BAG, oldSlot));
+                out.add(InventoryPackets.bagViewAdd(
+                        new com.nineyin.db.RoleInventoryStore.Bagged(
+                                oldSlot, old.configId(), old.itemType(), 1, 2, ""),
+                        InventoryPackets.uniqueId(roleId, "bag", oldSlot),
+                        InventoryPackets.VIEW_EQUIP_BAG));
+                int m = InventoryPackets.mirrorOf(InventoryPackets.VIEW_EQUIP_BAG);
+                if (m != 0) {
+                    out.add(InventoryPackets.viewRemove(m, oldSlot));
+                }
+                session.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
+                        oldSlot, old.configId(), old.itemType(), 1, 2, ""));
+                if (!inventory.swapEquipSlot(roleId, toSlot, oldSlot)) {
+                    log.warn("move 30 swap equip[{}]->bag[{}] persist failed", toSlot, oldSlot);
+                }
+            }
+            out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_DOLL, toSlot));
+            com.nineyin.db.RoleInventoryStore.Equipped worn = new com.nineyin.db.RoleInventoryStore.Equipped(
+                    toSlot, item.configId(), item.itemType(),
+                    equipTypeOf(item.configId()), 100, 100, "");
+            out.add(InventoryPackets.equipmentViewAdd(
+                    worn, InventoryPackets.uniqueId(roleId, "equip", toSlot)));
+            session.liveEquipped.add(worn);
+            if (!inventory.moveBagToEquip(roleId, fromSlot, toSlot, category)) {
+                log.warn("move 30 bag[{}]->equip[{}] persist failed", fromSlot, toSlot);
+            }
+            log.info("move 30 bag[{}:{}]->equip[{}] config={}{}",
+                    fromView, fromSlot, toSlot, item.configId(),
+                    old != null ? " (swapped out " + old.configId() + ")" : "");
+        } else {
+            // 背包页间/页内移动
+            int category = bagWireToCategory(fromView);
+            com.nineyin.db.RoleInventoryStore.Bagged item = removeBagged(session, fromSlot, category);
+            if (item == null) {
+                log.info("move 30 bag[{}:{}] empty", fromView, fromSlot);
+                return;
+            }
+            int view = toView != 0 ? toView : InventoryPackets.VIEW_TOOL_PAGE;
+            int slot = toSlot > 0 ? toSlot : freeBagSlot(session.liveBagged, view);
+            int fromMirror = InventoryPackets.mirrorOf(fromView);
+            out.add(InventoryPackets.viewRemove(fromView, fromSlot));
+            if (fromMirror != 0) {
+                out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
+            }
+            out.add(InventoryPackets.viewRemove(view, slot));
+            com.nineyin.db.RoleInventoryStore.Bagged moved =
+                    new com.nineyin.db.RoleInventoryStore.Bagged(
+                            slot, item.configId(), item.itemType(), item.amount(),
+                            bagWireToCategory(view), "");
+            out.add(InventoryPackets.bagViewAdd(
+                    moved, InventoryPackets.uniqueId(roleId, "bag", slot), view));
+            int mirror = InventoryPackets.mirrorOf(view);
+            if (mirror != 0) {
+                out.add(InventoryPackets.viewRemove(mirror, slot));
+            }
+            session.liveBagged.add(moved);
+            if (!inventory.moveBagSlot(roleId, fromSlot, category, slot, bagWireToCategory(view))) {
+                log.warn("move 30 bag[{}]->bag[{}] persist failed", fromSlot, slot);
+            }
+            log.info("move 30 bag[{}:{}]{}->bag[{}:{}] config={}",
+                    fromView, fromSlot, category, view, slot, item.configId());
+        }
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                roleId, session.liveEquipped, session.liveBagged);
+    }
+
+    private static int intArg(CustomMsg msg, int idx) {
+        CustomMsg.Val v = msg.val(idx);
+        return v != null && v.asExactInt() ? v.intOrZero() : 0;
+    }
+
+    /** 背包 wire 视图 → game_items 分类（1道具 2装备 3材料 4任务；未知 0）。 */
+    private static int bagWireToCategory(int view) {
+        return switch (view) {
+            case InventoryPackets.VIEW_TOOL_PAGE -> 1;
+            case InventoryPackets.VIEW_EQUIP_BAG -> 2;
+            case InventoryPackets.VIEW_MATERIAL_PAGE -> 3;
+            case InventoryPackets.VIEW_TASK_PAGE -> 4;
+            default -> 0;
+        };
+    }
+
+    private static com.nineyin.db.RoleInventoryStore.Equipped removeEquipped(
+            LoginSession session, int slot) {
+        for (int i = 0; i < session.liveEquipped.size(); i++) {
+            if (session.liveEquipped.get(i).slot() == slot) {
+                return session.liveEquipped.remove(i);
+            }
+        }
+        return null;
+    }
+
+    private static com.nineyin.db.RoleInventoryStore.Bagged removeBagged(
+            LoginSession session, int slot, int category) {
+        for (int i = 0; i < session.liveBagged.size(); i++) {
+            var b = session.liveBagged.get(i);
+            if (b.slot() == slot && (category == 0 || b.viewId() == category)) {
+                return session.liveBagged.remove(i);
+            }
+        }
+        return null;
+    }
+
+    /** 目标背包页第一个空格（1 起，无空位返回 max+1，上限 90）。 */
+    private static int freeBagSlot(List<com.nineyin.db.RoleInventoryStore.Bagged> bagged, int view) {
+        int category = bagWireToCategory(view);
+        boolean[] used = new boolean[96];
+        for (var b : bagged) {
+            if (b.viewId() == category && b.slot() > 0 && b.slot() < used.length) {
+                used[b.slot()] = true;
+            }
+        }
+        for (int i = 1; i < used.length; i++) {
+            if (!used[i]) {
+                return i;
+            }
+        }
+        return 91;
+    }
+
+    /** 穿上时装备类型（equipment.ini；缺失空串，帧里同样容忍）。 */
+    private static String equipTypeOf(String configId) {
+        var st = com.nineyin.protocol.EquipmentModels.itemStatic(configId);
+        return st != null ? st.equipType() : "";
+    }
+
     private void handleShortcutSet(FxSession fx, LoginSession session, CustomMsg msg) {
         if (session.actor == null || msg.size() < 4) {
             return;

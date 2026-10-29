@@ -39,6 +39,10 @@ public final class JsonRoleStore implements RoleStore {
     private final Path file;
     private final Map<String, StoredRole> roles = new ConcurrentHashMap<>();
 
+    /** 用户须知签署状态（agreed, agreedAtSec），独立 sidecar 文件，不动原生存档格式。 */
+    private final Path termsFile;
+    private final Map<String, long[]> terms = new ConcurrentHashMap<>();
+
     /** 原生存档包装的元数据，读档时捕获、落盘时原样带回（Java 端不解释）。 */
     private long archiveVersion = 1;
     private final Map<String, Object> identities = new LinkedHashMap<>();
@@ -48,7 +52,9 @@ public final class JsonRoleStore implements RoleStore {
 
     public JsonRoleStore(Path file) {
         this.file = file;
+        this.termsFile = file.resolveSibling("terms.json");
         load();
+        loadTerms();
     }
 
     public synchronized boolean exists(String accountKey) {
@@ -84,6 +90,58 @@ public final class JsonRoleStore implements RoleStore {
     public synchronized void flush() {
         if (!roles.isEmpty()) {
             save();
+        }
+    }
+
+    @Override
+    public synchronized long[] termsState(String accountKey) {
+        long[] t = terms.get(accountKey);
+        return t != null ? t.clone() : new long[]{0, 0};
+    }
+
+    @Override
+    public synchronized boolean markTermsAgreed(String accountKey) {
+        long[] t = terms.get(accountKey);
+        boolean first = t == null || t[0] == 0 || t[1] == 0;
+        long at = t != null && t[1] > 0 ? t[1] : System.currentTimeMillis() / 1000;
+        terms.put(accountKey, new long[]{1, at});
+        saveTerms();
+        return first;
+    }
+
+    @Override
+    public synchronized void resetTermsAgreed(String accountKey) {
+        terms.remove(accountKey);
+        saveTerms();
+    }
+
+    private void loadTerms() {
+        if (!Files.exists(termsFile)) {
+            return;
+        }
+        try {
+            JSONObject top = JSON.parseObject(
+                    Files.readString(termsFile, StandardCharsets.UTF_8), Feature.OrderedField);
+            if (top == null) {
+                return;
+            }
+            for (Map.Entry<String, Object> e : top.entrySet()) {
+                if (e.getValue() instanceof JSONArray arr && arr.size() == 2) {
+                    terms.put(e.getKey(), new long[]{arr.getLongValue(0), arr.getLongValue(1)});
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            log.warn("terms.json load failed: {}", e.getMessage());
+        }
+    }
+
+    private void saveTerms() {
+        JSONObject top = new JSONObject(true);
+        terms.forEach((k, v) -> top.put(k, v));
+        try {
+            Files.writeString(termsFile, top.toJSONString(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log.warn("terms.json save failed: {}", e.getMessage());
         }
     }
 

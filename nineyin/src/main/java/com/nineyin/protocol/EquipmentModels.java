@@ -18,10 +18,17 @@ public final class EquipmentModels {
 
     private static final Charset GBK = Charset.forName("GBK");
 
+    /** equipment.ini 段的展示字段（物品 view 帧需要，缺省对齐参考实现）。 */
+    public record ItemStatic(String photo, int colorLevel, int level,
+                             int maxBuildCount, int effectPackId, String equipType) {
+    }
+
     private static volatile boolean loaded;
     private static final Map<String, String> ART_BY_ITEM = new HashMap<>();
     private static final Map<String, String> MALE_MODELS = new HashMap<>();
     private static final Map<String, String> FEMALE_MODELS = new HashMap<>();
+    private static final Map<String, String> PHOTOS = new HashMap<>();
+    private static final Map<String, ItemStatic> STATICS = new HashMap<>();
 
     private EquipmentModels() {
     }
@@ -44,6 +51,21 @@ public final class EquipmentModels {
         return model != null ? model : config;
     }
 
+    /**
+     * 物品 view 帧的展示字段（icon 路径/颜色/等级/精炼/特效包）。
+     * equipment.ini 的 [config] 字段 + ArtPack→itemartstatic.ini 的 Photo；
+     * 缺失段返回 null（调用方省略可选属性）。
+     */
+    public static ItemStatic itemStatic(String config) {
+        if (config == null || config.isEmpty()) {
+            return null;
+        }
+        ensureLoaded();
+        synchronized (EquipmentModels.class) {
+            return STATICS.get(config.toLowerCase(Locale.ROOT));
+        }
+    }
+
     private static void ensureLoaded() {
         if (loaded) {
             return;
@@ -53,9 +75,20 @@ public final class EquipmentModels {
                 return;
             }
             Path itemDir = shareRoot().resolve("item");
+            Map<String, String[]> raw = new HashMap<>();
             parse(itemDir.resolve("equipment.ini"), (section, key, value) -> {
                 if (key.equals("artpack")) {
                     ART_BY_ITEM.put(section, value);
+                }
+                String[] fields = raw.computeIfAbsent(section, s -> new String[5]);
+                switch (key) {
+                    case "colorlevel" -> fields[0] = value;
+                    case "level" -> fields[1] = value;
+                    case "maxbuildcount" -> fields[2] = value;
+                    case "effectpackid" -> fields[3] = value;
+                    case "equiptype" -> fields[4] = value;
+                    default -> {
+                    }
                 }
             });
             parse(itemDir.resolve("itemartstatic.ini"), (section, key, value) -> {
@@ -63,9 +96,31 @@ public final class EquipmentModels {
                     MALE_MODELS.put(section, value);
                 } else if (key.equals("femalemodel")) {
                     FEMALE_MODELS.put(section, value);
+                } else if (key.equals("photo")) {
+                    PHOTOS.put(section, value);
                 }
             });
+            for (Map.Entry<String, String[]> e : raw.entrySet()) {
+                String[] f = e.getValue();
+                String art = ART_BY_ITEM.get(e.getKey());
+                String photo = art != null ? PHOTOS.get(art) : null;
+                STATICS.put(e.getKey(), new ItemStatic(photo,
+                        parseInt(f[0], 1), parseInt(f[1], 0),
+                        parseInt(f[2], 2), parseInt(f[3], 0),
+                        f[4] != null ? f[4] : ""));
+            }
             loaded = true;
+        }
+    }
+
+    private static int parseInt(String s, int dflt) {
+        if (s == null || s.isEmpty()) {
+            return dflt;
+        }
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return dflt;
         }
     }
 

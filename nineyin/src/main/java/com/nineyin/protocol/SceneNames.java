@@ -8,33 +8,63 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 场景名本地化键（share/rule/scenes.ini）：[id].Config=ini\scene\born04_QianDengZhen。
- * 角色等待界面背景按角色所在（下线）场景取名，键形如 scene_name_017（Go 抓包样本：
- * 下线在 city05_ChengDu=场景 17 时 f[24]=scene_name_017）。
+ * 角色选择界面显示名解析：
+ * 场景中文名 = text/chineses/desc.idres 的 sn_NNN（编号来自 share/rule/scenes.ini 的场景 id，
+ * sn_001=千灯镇 sn_004=鸡鸣驿 sn_007=君子堂 sn_017=成都）——对齐旧 Go 服务 f[24] 直发中文。
+ * 剧本标题键 = introduction_<code>01_title（book1=qdz/千灯镇 book2=yyz/烟雨庄 book4=cd/成都
+ * book5=jm/鸡鸣驿 book8=wmp/无门派），客户端本地化显示——对齐旧 Go 服务 f[25]（抓包
+ * book5→introduction_jm01_title）。f[32] 保持 book 原值。
  */
 public final class SceneNames {
 
     private static final Charset GBK = Charset.forName("GBK");
     private static final String FALLBACK_KEY = "scene_name_017";
 
+    private static final Map<String, String> BOOK_INTRO_CODE = Map.of(
+            "book1", "qdz",
+            "book2", "yyz",
+            "book4", "cd",
+            "book5", "jm",
+            "book8", "wmp");
+
     private static volatile boolean loaded;
     private static final Map<String, Integer> ID_BY_CONFIG = new HashMap<>();
     private static final Map<String, Integer> ID_BY_RESOURCE = new HashMap<>();
+    private static final Map<Integer, String> SCENE_NAME_BY_ID = new HashMap<>();
 
     private SceneNames() {
     }
 
-    /** 场景 config（ini\scene\...）或资源名（born04）→ scene_name_NNN；未知回退 017。 */
-    public static String sceneNameKey(String config, String resource) {
+    /** 角色所在（下线）场景的中文显示名；sn 表缺失时回退 scene_name_NNN 键。 */
+    public static String sceneDisplayName(String config, String resource) {
         ensureLoaded();
-        Integer id = null;
-        if (config != null && !config.isEmpty()) {
-            id = ID_BY_CONFIG.get(config.toLowerCase(Locale.ROOT));
-        }
-        if (id == null && resource != null && !resource.isEmpty()) {
-            id = ID_BY_RESOURCE.get(resource.toLowerCase(Locale.ROOT));
+        Integer id = sceneId(config, resource);
+        if (id != null) {
+            String name = SCENE_NAME_BY_ID.get(id);
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
         }
         return id != null ? String.format("scene_name_%03d", id) : FALLBACK_KEY;
+    }
+
+    /** 剧本标题本地化键；未知剧本回退 book 原值。 */
+    public static String bookIntroKey(String book) {
+        String code = BOOK_INTRO_CODE.get(book);
+        return code != null ? "introduction_" + code + "01_title" : book;
+    }
+
+    private static Integer sceneId(String config, String resource) {
+        if (config != null && !config.isEmpty()) {
+            Integer id = ID_BY_CONFIG.get(config.toLowerCase(Locale.ROOT));
+            if (id != null) {
+                return id;
+            }
+        }
+        if (resource != null && !resource.isEmpty()) {
+            return ID_BY_RESOURCE.get(resource.toLowerCase(Locale.ROOT));
+        }
+        return null;
     }
 
     private static void ensureLoaded() {
@@ -45,44 +75,81 @@ public final class SceneNames {
             if (loaded) {
                 return;
             }
-            Path ini = shareRoot().resolve("rule").resolve("scenes.ini");
-            if (Files.isRegularFile(ini)) {
-                try {
-                    String data = new String(Files.readAllBytes(ini), GBK);
-                    String section = "";
-                    for (String rawLine : data.split("\n")) {
-                        String line = rawLine.trim();
-                        if (line.isEmpty() || line.startsWith(";") || line.startsWith("#")) {
-                            continue;
-                        }
-                        if (line.startsWith("[") && line.endsWith("]")) {
-                            section = line.substring(1, line.length() - 1).trim();
-                            continue;
-                        }
-                        int eq = line.indexOf('=');
-                        if (eq > 0 && section.chars().allMatch(Character::isDigit)) {
-                            String key = line.substring(0, eq).trim().toLowerCase(Locale.ROOT);
-                            if (!key.equals("config")) {
-                                continue;
-                            }
-                            String cfg = line.substring(eq + 1).trim();
-                            int id;
-                            try {
-                                id = Integer.parseInt(section);
-                            } catch (NumberFormatException e) {
-                                continue;
-                            }
-                            ID_BY_CONFIG.put(cfg.toLowerCase(Locale.ROOT), id);
-                            int slash = Math.max(cfg.lastIndexOf('\\'), cfg.lastIndexOf('/'));
-                            String base = slash >= 0 ? cfg.substring(slash + 1) : cfg;
-                            ID_BY_RESOURCE.putIfAbsent(base.toLowerCase(Locale.ROOT), id);
-                        }
+            Path shareRoot = shareRoot();
+            loadScenesIni(shareRoot.resolve("rule").resolve("scenes.ini"));
+            loadDescIdres(shareRoot.getParent()
+                    .resolve("text").resolve("chineses").resolve("desc.idres"));
+            loaded = true;
+        }
+    }
+
+    private static void loadScenesIni(Path ini) {
+        if (!Files.isRegularFile(ini)) {
+            return;
+        }
+        try {
+            String data = new String(Files.readAllBytes(ini), GBK);
+            String section = "";
+            for (String rawLine : data.split("\n")) {
+                String line = rawLine.trim();
+                if (line.isEmpty() || line.startsWith(";") || line.startsWith("#")) {
+                    continue;
+                }
+                if (line.startsWith("[") && line.endsWith("]")) {
+                    section = line.substring(1, line.length() - 1).trim();
+                    continue;
+                }
+                int eq = line.indexOf('=');
+                if (eq > 0 && section.chars().allMatch(Character::isDigit)
+                        && line.substring(0, eq).trim().equalsIgnoreCase("Config")) {
+                    String cfg = line.substring(eq + 1).trim();
+                    int id;
+                    try {
+                        id = Integer.parseInt(section);
+                    } catch (NumberFormatException e) {
+                        continue;
                     }
-                } catch (Exception ignored) {
-                    // 表缺失/解析失败：sceneNameKey 回退 017
+                    ID_BY_CONFIG.put(cfg.toLowerCase(Locale.ROOT), id);
+                    int slash = Math.max(cfg.lastIndexOf('\\'), cfg.lastIndexOf('/'));
+                    String base = slash >= 0 ? cfg.substring(slash + 1) : cfg;
+                    ID_BY_RESOURCE.putIfAbsent(base.toLowerCase(Locale.ROOT), id);
                 }
             }
-            loaded = true;
+        } catch (Exception ignored) {
+            // 表缺失：sceneDisplayName 回退 scene_name_NNN
+        }
+    }
+
+    /** desc.idres（UTF-8，key=value 行）：sn_NNN=场景中文名。 */
+    private static void loadDescIdres(Path idres) {
+        if (!Files.isRegularFile(idres)) {
+            return;
+        }
+        try {
+            String data = new String(Files.readAllBytes(idres),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (!data.isEmpty() && data.charAt(0) == '﻿') {
+                data = data.substring(1);
+            }
+            for (String rawLine : data.split("\n")) {
+                String line = rawLine.trim();
+                int eq = line.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                String key = line.substring(0, eq).trim();
+                if (!key.startsWith("sn_")) {
+                    continue;
+                }
+                try {
+                    int id = Integer.parseInt(key.substring(3));
+                    SCENE_NAME_BY_ID.putIfAbsent(id, line.substring(eq + 1).trim());
+                } catch (NumberFormatException ignored) {
+                    // 非 sn_NNN 形态跳过
+                }
+            }
+        } catch (Exception ignored) {
+            // 表缺失：sceneDisplayName 回退 scene_name_NNN
         }
     }
 

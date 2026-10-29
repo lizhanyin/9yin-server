@@ -1,6 +1,7 @@
 package com.nineyin.login;
 
 import com.nineyin.auth.AccountKeys;
+import com.nineyin.db.RoleInventoryStore;
 import com.nineyin.db.RoleStore;
 import com.nineyin.db.StoredRole;
 import com.nineyin.game.NinJiuZhi;
@@ -10,6 +11,7 @@ import com.nineyin.protocol.Appearance;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.FxText;
+import com.nineyin.protocol.InventoryPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.RecordId;
 import com.nineyin.protocol.S2CPackets;
@@ -46,11 +48,19 @@ public final class LoginFlow {
     /** 初始碎银（Go starter-silver 默认）。 */
     public static final long STARTER_SILVER = 99999;
 
+    /**
+     * 单角色技能 view 上限。参考 exe 实测整表 17633 条全发客户端可承受，
+     * 上限仅防御异常存档；GM 全技能存档（1.7 万+）不再截断。
+     */
+    public static final int MAX_ROLE_SKILL_FRAMES = 17664;
+
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
 
     private final RoleStore roleStore;
     private final NinJiuZhi ninjiuzhi;
     private final List<Consumer<LoginSession>> readyHooks = new ArrayList<>();
+    /** 库存查询（MySQL 后端；null = JSON 后端回退 starter 集合）。 */
+    private final RoleInventoryStore inventory;
     /** 0x0C 重进场景后的 Ready 处理（SceneSwitcher.finishReentry）。 */
     private Consumer<FxSession> reentryHandler;
 
@@ -61,6 +71,7 @@ public final class LoginFlow {
     public LoginFlow(RoleStore roleStore, NinJiuZhi ninjiuzhi) {
         this.roleStore = roleStore;
         this.ninjiuzhi = ninjiuzhi;
+        this.inventory = RoleInventoryStore.from(roleStore);
     }
 
     /** ClientReady 后回调（场景阶段用来下发 NPC）。 */
@@ -94,8 +105,12 @@ public final class LoginFlow {
     private void onLogin(FxSession fx, byte[] plain) {
         LoginSession s = sessionOf(fx);
         s.accountKey = AccountKeys.parseLoginAccountKey(plain);
+        long[] terms = roleStore.termsState(s.accountKey);
+        s.termsAgreed = (int) terms[0];
+        s.termsAgreedAtSec = terms[1];
         StoredRole stored = roleStore.get(s.accountKey);
         if (stored != null) {
+            s.roleId = stored.getRoleId();
             s.roleName = stored.getName();
             s.appearance = stored.getAppearance();
             s.hasRole = true;
@@ -107,11 +122,13 @@ public final class LoginFlow {
             s.orient = stored.getOrient();
             fx.send(S2CPackets.loginSuccessOneRole(s.roleName, s.appearance,
                     s.spawnConfig, s.spawnResource, epochSec()));
-            log.info("login account={} role={} (loaded)", s.accountKey, s.roleName);
+            log.info("login account={} agreed={} role={} (loaded) ip={}",
+                    s.accountKey, s.termsAgreed, s.roleName, fx.remoteAddress());
         } else {
             s.hasRole = false;
             fx.send(S2CPackets.loginSuccessNoRole(epochSec()));
-            log.info("login account={} no role", s.accountKey);
+            log.info("login account={} agreed={} no role ip={}",
+                    s.accountKey, s.termsAgreed, fx.remoteAddress());
         }
     }
 
@@ -196,14 +213,18 @@ public final class LoginFlow {
 
         fx.send(S2CPackets.propertyTable());
         fx.send(S2CPackets.recordTableEmpty());
-        // 四大背包页 + 四个扩展页（客户端 bag UI 容器，必须在 0x0B 前创建）
-        CustomPackets.sendAll(fx, BootstrapPackets.starterBagViewFrames());
+        // 17 个视图：8 主页(BaseCap) + 8 扩展页(+扩展包对象) + 装备纸娃娃 View 1
+        // （参考 exe 抓包：容器在 0x0B 前创建，物品对象在 0x0B 后下发）
+        CustomPackets.sendAll(fx, InventoryPackets.bagViewCreateFrames());
+        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames());
         fx.send(S2CPackets.entryScene(cfg, res));
         fx.send(S2CPackets.playerAddObject(
                 s.roleName.isEmpty() ? "LocalHero" : s.roleName, s.appearance, px, py, pz, po));
         fx.send(S2CPackets.serverLocation(
                 S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID, px, py, pz, po));
         fx.send(actor.vitalUpdate());
+        // 库存物品（导入的原服存档：装备纸娃娃 View 1 + 各背包页，带 0x19 版本帧）
+        sendRoleInventory(fx, s);
         log.info("ChooseRole scene={} pos=({},{},{}) faction={} silver={}",
                 cfg, px, py, pz, actor.faction, actor.silver);
     }
@@ -241,6 +262,11 @@ public final class LoginFlow {
 
     private void sendUiBootstrap(FxSession fx, LoginSession s, SceneFlow.SceneState st) {
         fx.send(S2CPackets.objectPropertyInt(223, s.operateMode));        // OperateMode
+        // 用户须知签署状态：官服以属性 269-271 驱动客户端协议框（未签署下发 0）
+        fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_LAST_SIGN_TIME,
+                (int) Math.min(Integer.MAX_VALUE, s.termsAgreedAtSec)));
+        fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_SIGN_COUNT, s.termsAgreed));
+        fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_REPAIR_SIGN_COUNT, 0));
         fx.send(S2CPackets.objectPropertyInt(PropertyId.HAVE_MAIN_FORM_STYLES, -1));
         fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK, clockMinutes()));
         long elapsed = System.nanoTime() / 1_000_000L - s.bootSteadyMs;
@@ -255,17 +281,10 @@ public final class LoginFlow {
         // 内功容器 View 43（九阴志 inner_books 门控）
         CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
                 id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
-        // 技能容器 View 40 + 技能开关 + 立即 0x38
-        CustomPackets.sendAll(fx, SkillPackets.starterSkillFrames());
-        // 快捷键：打坐（Ctrl+0）+ 心佛掌（数字页 2）+ 太极拳古谱（数字页 3）——同步进权威行
-        fx.send(BootstrapPackets.sitcrossShortcutRow());
-        if (s.actor != null) {
-            s.actor.setShortcut(BootstrapPackets.SITCROSS_SHORTCUT_INDEX, "skill", "zs_default_01");
-            for (BootstrapPackets.StarterShortcut sc : BootstrapPackets.starterShortcuts()) {
-                s.actor.setShortcut(sc.index(), "skill", sc.id());
-                fx.send(S2CPackets.shortcutAdd(sc.index(), "skill", sc.id()));
-            }
-        }
+        // 技能容器 View 40（库里有修炼进度的角色用真实技能，否则起始集）+ 技能开关 + 立即 0x38
+        CustomPackets.sendAll(fx, roleSkillFramesOf(s));
+        // 快捷栏：库里有角色存档的用真实栏位（同步进权威行），否则起始集
+        sendRoleShortcuts(fx, s);
         fx.send(CustomPackets.skillActionSwitch());
         fx.send(S2CPackets.timeSync(0, 0));
         // 权威状态全量同步（血蓝/轻功点/怒气/碎银/重力速度/内功面板字段）
@@ -278,9 +297,87 @@ public final class LoginFlow {
         }
         s.uiBootstrapped = true;
         log.info("UI bootstrap mode={} skills={} qinggong={} books={} clockMin={}",
-                s.operateMode, SkillPackets.STARTER_SKILLS.size(),
+                s.operateMode, s.roleSkillFrames != null
+                        ? s.roleSkillFrames.size() - 1 : SkillPackets.STARTER_SKILLS.size(),
                 BootstrapPackets.STARTER_QINGGONG_IDS.size(),
                 BootstrapPackets.STARTER_BOOKS.size(), clockMinutes());
+    }
+
+    /** 库存物品下发（0x0B 进场景之后；帧缓存到会话，0x0C 重进场景重发）。无库存时静默跳过。 */
+    private void sendRoleInventory(FxSession fx, LoginSession s) {
+        if (inventory == null || s.roleId == 0) {
+            return;
+        }
+        if (s.inventoryFrames != null) {
+            CustomPackets.sendAll(fx, s.inventoryFrames);
+            return;
+        }
+        List<RoleInventoryStore.Equipped> equipped = inventory.equipment(s.roleId);
+        List<RoleInventoryStore.Bagged> bagged = inventory.bag(s.roleId);
+        if (equipped.isEmpty() && bagged.isEmpty()) {
+            return;
+        }
+        s.inventoryFrames = InventoryPackets.inventoryFrames(s.roleId, equipped, bagged);
+        s.liveEquipped = new ArrayList<>(equipped);
+        s.liveBagged = new ArrayList<>(bagged);
+        CustomPackets.sendAll(fx, s.inventoryFrames);
+        log.info("role inventory sent role={} equipped={} bagged={}", s.roleId,
+                equipped.size(), bagged.size());
+    }
+
+    /**
+     * 快捷栏下发：库里有角色栏位（快捷栏位按键.json 导入）则逐条下发并
+     * 同步权威行；否则回退起始集（打坐 Ctrl+0 + 心佛掌 + 太极拳古谱）。
+     * 0x0C 重进场景由 SceneSwitcher 重放 actor.shortcuts()。
+     */
+    private void sendRoleShortcuts(FxSession fx, LoginSession s) {
+        if (inventory != null && s.roleId != 0) {
+            List<RoleInventoryStore.Shortcut> shortcuts = inventory.shortcuts(s.roleId);
+            if (!shortcuts.isEmpty()) {
+                for (RoleInventoryStore.Shortcut sc : shortcuts) {
+                    if (s.actor != null) {
+                        s.actor.setShortcut(sc.index(), sc.kind(), sc.id());
+                    }
+                    fx.send(S2CPackets.shortcutAdd(sc.index(), sc.kind(), sc.id()));
+                }
+                log.info("role shortcuts from db role={} count={}", s.roleId, shortcuts.size());
+                return;
+            }
+        }
+        fx.send(BootstrapPackets.sitcrossShortcutRow());
+        if (s.actor != null) {
+            s.actor.setShortcut(BootstrapPackets.SITCROSS_SHORTCUT_INDEX, "skill", "zs_default_01");
+            for (BootstrapPackets.StarterShortcut sc : BootstrapPackets.starterShortcuts()) {
+                s.actor.setShortcut(sc.index(), "skill", sc.id());
+                fx.send(S2CPackets.shortcutAdd(sc.index(), "skill", sc.id()));
+            }
+        }
+    }
+
+    /**
+     * 角色技能帧：库里有修炼进度则按库生成并缓存（0x0C 重进场景复用），
+     * 否则回退 starter 集。GM 全技能存档按 MAX_ROLE_SKILL_FRAMES 截断。
+     */
+    private List<byte[]> roleSkillFramesOf(LoginSession s) {
+        if (s.roleSkillFrames != null) {
+            return s.roleSkillFrames;
+        }
+        if (inventory != null && s.roleId != 0) {
+            List<RoleInventoryStore.SkillRow> rows =
+                    inventory.skills(s.roleId, MAX_ROLE_SKILL_FRAMES + 1);
+            if (!rows.isEmpty()) {
+                int total = rows.size();
+                if (total > MAX_ROLE_SKILL_FRAMES) {
+                    rows = rows.subList(0, MAX_ROLE_SKILL_FRAMES);
+                    log.warn("role {} skills truncated {} -> {} (MAX_ROLE_SKILL_FRAMES)",
+                            s.roleId, total, MAX_ROLE_SKILL_FRAMES);
+                }
+                s.roleSkillFrames = InventoryPackets.roleSkillFrames(rows);
+                log.info("role skills from db role={} count={}", s.roleId, rows.size());
+                return s.roleSkillFrames;
+            }
+        }
+        return SkillPackets.starterSkillFrames();
     }
 
     // ---------- C2S 解析 ----------

@@ -46,6 +46,10 @@
         <appender-ref ref="WIRE_FILE"/>
     </logger>
 
+    <!-- netty 能力探测（sun.misc.Unsafe/ByteBuffer.cleaner）在 JDK 24+ 以 DEBUG 打整段
+         栈且无害，收为 INFO 让启动日志干净 -->
+    <logger name="io.netty" level="INFO"/>
+
     <root level="DEBUG">
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="FILE"/>

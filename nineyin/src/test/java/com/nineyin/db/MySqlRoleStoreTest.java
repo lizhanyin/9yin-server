@@ -17,6 +17,7 @@ import java.sql.SQLException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -114,6 +115,33 @@ class MySqlRoleStoreTest {
     void missingKeyReturnsNull() {
         MySqlRoleStore store = open();
         assertNull(store.get("acct:v1:no-such-" + System.nanoTime()));
+        store.close();
+    }
+
+    @Test
+    void termsAgreeResetRoundTrip() {
+        MySqlRoleStore store = open();
+        String key = "acct:v1:it-terms-" + System.nanoTime();
+
+        // 账号无行：未同意
+        long[] before = store.termsState(key);
+        assertEquals(0, before[0]);
+        assertEquals(0, before[1]);
+
+        // 无行直接标记：补建账号行并落时间
+        assertTrue(store.markTermsAgreed(key), "无行时标记应视为首次");
+        long[] agreed = store.termsState(key);
+        assertEquals(1, agreed[0]);
+        assertTrue(agreed[1] > 0, "同意时间必须落库");
+        assertFalse(store.markTermsAgreed(key), "重复同意应幂等返回非首次");
+        long[] again = store.termsState(key);
+        assertEquals(1, again[0]);
+        assertEquals(agreed[1], again[1], "重复同意不得刷新时间");
+
+        store.resetTermsAgreed(key);
+        long[] reset = store.termsState(key);
+        assertEquals(0, reset[0]);
+        assertEquals(0, reset[1]);
         store.close();
     }
 

@@ -34,6 +34,9 @@ public final class PropertyId {
     public static final int SHORTCUT_KEY = 198;
     public static final int SHORTCUT_KEY_1 = 199;
     public static final int SHORTCUT_KEY_2 = 200;
+    public static final int NEW_TERMS_LAST_SIGN_TIME = 269;    // 用户须知最后签署时间（i32 epoch 秒，0=未签署）
+    public static final int NEW_TERMS_SIGN_COUNT = 270;        // 用户须知签署次数
+    public static final int NEW_TERMS_REPAIR_SIGN_COUNT = 271; // 用户须知补签次数
     public static final int HAVE_MAIN_FORM_STYLES = 282;
     public static final int MOVE_SPEED = 383;      // f32
     public static final int WALK_SPEED = 384;      // f32

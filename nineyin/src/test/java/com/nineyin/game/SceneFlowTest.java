@@ -246,6 +246,38 @@ class SceneFlowTest {
         assertEquals(17, login.actor.shortcuts().size());
     }
 
+    @Test
+    void termsSign819MarksAgreedAndPushesProperties() throws Exception {
+        // 登录 → 建角 → 选角 → Ready（819 在进场景后由 dispatchCustom 处理）
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+
+        String accountKey = AccountKeys.parseLoginAccountKey(loginPacket());
+        assertEquals(0, roleStore.termsState(accountKey)[0], "登录初始应为未同意");
+
+        // 首次 819：落库 agreed=1 + at>0，并回推属性 269（签署时间）/270（签署标志）
+        send(custom().u16(1).u8(2).i32(819).toByteArray());
+        List<byte[]> out = drainOutbound();
+        long[] t = roleStore.termsState(accountKey);
+        assertEquals(1, t[0]);
+        assertTrue(t[1] > 0, "同意时间必须记录");
+        assertTrue(out.stream().anyMatch(f -> op(f) == 0x10
+                && f[12] == 0x0D && f[13] == 0x01), "应回推属性 269 签署时间");
+        assertTrue(out.stream().anyMatch(f -> op(f) == 0x10
+                && f[12] == 0x0E && f[13] == 0x01), "应回推属性 270 签署标志");
+
+        // 重复 819（客户端每分钟重弹再点）：幂等，时间不刷新
+        send(custom().u16(1).u8(2).i32(819).toByteArray());
+        drainOutbound();
+        assertEquals(t[1], roleStore.termsState(accountKey)[1], "重复同意不得刷新时间");
+    }
+
     private static boolean containsUtf8(byte[] frame, String s) {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         outer:

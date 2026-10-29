@@ -33,8 +33,28 @@ public final class LoginSession {
     public int operateMode;
     public int pingCount;
 
+    /** 用户须知签署状态（登录时装载，0=未同意）。 */
+    public int termsAgreed;
+    public long termsAgreedAtSec;
+
+    /** 本会话已出现的 custom msgId（监控：未识别消息首次出现打 INFO）。 */
+    public final java.util.Set<Integer> seenCustomMsgIds = new java.util.HashSet<>();
+
     /** 权威玩家状态（选角时创建）。 */
     public PlayerActor actor;
+
+    /** 库内角色 ID（StoredRole 回填；0 = 新号/JSON 后端，无库存数据）。 */
+    public long roleId;
+
+    /** 本角色的技能 view 帧缓存（首个 ClientReady 构建；0x0C 重进场景复用）。 */
+    public List<byte[]> roleSkillFrames;
+
+    /** 库存物品帧缓存（选角链构建；0x0C 重进场景重发）。 */
+    public List<byte[]> inventoryFrames;
+
+    /** 库存活跃状态（msgId=30 移动物品时同步维护；null=无库存数据）。 */
+    public List<com.nineyin.db.RoleInventoryStore.Equipped> liveEquipped;
+    public List<com.nineyin.db.RoleInventoryStore.Bagged> liveBagged;
 
     public LoginSession(FxSession fx) {
         this.fx = fx;

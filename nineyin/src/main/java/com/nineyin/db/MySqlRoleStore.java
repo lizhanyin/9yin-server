@@ -66,6 +66,7 @@ public final class MySqlRoleStore implements RoleStore {
                 }
             }
             ensureRoleExtColumn(conn);
+            ensureTermsColumns(conn);
         } catch (SQLException e) {
             log.error("role schema init failed: {}", e.getMessage());
         }
@@ -88,6 +89,97 @@ public final class MySqlRoleStore implements RoleStore {
             log.info("roles.role_ext column added");
         } catch (SQLException e) {
             log.error("role_ext column check/add failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 用户须知列：agreed_terms（tools 0003 已建过，此处兜底）与 agreed_terms_at
+     * （同意时间，监控访问数据用），均幂等。
+     */
+    private static void ensureTermsColumns(Connection conn) {
+        addColumnIfMissing(conn, "accounts", "agreed_terms",
+                "ALTER TABLE accounts ADD COLUMN agreed_terms TINYINT(1) NOT NULL DEFAULT 0 "
+                        + "COMMENT '同意用户须知：0=未同意 1=已同意' AFTER status");
+        addColumnIfMissing(conn, "accounts", "agreed_terms_at",
+                "ALTER TABLE accounts ADD COLUMN agreed_terms_at TIMESTAMP(6) NULL "
+                        + "COMMENT '同意用户须知时间' AFTER agreed_terms");
+    }
+
+    private static void addColumnIfMissing(Connection conn, String table, String column, String ddl) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM information_schema.COLUMNS "
+                        + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?")) {
+            ps.setString(1, table);
+            ps.setString(2, column);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return;
+                }
+            }
+            try (Statement st = conn.createStatement()) {
+                st.execute(ddl);
+            }
+            log.info("{}.{} column added", table, column);
+        } catch (SQLException e) {
+            log.error("{} column check/add failed: {}", column, e.getMessage());
+        }
+    }
+
+    @Override
+    public long[] termsState(String accountKey) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT agreed_terms, COALESCE(UNIX_TIMESTAMP(agreed_terms_at), 0) "
+                             + "FROM accounts WHERE account_key = ?")) {
+            ps.setString(1, accountKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new long[]{rs.getLong(1), rs.getLong(2)};
+                }
+            }
+        } catch (SQLException e) {
+            log.error("termsState failed: {}", e.getMessage());
+        }
+        return new long[]{0, 0};
+    }
+
+    @Override
+    public boolean markTermsAgreed(String accountKey) {
+        try (Connection conn = dataSource.getConnection()) {
+            boolean first;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT agreed_terms, COALESCE(UNIX_TIMESTAMP(agreed_terms_at), 0) "
+                            + "FROM accounts WHERE account_key = ?")) {
+                ps.setString(1, accountKey);
+                try (ResultSet rs = ps.executeQuery()) {
+                    first = !rs.next() || rs.getLong(1) == 0 || rs.getLong(2) == 0;
+                }
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO accounts (account_key, agreed_terms, agreed_terms_at) "
+                            + "VALUES (?, 1, CURRENT_TIMESTAMP(6)) "
+                            + "ON DUPLICATE KEY UPDATE agreed_terms = 1, "
+                            + "agreed_terms_at = COALESCE(agreed_terms_at, CURRENT_TIMESTAMP(6))")) {
+                ps.setString(1, accountKey);
+                ps.executeUpdate();
+            }
+            return first;
+        } catch (SQLException e) {
+            log.error("markTermsAgreed failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public void resetTermsAgreed(String accountKey) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE accounts SET agreed_terms = 0, agreed_terms_at = NULL "
+                             + "WHERE account_key = ?")) {
+            ps.setString(1, accountKey);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            log.error("resetTermsAgreed failed: {}", e.getMessage());
         }
     }
 
@@ -122,7 +214,7 @@ public final class MySqlRoleStore implements RoleStore {
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(
                      "SELECT r.name, a.appearance, l.scene_config, l.scene_resource, "
-                             + "l.pos_x, l.pos_y, l.pos_z, l.orient, r.role_ext "
+                             + "l.pos_x, l.pos_y, l.pos_z, l.orient, r.role_ext, r.role_id "
                              + "FROM accounts acc "
                              + "JOIN roles r ON r.account_id = acc.account_id "
                              + "JOIN role_appearances a ON a.role_id = r.role_id "
@@ -134,6 +226,7 @@ public final class MySqlRoleStore implements RoleStore {
                     return null;
                 }
                 StoredRole role = new StoredRole();
+                role.setRoleId(rs.getLong(10));
                 role.setName(rs.getString(1));
                 role.setAppearance(JSON.parseArray(rs.getString(2), String.class));
                 role.setSceneConfig(rs.getString(3));
@@ -192,12 +285,19 @@ public final class MySqlRoleStore implements RoleStore {
     private static long upsertRole(Connection conn, long accountId, StoredRole role) throws SQLException {
         String extJson = role.getExtra().isEmpty() ? null : JSON.toJSONString(role.getExtra());
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT role_id FROM roles WHERE account_id = ? AND slot = 0")) {
+                "SELECT role_id, name FROM roles WHERE account_id = ? AND slot = 0")) {
             ps.setLong(1, accountId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     long roleId = rs.getLong(1);
-                    // 名字可能变化（同名唯一约束冲突由调用方避免）
+                    String oldName = rs.getString(2);
+                    // 名字可能变化（同名唯一约束冲突由调用方避免）；
+                    // 非预期改名（如 roles.account_id 被外部手工改错导致角色被顶号）必须显式留痕
+                    if (oldName != null && !oldName.equals(role.getName())) {
+                        log.warn("role rename via upsert: role_id={} account_id={} {} -> {} "
+                                + "(unexpected? check manual edits on roles.account_id)",
+                                roleId, accountId, oldName, role.getName());
+                    }
                     try (PreparedStatement upd = conn.prepareStatement(
                             "UPDATE roles SET name = ?, role_ext = CAST(? AS JSON) WHERE role_id = ?")) {
                         upd.setString(1, role.getName());

@@ -199,6 +199,25 @@ public final class GmActions {
                 fx.send(actor.vitalUpdate());
                 return null;
             }
+            case "terms_agree" -> {
+                boolean first = roleStore.markTermsAgreed(session.accountKey);
+                long[] t = roleStore.termsState(session.accountKey);
+                session.termsAgreed = (int) t[0];
+                session.termsAgreedAtSec = t[1];
+                log.info("GM terms agreed account={} first={}", session.accountKey, first);
+                return "用户须知已同意" + (first ? "（首次，时间已记录）" : "（此前已同意）");
+            }
+            case "terms_reset" -> {
+                roleStore.resetTermsAgreed(session.accountKey);
+                session.termsAgreed = 0;
+                session.termsAgreedAtSec = 0;
+                log.info("GM terms reset account={}", session.accountKey);
+                return "用户须知已重置为未同意";
+            }
+            case "terms_status" -> {
+                long[] t = roleStore.termsState(session.accountKey);
+                return "agreed=" + t[0] + " agreed_at=" + t[1];
+            }
             case "set_move_speed" -> {
                 float value = clamp(cmd.params().getFloatValue("value"), 0.1f, 100f);
                 actor.moveSpeed = value;

@@ -67,6 +67,7 @@ public final class SceneFlow {
     private final QinggongCatalog qinggongCatalog;
     private final SceneSwitcher switcher;
     private final AiEventEngine ai;   // 可空：未接线时无 AI 事件（测试旧路径）
+    private final NinJiuZhi ninjiuzhi;  // 全服阶段门控（缺省 alwaysOpen）
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -104,16 +105,27 @@ public final class SceneFlow {
     }
 
     public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog) {
-        this(sceneManager, roleStore, qinggongCatalog, null);
+        this(sceneManager, roleStore, qinggongCatalog, null, null);
     }
 
     public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog,
                      AiEventEngine ai) {
+        this(sceneManager, roleStore, qinggongCatalog, ai, null);
+    }
+
+    public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog,
+                     AiEventEngine ai, NinJiuZhi ninjiuzhi) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.qinggongCatalog = qinggongCatalog;
-        this.switcher = new SceneSwitcher(sceneManager, roleStore, this);
+        this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
+        this.switcher = new SceneSwitcher(sceneManager, roleStore, this, this.ninjiuzhi);
         this.ai = ai;
+    }
+
+    /** 九阴志全局门控（GM / 广播接线用）。 */
+    public NinJiuZhi ninjiuzhi() {
+        return ninjiuzhi;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -180,6 +192,9 @@ public final class SceneFlow {
                     continue;
                 }
                 if (world.cloneScene && n.npcProgress > 0 && world.dungeonProgress < n.npcProgress) {
+                    continue;
+                }
+                if (!ninjiuzhi.npcOpen(n.configId)) {
                     continue;
                 }
                 if (n.dead) {
@@ -546,6 +561,8 @@ public final class SceneFlow {
                 // 玩家等级未建模：修罗等级分箱（Level 34-50/51-60）条件暂不满足
                 ai.onNpcDeath(st.world, npc, 0);
             }
+            // 九阴志事件点：击杀累计到阈值自动推进全服阶段
+            ninjiuzhi.onKill();
             log.info("npc {} ({}) defeated, respawn in {}ms", npc.objectId, npc.configId, NPC_RESPAWN_MS);
         }
     }

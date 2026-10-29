@@ -293,9 +293,23 @@ public final class S2CPackets {
                 .toByteArray();
     }
 
+    /** 全量剧本（静态缺省，与 Go/C++ 一致；运行时按九阴志阶段过滤后下发）。 */
+    public static final java.util.List<String> ALL_OPEN_BOOKS =
+            java.util.List.of("book1", "book2", "book4", "book5", "book8");
+
     /** 开放剧本列表（与 Go/C++ 一致）。 */
     public static byte[] openBooksWorldInfo() {
-        return worldInfo(0, "0,book1,0,book2,0,book4,0,book5,0,book8,0,0");
+        return openBooksWorldInfo(ALL_OPEN_BOOKS);
+    }
+
+    /** 开放剧本列表（九阴志 scenes 门控后的 bookN 列表）：(0,book) 对 + (0,0) 结尾。 */
+    public static byte[] openBooksWorldInfo(java.util.List<String> books) {
+        StringBuilder sb = new StringBuilder(books.size() * 10 + 4);
+        for (String book : books) {
+            sb.append("0,").append(book).append(',');
+        }
+        sb.append("0,0");
+        return worldInfo(0, sb.toString());
     }
 
     // ---------- 0x04 ServerPlayerRoles ----------

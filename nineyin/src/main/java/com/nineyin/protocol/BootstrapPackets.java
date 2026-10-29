@@ -101,6 +101,14 @@ public final class BootstrapPackets {
 
     /** 已接任务（7 列兼容前缀：id、状态 9、0、三个空串、0）+ 完成位图行（含前置零行）。 */
     public static List<byte[]> functionUnlockFrames() {
+        return functionUnlockFrames(taskId -> true);
+    }
+
+    /**
+     * 功能/内功面板解锁（九阴志 tasks 门控版）：未到阶段的解锁任务整行剔除，
+     * 主解锁任务 1346 同样过闸。任务号即 game_ninjiuzhi_overrides.tasks 的 item_key。
+     */
+    public static List<byte[]> functionUnlockFrames(java.util.function.IntPredicate taskOpen) {
         List<Integer> accepted = new ArrayList<>();
         for (int t = FACULTY_GUIDE_FIRST; t <= FACULTY_GUIDE_LAST; t++) {
             accepted.add(t);
@@ -110,9 +118,12 @@ public final class BootstrapPackets {
             accepted.add(t);
         }
         accepted.add(FACULTY_ACT_ALT_TASK);
+        accepted.removeIf(t -> !taskOpen.test(t));
 
         List<Integer> completed = new ArrayList<>(accepted);
-        completed.add(FUNCTION_UNLOCK_TASK);
+        if (taskOpen.test(FUNCTION_UNLOCK_TASK)) {
+            completed.add(FUNCTION_UNLOCK_TASK);
+        }
 
         List<byte[]> frames = new ArrayList<>(accepted.size() + 8);
         for (int taskId : accepted) {
@@ -203,11 +214,20 @@ public final class BootstrapPackets {
 
     /** View 43 容器 + 6 本初始内功（9 属性布局）。 */
     public static List<byte[]> neigongViewFrames() {
+        return neigongViewFrames(configId -> true);
+    }
+
+    /** View 43 容器 + 初始内功（九阴志 inner_books 门控版，键为内功 configId）。 */
+    public static List<byte[]> neigongViewFrames(java.util.function.Predicate<String> bookOpen) {
         List<byte[]> frames = new ArrayList<>(STARTER_BOOKS.size() + 1);
         frames.add(SkillPackets.createView(SkillPackets.VIEW_NEIGONG, STARTER_BOOKS.size()));
-        for (int i = 0; i < STARTER_BOOKS.size(); i++) {
-            NeiGongBook book = STARTER_BOOKS.get(i);
-            PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, i + 1, 9)
+        int slot = 0;
+        for (BootstrapPackets.NeiGongBook book : STARTER_BOOKS) {
+            if (!bookOpen.test(book.configId())) {
+                continue;
+            }
+            slot++;
+            PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 9)
                     .u16(SkillPackets.V_CONFIG_ID).string(book.configId())
                     .u16(PropertyId.STATIC_DATA).i32(book.staticData())
                     .u16(PropertyId.ITEM_TYPE).i32(book.itemType())

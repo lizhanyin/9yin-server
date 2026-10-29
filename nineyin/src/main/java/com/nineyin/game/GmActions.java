@@ -108,17 +108,24 @@ public final class GmActions {
     private final RoleStore roleStore;
     private final SceneSwitcher switcher;
     private final SceneFlow sceneFlow;
+    private final NinJiuZhi ninjiuzhi;
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher) {
-        this(sceneManager, roleStore, switcher, null);
+        this(sceneManager, roleStore, switcher, null, null);
     }
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
                      SceneFlow sceneFlow) {
+        this(sceneManager, roleStore, switcher, sceneFlow, null);
+    }
+
+    public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
+                     SceneFlow sceneFlow, NinJiuZhi ninjiuzhi) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.switcher = switcher;
         this.sceneFlow = sceneFlow;
+        this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
     }
 
     /** 执行一条命令；返回错误消息（null = 成功）。未知动作返回提示。 */
@@ -180,6 +187,9 @@ public final class GmActions {
                 if (dest == null) {
                     return "目的地格式应为 config,resource,x,y,z,orient";
                 }
+                if (!ninjiuzhi.sceneOpen(dest[1])) {
+                    return "场景 " + dest[1] + " 未到九阴志开放阶段（当前 " + ninjiuzhi.stage() + "）";
+                }
                 switcher.switchScene(fx, session, st, dest[0], dest[1],
                         Float.parseFloat(dest[2]), Float.parseFloat(dest[3]),
                         Float.parseFloat(dest[4]), Float.parseFloat(dest[5]));
@@ -191,6 +201,9 @@ public final class GmActions {
                     return "未知场景预设: " + cmd.strParam("preset");
                 }
                 String[] dest = parseDestination(destination);
+                if (!ninjiuzhi.sceneOpen(dest[1])) {
+                    return "场景 " + dest[1] + " 未到九阴志开放阶段（当前 " + ninjiuzhi.stage() + "）";
+                }
                 switcher.switchScene(fx, session, st, dest[0], dest[1],
                         Float.parseFloat(dest[2]), Float.parseFloat(dest[3]),
                         Float.parseFloat(dest[4]), Float.parseFloat(dest[5]));
@@ -298,6 +311,33 @@ public final class GmActions {
                 world.dungeonRating = rating;
                 fx.send(S2CPackets.worldInfo(0,
                         "副本难度：" + difficultyName(level) + "，评价档：" + rating));
+                return null;
+            }
+            // ---------- 九阴志全局门控 ----------
+            case "ninjiuzhi_set" -> {
+                String err = ninjiuzhi.setStage(cmd.intParam("stage", 1));
+                if (err != null) {
+                    return err;
+                }
+                fx.send(S2CPackets.worldInfo(0, ninjiuzhi.status()));
+                return null;
+            }
+            case "ninjiuzhi_event" -> {
+                String kind = cmd.strParam("eventKind");
+                if (!kind.equals("kill") && !kind.equals("task")) {
+                    return "eventKind 应为 kill 或 task";
+                }
+                ninjiuzhi.addEvent(kind);
+                fx.send(S2CPackets.worldInfo(0, ninjiuzhi.status()));
+                return null;
+            }
+            case "ninjiuzhi_reset" -> {
+                ninjiuzhi.reset();
+                fx.send(S2CPackets.worldInfo(0, ninjiuzhi.status()));
+                return null;
+            }
+            case "ninjiuzhi_status" -> {
+                fx.send(S2CPackets.worldInfo(0, ninjiuzhi.status()));
                 return null;
             }
             default -> {

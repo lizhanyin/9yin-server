@@ -60,3 +60,15 @@ java -jar nineyin/target/nineyin-server-0.1.0-SNAPSHOT.jar
 java -jar tools/data-import/target/data-import-0.1.0-SNAPSHOT.jar \
   -dsn "nineyin:nineyin123@tcp(127.0.0.1:3306)/nineyin" apply-schema
 ```
+
+## 许可证
+
+- 本仓库自有代码（`nineyin/`、`gm-web/`、`tools/` 及根工程配置）以
+  [BSD 3-Clause](LICENSE.txt) 许可发布，根 `pom.xml` 同步声明。
+- `summer/` 目录为内嵌的 [SwingFrog/Summer](https://github.com/SwingFrog/Summer)
+  框架源码，保持上游原样、不做修改，遵循其上游 Apache-2.0 许可证
+  （随附原文件 [summer/LICENSE.txt](summer/LICENSE.txt)，模块 `pom.xml` 单独声明，
+  不继承根工程的 BSD-3）。
+
+  
+<strong>注意：本项目仅限于研究，严禁用于商用。游戏版权归蜗牛游戏公司所有。</strong>

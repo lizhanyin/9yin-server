@@ -31,17 +31,30 @@ public final class SceneSwitcher {
     private final SceneManager sceneManager;
     private final RoleStore roleStore;
     private final SceneFlow sceneFlow;
+    private final NinJiuZhi ninjiuzhi;
 
     public SceneSwitcher(SceneManager sceneManager, RoleStore roleStore, SceneFlow sceneFlow) {
+        this(sceneManager, roleStore, sceneFlow, NinJiuZhi.alwaysOpen());
+    }
+
+    public SceneSwitcher(SceneManager sceneManager, RoleStore roleStore, SceneFlow sceneFlow,
+                         NinJiuZhi ninjiuzhi) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.sceneFlow = sceneFlow;
+        this.ninjiuzhi = ninjiuzhi;
     }
 
-    /** 跨图切换：立即 0x0C，750ms 后 0x0B + 0x0D；完成后等目标场景 Ready 补链。 */
+    /** 跨图切换：立即 0x0C，750ms 后 0x0B + 0x0D；完成后等目标场景 Ready 补链。
+     *  九阴志 scenes 门控未开放的场景拒绝切换（客户端提示 + 日志）。 */
     public void switchScene(FxSession fx, LoginSession login, SceneFlow.SceneState st,
                             String config, String resource,
                             float x, float y, float z, float orient) {
+        if (!ninjiuzhi.sceneOpen(resource)) {
+            log.warn("switch rejected by ninjiuzhi gating: scene={} stage={}", resource, ninjiuzhi.stage());
+            fx.send(S2CPackets.worldInfo(0, "该地区尚未开放（九阴志阶段 " + ninjiuzhi.stage() + "）"));
+            return;
+        }
         fx.send(new byte[]{0x0C});
         st.awaitingReentryReady = true;
         st.npcsSent = false;
@@ -84,11 +97,12 @@ public final class SceneSwitcher {
         log.info("reentry finished scene={} npcs resent", login.spawnResource);
     }
 
-    /** 0x0C 销毁玩家对象后必须重授的记录行与视图。 */
-    public static void restorePlayerAttachments(FxSession fx, LoginSession login, SceneFlow.SceneState st) {
+    /** 0x0C 销毁玩家对象后必须重授的记录行与视图（九阴志门控与登录链一致）。 */
+    public void restorePlayerAttachments(FxSession fx, LoginSession login, SceneFlow.SceneState st) {
         CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
-        CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames());
-        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames());
+        CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames(ninjiuzhi::taskOpen));
+        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
+                id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
         CustomPackets.sendAll(fx, SkillPackets.starterSkillFrames());
         if (login.actor != null) {
             fx.send(BootstrapPackets.sitcrossShortcutRow());
@@ -97,6 +111,7 @@ public final class SceneSwitcher {
             }
         }
         fx.send(CustomPackets.skillActionSwitch());
+        fx.send(CustomPackets.ninJiuZhiStage(ninjiuzhi.stage()));
         st.qinggongGranted = true;
         st.progressGranted = true;
     }

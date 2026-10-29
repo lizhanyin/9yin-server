@@ -17,6 +17,15 @@
     <name>summer</name>
     <description>Summer 游戏服务器框架（内嵌源码，保持上游原样不修改）</description>
 
+    <!-- 内嵌上游 SwingFrog/Summer 源码，模块许可证遵循上游 Apache-2.0（见本目录 LICENSE.txt），不继承根工程的 BSD-3 -->
+    <licenses>
+        <license>
+            <name>The Apache Software License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <dependencies>
         <dependency>
             <groupId>io.netty</groupId>

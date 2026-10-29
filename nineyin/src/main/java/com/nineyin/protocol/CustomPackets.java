@@ -64,6 +64,14 @@ public final class CustomPackets {
         return intMessage(414, "reset", 1223, 1);
     }
 
+    /**
+     * 九阴志阶段帧（msg 419）：阶段生效即向全服在线连接广播；
+     * 登录 UI bootstrap 亦补发当前阶段。值为全服阶段刻度 1..9。
+     */
+    public static byte[] ninJiuZhiStage(int stage) {
+        return intMessage(419, stage);
+    }
+
     /** NPC 头顶气泡（msg 43：对象标识、文本 ID、stage、mode=0 仅气泡）。 */
     public static byte[] npcBubble(int objectId, int ownerId, String textId) {
         return intMessage(43, objectId + "-" + ownerId, textId, 0, 0);

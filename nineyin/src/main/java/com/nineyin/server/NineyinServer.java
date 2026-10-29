@@ -6,6 +6,7 @@ import com.nineyin.db.MysqlDsn;
 import com.nineyin.db.RoleStore;
 import com.nineyin.game.AiEventEngine;
 import com.nineyin.game.GmActions;
+import com.nineyin.game.NinJiuZhi;
 import com.nineyin.game.QinggongCatalog;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.game.SelectFlow;
@@ -16,6 +17,7 @@ import com.nineyin.gm.GmHub;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.Appearance;
+import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
@@ -79,19 +81,21 @@ public final class NineyinServer implements SummerApp {
         this.router = new FxOpcodeRouter();
         Path shareRoot = SceneManager.locateShareRoot();
         this.gmServer = new GmHttpServer(gmHub, GmCatalog.create(shareRoot));
+        NinJiuZhi ninjiuzhi = NinJiuZhi.load(Path.of("data"));
+        ninjiuzhi.addListener(this::broadcastNinJiuZhiStage);
 
         shopRepository = new ShopRepository();
         shopRepository.load(shareRoot.resolve("trade").resolve("shop.ini"));
         QinggongCatalog qinggongCatalog = new QinggongCatalog();
         qinggongCatalog.load(shareRoot.resolve("skill").resolve("qinggong").resolve("qgdefine.ini"));
 
-        LoginFlow loginFlow = new LoginFlow(roleStore);
+        LoginFlow loginFlow = new LoginFlow(roleStore, ninjiuzhi);
         AiRuleData aiRules = new AiRuleData();
         aiRules.load(shareRoot);
         BuffCatalog buffCatalog = new BuffCatalog();
         buffCatalog.load(shareRoot.resolve("skill"));
         AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates(), buffCatalog);
-        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine);
+        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi);
         aiEngine.setBroadcaster(new AiEventEngine.Broadcaster() {
             @Override
             public void onSpawned(SceneWorld world, NpcInstance n) {
@@ -113,7 +117,8 @@ public final class NineyinServer implements SummerApp {
         loginFlow.register(router);
         sceneFlow.register(router);
         new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher()).register(router);
-        gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow);
+        gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow,
+                sceneFlow.ninjiuzhi());
     }
 
     public FxOpcodeRouter router() {
@@ -151,6 +156,24 @@ public final class NineyinServer implements SummerApp {
             }
             fx.send(frame);
         }
+    }
+
+    /** 九阴志阶段生效：向全服已完成 UI bootstrap 的连接广播 419 阶段帧 + 提示。 */
+    private void broadcastNinJiuZhiStage(int oldStage, int newStage) {
+        byte[] stageFrame = CustomPackets.ninJiuZhiStage(newStage);
+        byte[] notice = S2CPackets.worldInfo(0,
+                "九阴志推进：阶段 " + newStage + "（" + NinJiuZhi.stageName(newStage) + "），江湖暗流涌动");
+        int sent = 0;
+        for (FxSession fx : sessions) {
+            LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+            if (login == null || !login.uiBootstrapped) {
+                continue;
+            }
+            fx.send(stageFrame);
+            fx.send(notice);
+            sent++;
+        }
+        log.info("ninjiuzhi stage {} -> {} broadcast to {} sessions", oldStage, newStage, sent);
     }
 
     /**

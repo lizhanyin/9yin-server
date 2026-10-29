@@ -3,6 +3,7 @@ package com.nineyin.login;
 import com.nineyin.auth.AccountKeys;
 import com.nineyin.db.RoleStore;
 import com.nineyin.db.StoredRole;
+import com.nineyin.game.NinJiuZhi;
 import com.nineyin.game.PlayerActor;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.protocol.Appearance;
@@ -48,12 +49,18 @@ public final class LoginFlow {
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
 
     private final RoleStore roleStore;
+    private final NinJiuZhi ninjiuzhi;
     private final List<Consumer<LoginSession>> readyHooks = new ArrayList<>();
     /** 0x0C 重进场景后的 Ready 处理（SceneSwitcher.finishReentry）。 */
     private Consumer<FxSession> reentryHandler;
 
     public LoginFlow(RoleStore roleStore) {
+        this(roleStore, NinJiuZhi.alwaysOpen());
+    }
+
+    public LoginFlow(RoleStore roleStore, NinJiuZhi ninjiuzhi) {
         this.roleStore = roleStore;
+        this.ninjiuzhi = ninjiuzhi;
     }
 
     /** ClientReady 后回调（场景阶段用来下发 NPC）。 */
@@ -110,7 +117,9 @@ public final class LoginFlow {
     // ---------- 0x03 ClientMsgWorldInfo ----------
 
     private void onWorldInfo(FxSession fx, byte[] plain) {
-        fx.send(S2CPackets.openBooksWorldInfo());
+        // 剧本列表按九阴志 scenes 门控（键 bookN），阶段未到的剧本不下发
+        fx.send(S2CPackets.openBooksWorldInfo(
+                ninjiuzhi.filterOpen(NinJiuZhi.Category.SCENES, S2CPackets.ALL_OPEN_BOOKS)));
     }
 
     // ---------- 0x05 ClientCreateRole ----------
@@ -238,10 +247,13 @@ public final class LoginFlow {
         fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, s.actor != null ? s.actor.logicState : 0));
         // 轻功：QingGongRec 记录行 + View 46（18 分类 + 52 技能实例）
         CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
-        // 主界面/内功面板前置任务（Task_Accepted + Task_Completed 位图）
-        CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames());
-        // 内功容器 View 43（6 本初始内功）
-        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames());
+        // 九阴志当前阶段（与全服广播同帧，登录补发保证晚接入一致）
+        fx.send(CustomPackets.ninJiuZhiStage(ninjiuzhi.stage()));
+        // 主界面/内功面板前置任务（Task_Accepted + Task_Completed 位图，九阴志 tasks 门控）
+        CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames(ninjiuzhi::taskOpen));
+        // 内功容器 View 43（九阴志 inner_books 门控）
+        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
+                id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
         // 技能容器 View 40 + 技能开关 + 立即 0x38
         CustomPackets.sendAll(fx, SkillPackets.starterSkillFrames());
         // 快捷键：打坐（Ctrl+0）+ 心佛掌（数字页 2）+ 太极拳古谱（数字页 3）——同步进权威行

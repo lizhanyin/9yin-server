@@ -35,6 +35,11 @@ public final class NpcInstance {
     public boolean dead;
     public long respawnAtMs;
 
+    // 副本摆位（creator XML）
+    public int npcProgress;        // NpcProgress：副本进度门控（0=常驻）
+    public long refreshMs = -1;    // RefreshTime：数据重生间隔；-1=未配置走默认
+    public String tag = "";        // 动态生成标记（GM 剧情验证流程）
+
     // creator 实例级业务覆盖
     public String shopId = "";
     public String depotId = "";

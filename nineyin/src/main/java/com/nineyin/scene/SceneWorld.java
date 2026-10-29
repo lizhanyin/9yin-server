@@ -38,17 +38,46 @@ public final class SceneWorld {
     }
 
     public final String sceneResource;
+    /** 副本场景（clone）：保留 clone/event 摆放并启用 NpcProgress 波次门控。 */
+    public final boolean cloneScene;
+    /** 副本进度（NpcProgress 门控刻度）：1=初始，GM 验证可推到最大波次。 */
+    public volatile int dungeonProgress = 1;
     public final List<NpcInstance> npcs = new ArrayList<>();
     public final List<Portal> portals = new ArrayList<>();
     public final Map<String, List<Waypoint>> pathTable = new HashMap<>();
     public final Map<Integer, PendingLeg> legs = new HashMap<>();
 
     private long lastTickMs;
+    private int dynamicOid = 900001;
     private static final long TICK_INTERVAL_MS = 800;
     private static final int MAX_NEW_LEGS = 512;
 
     SceneWorld(String sceneResource) {
+        this(sceneResource, false);
+    }
+
+    SceneWorld(String sceneResource, boolean cloneScene) {
         this.sceneResource = sceneResource;
+        this.cloneScene = cloneScene;
+    }
+
+    /** 动态生成（GM 剧情验证等）：分配 900001+ 的 oid 并入世界。 */
+    public synchronized int addDynamic(NpcInstance n) {
+        n.objectId = dynamicOid++;
+        npcs.add(n);
+        return n.objectId;
+    }
+
+    /** 按 objectId 移除（动态生成物清理）。 */
+    public synchronized boolean removeNpc(int objectId) {
+        return npcs.removeIf(n -> n.objectId == objectId);
+    }
+
+    /** 按标记移除全部动态生成物，返回移除数。 */
+    public synchronized int removeTagged(String tag) {
+        int before = npcs.size();
+        npcs.removeIf(n -> tag.equals(n.tag));
+        return before - npcs.size();
     }
 
     public synchronized NpcInstance npcById(int objectId) {

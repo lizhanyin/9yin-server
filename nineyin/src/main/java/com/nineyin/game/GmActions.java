@@ -7,7 +7,9 @@ import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
+import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
+import com.nineyin.scene.SceneWorld;
 import com.nineyin.server.FxSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,11 +107,18 @@ public final class GmActions {
     private final SceneManager sceneManager;
     private final RoleStore roleStore;
     private final SceneSwitcher switcher;
+    private final SceneFlow sceneFlow;
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher) {
+        this(sceneManager, roleStore, switcher, null);
+    }
+
+    public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
+                     SceneFlow sceneFlow) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.switcher = switcher;
+        this.sceneFlow = sceneFlow;
     }
 
     /** 执行一条命令；返回错误消息（null = 成功）。未知动作返回提示。 */
@@ -239,10 +248,100 @@ public final class GmActions {
                 fx.send(CustomPackets.nativeAction(1, 1, "interact268"));
                 return null;
             }
+            // ---------- 暮色剧情验证（clone003） ----------
+            case "twilight_stages_start" -> {
+                return twilightStagesStart(fx, session, st);
+            }
+            case "twilight_stages_remove" -> {
+                return twilightStagesRemove(fx, session, st);
+            }
+            case "twilight_mechanism_start" -> {
+                TwilightVerify.ensureScene(fx, session, st, switcher);
+                if (st.world == null) {
+                    st.world = sceneManager.world(TwilightVerify.SCENE_RESOURCE);
+                }
+                TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_BOX);
+                NpcInstance box = TwilightVerify.spawn(sceneManager, st.world,
+                        TwilightVerify.BOX_CONFIG, TwilightVerify.BOX_POS, TwilightVerify.TAG_BOX);
+                TwilightVerify.sendNpc(fx, st, sceneManager, box);
+                return null;
+            }
+            case "twilight_mechanism_remove" -> {
+                TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_BOX);
+                return null;
+            }
+            case "twilight_npc_move_start" -> {
+                TwilightVerify.ensureScene(fx, session, st, switcher);
+                if (st.world == null) {
+                    st.world = sceneManager.world(TwilightVerify.SCENE_RESOURCE);
+                }
+                TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_VILLAGER);
+                NpcInstance villager = TwilightVerify.spawn(sceneManager, st.world,
+                        TwilightVerify.VILLAGER_CONFIG, TwilightVerify.VILLAGER_POS,
+                        TwilightVerify.TAG_VILLAGER);
+                TwilightVerify.sendNpc(fx, st, sceneManager, villager);
+                return null;
+            }
+            case "twilight_npc_move_remove" -> {
+                TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_VILLAGER);
+                return null;
+            }
             default -> {
                 return "动作未实现: " + cmd.action();
             }
         }
+    }
+
+    /**
+     * 暮色剧情归位验证：不在村则从村口大门进村（重进链完成后全量下发）；
+     * 已在村则把波次进度推到最大并全量重发摆位（creator 固定坐标，不跟随玩家）。
+     */
+    private String twilightStagesStart(FxSession fx, LoginSession session, SceneFlow.SceneState st) {
+        SceneWorld world = sceneManager.world(TwilightVerify.SCENE_RESOURCE);
+        world.dungeonProgress = TwilightVerify.MAX_PROGRESS;
+        TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_BOX);
+        TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_VILLAGER);
+        if (!TwilightVerify.inScene(session)) {
+            switcher.switchScene(fx, session, st, TwilightVerify.SCENE_CONFIG,
+                    TwilightVerify.SCENE_RESOURCE, TwilightVerify.ENTRANCE[0],
+                    TwilightVerify.ENTRANCE[1], TwilightVerify.ENTRANCE[2],
+                    TwilightVerify.ENTRANCE[3]);
+            return null;
+        }
+        st.world = world;
+        resendAllNpcs(fx, st, session);
+        return null;
+    }
+
+    /** 重置/清理：丢弃 clone003 世界缓存（进度回到 1），在村则重发初始摆位。 */
+    private String twilightStagesRemove(FxSession fx, LoginSession session, SceneFlow.SceneState st) {
+        TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_BOX);
+        TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_VILLAGER);
+        sceneManager.resetWorld(TwilightVerify.SCENE_RESOURCE);
+        SceneWorld fresh = sceneManager.world(TwilightVerify.SCENE_RESOURCE);
+        if (TwilightVerify.inScene(session)) {
+            st.world = fresh;
+            resendAllNpcs(fx, st, session);
+        }
+        return null;
+    }
+
+    /** 全量重发：先移除客户端已见对象（含进度回退后应消失的波次），再走标准下发。 */
+    private void resendAllNpcs(FxSession fx, SceneFlow.SceneState st, LoginSession session) {
+        if (sceneFlow == null) {
+            log.warn("SceneFlow 未接入，无法重发摆位");
+            return;
+        }
+        if (st.world != null) {
+            synchronized (st.world) {
+                for (Integer oid : st.sentIds) {
+                    var n = st.world.npcById(oid);
+                    fx.send(S2CPackets.removeObject(oid, n != null ? n.ownerId : 1));
+                }
+            }
+        }
+        st.sentIds.clear();
+        sceneFlow.sendSceneNpcs(session);
     }
 
     private String sendState(FxSession fx, String action) {

@@ -2,6 +2,7 @@ package com.nineyin.scene;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.Assumptions;
 
 import java.nio.charset.Charset;
 import java.nio.file.Files;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 用合成 fixture（与真实资源同构：GBK、双表头 TSV、XML item、mappath ini）验证加载链。 */
@@ -146,6 +148,158 @@ class SceneLoadersTest {
     }
 
     @Test
+    void cloneSceneDetectedByResource() {
+        assertTrue(SceneManager.isCloneScene("clone003"));
+        assertTrue(SceneManager.isCloneScene("Clone003_New"));
+        assertTrue(SceneManager.isCloneScene("adv023_clone"));
+        assertFalse(SceneManager.isCloneScene("born04"));
+        assertFalse(SceneManager.isCloneScene("city02"));
+    }
+
+    /** 副本模式：保留 SubSceneNo 摆放、展开 *_creator（显式 position + amount 圆周）、解析波次/重生。 */
+    @Test
+    void creatorLoaderCloneModeExpandsWaves() throws Exception {
+        Path dir = tempDir.resolve("npc_creator/clone003");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("file.ini"), """
+                [file]
+                0=AttackNpc.xml
+                1=AttackNpc_Creator.xml
+                """, GBK);
+        Files.writeString(dir.resolve("AttackNpc.xml"), """
+                <root><staticcreator>
+                  <item No="a1" x="10" y="1" z="-10" ay="1" id="NpcClone003005" NpcProgress="2" RefreshTime="-1.0" PatrolMode="1"/>
+                  <item No="a2" x="20" y="1" z="-20" id="NpcClone003023" NpcProgress="3" RefreshTime="3.0"/>
+                  <item No="a3" x="30" y="1" z="-30" id="NpcClone003036" NpcProgress="7" RefreshTime="30000.0"/>
+                  <item No="a4" x="40" y="1" z="-40" id="NpcClone003007" SubSceneNo="5"/>
+                  <item No="a5" x="50" y="1" z="-50" id="BossClone003004"/>
+                  <item No="a6" x="60" y="1" z="-60" id="hd_event_2024"/>
+                </staticcreator></root>
+                """, GBK);
+        Files.writeString(dir.resolve("AttackNpc_Creator.xml"), """
+                <root><randomcreator>
+                  <creator No="c1" x="100" y="2" z="-100" radius="3.0" NpcProgress="2" WakeupRange="10.0">
+                    <item No="1" id="NpcClone003005" ay="1.5" amount="1" refreshtime="-1">
+                      <position x="101" z="-101" ay="0.7"/>
+                    </item>
+                    <item No="2" id="NpcClone003015" ay="2.0" amount="2" refreshtime="3.0"/>
+                  </creator>
+                </randomcreator></root>
+                """, GBK);
+
+        // 副本模式：static 6 条全保留（含 SubSceneNo/活动 id）+ creator 展开 3 条
+        List<NpcInstance> clone = SceneCreatorLoader.load("clone003", tempDir.resolve("npc_creator"), true);
+        assertEquals(9, clone.size());
+        NpcInstance wave7 = clone.stream().filter(n -> "NpcClone003036".equals(n.configId)).findFirst().orElseThrow();
+        assertEquals(7, wave7.npcProgress);
+        assertEquals(30000L, wave7.refreshMs, "30000 视为毫秒");
+        NpcInstance seconds = clone.stream().filter(n -> "NpcClone003023".equals(n.configId)).findFirst().orElseThrow();
+        assertEquals(3000L, seconds.refreshMs, "3.0 视为秒");
+        assertEquals(3, seconds.npcProgress);
+        // creator 显式 position：坐标与 ay 用 position 值，y 用 creator 值
+        NpcInstance explicit = clone.stream()
+                .filter(n -> "NpcClone003005".equals(n.configId) && n.x == 101f).findFirst().orElseThrow();
+        assertEquals(-101f, explicit.z);
+        assertEquals(2f, explicit.y);
+        assertEquals(0.7f, explicit.orient, 0.001f);
+        assertEquals(2, explicit.npcProgress, "creator 级 NpcProgress 生效");
+        // creator 无 position：amount=2 圆周展开（半径 3*0.65=1.95，首点角 0°）
+        List<NpcInstance> synth = clone.stream()
+                .filter(n -> "NpcClone003015".equals(n.configId)).toList();
+        assertEquals(2, synth.size());
+        assertEquals(3000L, synth.get(0).refreshMs);
+        assertEquals(2, synth.get(0).npcProgress);
+        assertEquals(101.95f, synth.get(0).x, 0.01f);
+        assertEquals(-100f, synth.get(0).z, 0.01f);
+
+        // 世界模式（旧行为不变）：SubSceneNo 跳过、_creator 清单过滤、活动 id 由 SceneManager 剥离
+        List<NpcInstance> world = SceneCreatorLoader.load("clone003", tempDir.resolve("npc_creator"), false);
+        assertEquals(5, world.size());
+        assertTrue(world.stream().noneMatch(n -> n.x == 40f), "SubSceneNo 摆放在世界模式跳过");
+        assertTrue(world.stream().noneMatch(n -> "NpcClone003015".equals(n.configId)), "_creator 文件跳过");
+    }
+
+    /** 副本场景世界：不剥离 clone/event 摆放，dungeonProgress 从 1 开始，resetWorld 重建。 */
+    @Test
+    void cloneWorldKeepsPlacementsAndTracksProgress() throws Exception {
+        Path share = buildCloneShareRoot();
+        SceneManager mgr = new SceneManager(share);
+        SceneWorld world = mgr.world("clone003");
+        assertTrue(world.cloneScene);
+        assertEquals(1, world.dungeonProgress);
+        assertEquals(9, world.npcs.size(), "副本模式全量保留（含 hd_event_2024 与 SubSceneNo 摆放）");
+        assertTrue(world.npcs.stream().anyMatch(n -> "hd_event_2024".equals(n.configId)));
+        assertTrue(world.npcs.stream().anyMatch(n -> "NpcClone003007".equals(n.configId) && n.x == 40f));
+
+        // 动态生成/清理
+        NpcInstance dyn = new NpcInstance();
+        dyn.configId = "BoxClone003001";
+        dyn.tag = "twilight_box";
+        dyn.x = dyn.homeX = -79f;
+        dyn.y = dyn.homeY = 36f;
+        dyn.z = dyn.homeZ = -35f;
+        int oid = world.addDynamic(dyn);
+        assertTrue(oid >= 900001);
+        assertEquals(10, world.npcs.size());
+        assertEquals(1, world.removeTagged("twilight_box"));
+        assertEquals(9, world.npcs.size());
+
+        // 重置：进度与 kill 状态随世界一起重建
+        world.dungeonProgress = 7;
+        mgr.resetWorld("clone003");
+        SceneWorld fresh = mgr.world("clone003");
+        assertNotSame(world, fresh);
+        assertEquals(1, fresh.dungeonProgress);
+        assertEquals(9, fresh.npcs.size());
+    }
+
+    /** clone003 同构 fixture：static + creator + npcconfig 模板。 */
+    private Path buildCloneShareRoot() throws Exception {
+        Path share = tempDir.resolve("share");
+        Path npcconfig = share.resolve("npc/npcconfig/worldnpc");
+        Files.createDirectories(npcconfig);
+        Files.writeString(npcconfig.resolve("clonenpc.txt"),
+                "编号\t脚本\t名字\t资源\nID\tscript\tName\tResource\n"
+                        + "NpcClone003005\tcommonnpc\t纵火者\tclonenpc\\a005\n"
+                        + "NpcClone003015\tcommonnpc\t纵火帮凶\tclonenpc\\a015\n"
+                        + "NpcClone003023\tcommonnpc\t官差\tclonenpc\\a023\n"
+                        + "NpcClone003036\tcommonnpc\t锦衣卫刀\tclonenpc\\a036\n"
+                        + "NpcClone003007\tcommonnpc\t暗器高手\tclonenpc\\a007\n"
+                        + "BossClone003004\tbossnpc\t叶楼凯\tclonenpc\\b004\n"
+                        + "hd_event_2024\tcommonnpc\t活动怪\tclonenpc\\act\n"
+                        + "BoxClone003001\tboxnpc\t钥匙箱\tclonenpc\\box\n",
+                GBK);
+        Path creator = share.resolve("creator/npc_creator/clone003");
+        Files.createDirectories(creator);
+        Files.writeString(creator.resolve("file.ini"), """
+                [file]
+                0=AttackNpc.xml
+                1=AttackNpc_Creator.xml
+                """, GBK);
+        Files.writeString(creator.resolve("AttackNpc.xml"), """
+                <root><staticcreator>
+                  <item No="a1" x="10" y="1" z="-10" id="NpcClone003005" NpcProgress="2" RefreshTime="-1.0"/>
+                  <item No="a2" x="20" y="1" z="-20" id="NpcClone003023" NpcProgress="3" RefreshTime="3.0"/>
+                  <item No="a3" x="30" y="1" z="-30" id="NpcClone003036" NpcProgress="7" RefreshTime="30000.0"/>
+                  <item No="a4" x="40" y="1" z="-40" id="NpcClone003007" SubSceneNo="5"/>
+                  <item No="a5" x="50" y="1" z="-50" id="BossClone003004"/>
+                  <item No="a6" x="60" y="1" z="-60" id="hd_event_2024"/>
+                </staticcreator></root>
+                """, GBK);
+        Files.writeString(creator.resolve("AttackNpc_Creator.xml"), """
+                <root><randomcreator>
+                  <creator No="c1" x="100" y="2" z="-100" radius="3.0" NpcProgress="2">
+                    <item No="1" id="NpcClone003005" amount="1" refreshtime="-1">
+                      <position x="101" z="-101"/>
+                    </item>
+                    <item No="2" id="NpcClone003015" amount="2" refreshtime="3.0"/>
+                  </creator>
+                </randomcreator></root>
+                """, GBK);
+        return share;
+    }
+
+    @Test
     void sceneWorldTicksPatrolLegs() throws Exception {
         Path share = buildShareRoot();
         SceneManager mgr = new SceneManager(share);
@@ -169,6 +323,30 @@ class SceneLoadersTest {
         assertEquals(210f, walker.z, 0.001f);
         SceneWorld.PendingLeg nextLeg = world.legs.get(10002);
         assertEquals(120f, nextLeg.x, "到达后应立即开新腿指向 (120,220)");
+    }
+
+    /** 真实 share 数据冒烟：NINEYIN_SERVER_ROOT 指向含 resources/modern/share 的根时启用。 */
+    @Test
+    void realClone003PlacementsSmoke() {
+        String env = System.getenv("NINEYIN_SERVER_ROOT");
+        Assumptions.assumeTrue(env != null && !env.isEmpty(), "NINEYIN_SERVER_ROOT 未设置，跳过真实数据冒烟");
+        Path share = Path.of(env, "resources", "modern", "share");
+        Assumptions.assumeTrue(Files.isDirectory(share.resolve("creator/npc_creator/clone003")),
+                "share 数据缺 clone003 摆放目录");
+
+        SceneManager mgr = new SceneManager(share);
+        SceneWorld world = mgr.world("clone003");
+        assertTrue(world.cloneScene, "clone003 应识别为副本场景");
+        assertTrue(world.npcs.size() >= 300,
+                "clone003 全量摆位应 ≥300，实际 " + world.npcs.size());
+        long wave2 = world.npcs.stream().filter(n -> n.npcProgress == 2).count();
+        assertTrue(wave2 >= 15, "NpcProgress=2 波（纵火者/帮凶）应 ≥15，实际 " + wave2);
+        long wave7 = world.npcs.stream().filter(n -> n.npcProgress == 7).count();
+        assertTrue(wave7 >= 3, "NpcProgress=7 波（锦衣卫刀）应 ≥3，实际 " + wave7);
+        assertTrue(world.npcs.stream().anyMatch(n -> "BossClone003004".equals(n.configId)),
+                "叶楼凯等 Boss 常驻摆位");
+        long refreshed = world.npcs.stream().filter(n -> n.refreshMs > 0).count();
+        assertTrue(refreshed >= 10, "宝箱/水桶等 RefreshTime 摆位应 ≥10，实际 " + refreshed);
     }
 
     /** 构造完整 share 根：npcconfig + creator + mappath（book1 → born04）。 */

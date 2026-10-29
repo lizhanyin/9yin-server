@@ -61,17 +61,30 @@ public final class SceneManager {
         return worlds.computeIfAbsent(key, k -> loadWorld(sceneResource));
     }
 
+    /** 丢弃场景缓存（GM 重置副本用）：下次 world() 会从数据重建。 */
+    public void resetWorld(String sceneResource) {
+        worlds.remove(sceneResource.toLowerCase(Locale.ROOT));
+    }
+
+    /** 副本场景（clone 系资源）：摆位/门控按副本规则加载。 */
+    public static boolean isCloneScene(String sceneResource) {
+        return sceneResource != null && sceneResource.toLowerCase(Locale.ROOT).contains("clone");
+    }
+
     private SceneWorld loadWorld(String sceneResource) {
-        SceneWorld world = new SceneWorld(sceneResource);
+        boolean cloneScene = isCloneScene(sceneResource);
+        SceneWorld world = new SceneWorld(sceneResource, cloneScene);
         templates.load(shareRoot.resolve("npc").resolve("npcconfig"));
         doorRoutes.load(shareRoot.resolve("rule").resolve("door_data.ini"));
         world.npcs.addAll(SceneCreatorLoader.load(sceneResource,
-                shareRoot.resolve("creator").resolve("npc_creator")));
+                shareRoot.resolve("creator").resolve("npc_creator"), cloneScene));
         PatrolPaths.load(shareRoot.resolve("creator").resolve("mappath"), sceneResource)
                 .forEach(world.pathTable::put);
-        int before = world.npcs.size();
-        world.npcs.removeIf(n -> isActivityId(n.configId));
-        log.info("activity/event NPCs stripped: {} -> {}", before, world.npcs.size());
+        if (!cloneScene) {
+            int before = world.npcs.size();
+            world.npcs.removeIf(n -> isActivityId(n.configId));
+            log.info("activity/event NPCs stripped: {} -> {}", before, world.npcs.size());
+        }
         PatrolPaths.assignRoutes(world.npcs, world.pathTable);
         for (NpcInstance n : world.npcs) {
             NpcTemplate tmpl = templates.lookup(n.configId);

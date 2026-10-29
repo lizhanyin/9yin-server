@@ -112,7 +112,11 @@ public final class SelectFlow {
             openDepot(fx);
             return;
         }
-        // 未知 func：清选区（保持旧行为，避免残留选中）
+        // 未知 func：暮色验证流程（拿出钥匙/跟我走）优先分发，其余清选区（保持旧行为）
+        if (TwilightVerify.handleMenuAction(fx, session, st, sceneManager, oid, func)) {
+            clearMenuState(st);
+            return;
+        }
         clearSelection(fx, st);
         log.info("Select seq={} target={} func={} (unknown menu action)", seq, oid, func);
     }
@@ -149,8 +153,12 @@ public final class SelectFlow {
             st.selectedX = npc.x;
             st.selectedZ = npc.z;
         }
-        // 可玩服务（商店/仓库）→ 帧对话菜单
+        // 可玩服务（商店/仓库）→ 帧对话菜单；暮色验证 tagged NPC 强制出验证菜单
         List<Integer> marks = playableMarks(npc);
+        Integer verifyMark = TwilightVerify.menuMarkFor(npc);
+        if (verifyMark != null) {
+            marks = List.of(verifyMark);
+        }
         if (!marks.isEmpty()) {
             long now = System.currentTimeMillis();
             if (npc != null && !(st.lastMenuOid == oid && st.lastMenuOwner == owner

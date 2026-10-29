@@ -51,6 +51,8 @@ public final class SceneFlow {
 
     public static final float VIEW_RADIUS = 450f;
     private static final int INITIAL_NPC_CAP = 200;
+    /** 副本场景全量摆位（clone003 实测约 330）一次性下发上限。 */
+    private static final int CLONE_NPC_CAP = 400;
     private static final int STREAM_NPC_CAP = 50;
     private static final float PATROL_BROADCAST_RADIUS = 250f;
     private static final int PATROL_BROADCAST_CAP = 32;
@@ -134,6 +136,7 @@ public final class SceneFlow {
         st.world = sceneManager.world(session.spawnResource);
         st.world.tick(System.currentTimeMillis());
         List<NpcInstance> visible = visibleNpcs(st.world, session.x, session.z);
+        int cap = st.world.cloneScene ? CLONE_NPC_CAP : INITIAL_NPC_CAP;
         int sent = 0;
         for (NpcInstance n : visible) {
             float dx = n.x - session.x;
@@ -144,7 +147,7 @@ public final class SceneFlow {
             fx.send(NpcPackets.npcAddObject(n, sceneManager.templates()));
             fx.send(S2CPackets.serverLocation(n.objectId, n.ownerId, n.x, n.y, n.z, n.orient));
             st.sentIds.add(n.objectId);
-            if (++sent >= INITIAL_NPC_CAP) {
+            if (++sent >= cap) {
                 break;
             }
         }
@@ -155,7 +158,7 @@ public final class SceneFlow {
                 st.world.npcs.size(), st.world.portals.size());
     }
 
-    /** 模板命中 + 非剧情 + 非活动怪，按距离排序（相近时功能 NPC 优先）。 */
+    /** 模板命中 + 非剧情 + 非活动怪，按距离排序（相近时功能 NPC 优先）；副本场景按 NpcProgress 波次门控。 */
     List<NpcInstance> visibleNpcs(SceneWorld world, float px, float pz) {
         List<NpcInstance> hits;
         synchronized (world) {
@@ -166,6 +169,9 @@ public final class SceneFlow {
                     continue;
                 }
                 if ("eventnpc".equalsIgnoreCase(tmpl.scriptClass())) {
+                    continue;
+                }
+                if (world.cloneScene && n.npcProgress > 0 && world.dungeonProgress < n.npcProgress) {
                     continue;
                 }
                 if (n.dead) {
@@ -180,6 +186,11 @@ public final class SceneFlow {
             return (double) (dx * dx + dz * dz);
         }).thenComparingInt(SceneFlow::residentScore));
         return hits;
+    }
+
+    /** 重生间隔：数据 RefreshTime 优先，未配置走 15s 默认。 */
+    static long respawnDelay(NpcInstance n) {
+        return n.refreshMs >= 0 ? n.refreshMs : NPC_RESPAWN_MS;
     }
 
     private static int residentScore(NpcInstance n) {
@@ -496,7 +507,7 @@ public final class SceneFlow {
                 .i32(PropertyId.HP_RATIO, npc.maxHp > 0 ? (int) ((long) npc.hp * 100 / npc.maxHp) : 0);
         if (npc.hp == 0) {
             npc.dead = true;
-            npc.respawnAtMs = now + NPC_RESPAWN_MS;
+            npc.respawnAtMs = now + respawnDelay(npc);
             npcBatch.u8(PropertyId.DEAD, 1);
         }
         fx.send(npcBatch.build());

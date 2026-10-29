@@ -91,7 +91,7 @@ public final class NineyinServer implements SummerApp {
         loginFlow.register(router);
         sceneFlow.register(router);
         new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher()).register(router);
-        gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher());
+        gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow);
     }
 
     public FxOpcodeRouter router() {

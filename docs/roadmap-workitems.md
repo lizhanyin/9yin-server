@@ -221,6 +221,10 @@
 9. **聊天频道**（最小编队/世界频道，C2S opcode 待抓包）
 10. **副本击杀驱动波次推进**（替换 GM 手推 dungeonProgress）
 
+> 相关决策：**暂不接入脚本系统**（LuaJ/GraalJS 等），理由与重新评估的触发条件见
+> [script-system-assessment.md](script-system-assessment.md)——推进顺序前 10 项均为
+> 协议对齐与系统骨架工程，脚本层属"内容生产期"问题。
+
 ---
 
 ## 更新日志
@@ -228,3 +232,4 @@
 | 日期 | 条目 | 变化 | 关联提交 |
 |---|---|---|---|
 | 2026-10-29 | 全部 85 项 | 初版：从 vagrant.pw/roadmap 拉取清单并完成首次评估 | — |
+| 2026-10-29 | 推进顺序 | 新增 [script-system-assessment.md](script-system-assessment.md)：评估并决策暂不接入脚本系统，延后至内容生产期 | — |

@@ -111,7 +111,20 @@
 `buff_new.ini`（ID→StaticData）→ `buff_static.ini`（VarProp 属性区间、Category、Photo、免疫类、LifeTimeType）→ 属性修改表。
 例：`buff_bossclone003001_xixue`→StaticData 7946→VarProp 152747~152766（20 级可变 buff）。
 
-## 4. 还原度清单
+## 5. 国际版（Age of Wushu）补充情报
+
+外网主要资料为 [WushuWiki（Fandom）](https://ageofwushu.fandom.com/wiki/Twilight_Village) 的 Twilight Village 专页（另有 [序章版专页](https://ageofwushu.fandom.com/wiki/Twilight_Village_(Prologue))、[YouTube 实战视频集](https://www.youtube.com/playlist?list=PLn7Bn-Q0SmzZ5b3H4G5k34bZKLsMql1Hw)）。与中文攻略互补的关键情报：
+
+1. **官方英文技能名（直接解开拼音 ID）**：
+   - 周厉风：被动＝攻击概率回 1000 HP（**被格挡也回**，坐实 `xixue` buff）；`sxks`＝**Kill for Blood**（正面 AoE）；`ywsf`＝**Entangled in Fishnet**（鱼网缠身减益）；另有 Silver Hook / Rise of the Twin Dragons / Bloody Dust（三个单体打断技）
+   - 魏不羁：**Grace of the Red Dragon**（伤害并召唤火场，站火持续掉血）；`byft`＝**Blazing Sky**（AoE 火焰喷息击倒）；Thunder Breaker（击倒）；Shatter the Mountain / Heavenly Strike（单体打断）
+   - 钱昔之：被动＝攻击概率眩晕（被格挡也生效）；`xyjq`＝**Xuanyin Blade Chi**（玄阴刀气，抽内力）；`txqj`＝**Eliminate Thousand Forces**
+2. **流程机制精确化**：救 5 个村民（每村民 2 看守）→ 周厉风现身；灭火＝空桶→海边装水→绿圈处使用（最多带 2 桶，土匪存活会复燃）；**赵大妈 (65,-100) 对话后 3 个劫匪在 (10,-102)/(0,-126)/(24,-133) 刷出**——真实坐标可直接入 creator 摆位
+3. **分支机制（新发现）**：韩似锦 **3 分钟时限**，超时 BOSS 消失改打赵子亟——005/006 两条线的官方解释
+4. **宇文绝**：开战召唤刺客（assassins）——第 7 个 BOSS 坐实；叶楼凯同为开战召唤
+5. **Prologue 版**＝3 BOSS 短版（周厉风/魏不羁/钱昔之，不召唤），对应国服新手暮色
+
+## 6. 还原度清单
 
 | 机制环节 | 还原度 | 依据 |
 | --- | --- | --- |
@@ -125,23 +138,31 @@
 
 **明确缺失**：boss 服务器 Lua（yx 变体全量引用）、部分技能 Lua（如 `clone003_yeloukai_cnhh.lua`）、`Func(8)/Func(22)` 枚举官方名（语义已由数据反证）、台词文本、掉落组合表 `comb_PassDrop_*`（被引用未定义）。
 
-## 5. 结论与建议路线
+## 7. 结论与建议路线
 
 - **能做**：通用 AI 事件引擎（解析 package→event→condition，支持出生/死亡/周期事件、概率、HPRatio/MPRatio/难度/等级条件，执行加 buff/召唤/喊话/属性操作），暮色 10 个 BOSS 的出生 buff、难度分档、死亡掉箱、回血触发可**原样数据驱动**跑起来 —— 这是原服务器的真实架构，不是模拟。
 - **需近似**：转阶段表演（烈焰真罡读条、春泥护花火圈、黑白双煞合体）按攻略描述手写为技能释放规则，套用数据表里的技能 ID 与 CD。
 - **不可还原**：台词文本（客户端文件）、原版 Lua 精确手感。
 
-实施顺序建议（对应既定路线图的 Step 3）：
+## 8. 实现进度（Step 3 第一切片，已落地）
 
-1. AI 事件引擎：表加载器（package/event/condition/formula 四表）+ 运行时（挂到现有 `SceneWorld` tick 与 `applySkillDamage` 战斗管线，死亡/出生/周期三类事件先落地）；
-2. Buff 系统：buff_new/buff_static 加载 + NpcInstance buff 槽 + HPRatio/MPRatio 条件求值；
-3. 难度档位：`Func(8,N)` 接 `SceneWorld.dungeonProgress` 之外的难度维度（副本进入时选定）；
-4. 死亡掉宝箱矩阵（OpEvent=25）接 BoxNpc 生成；
-5. 出招循环：按本文第 2 节攻略规则为每个 BOSS 手写近似循环（读取技能 CD/目标选择数据）。
+| 组件 | 状态 |
+| --- | --- |
+| `com.nineyin.rule.AiRuleData` | ✅ 四表加载（真实数据 4963 包 / 37450 事件 / 40182 条件 / 11143 公式） |
+| `com.nineyin.game.AiEventEngine` | ✅ 出生/死亡/周期/战斗事件运行时；OpEvent 2=加 buff（记录 ID）、19=设属性（BornAction）、25=召唤（动态 oid + 全场景广播）；概率 OpRate；公式从左到右求值 |
+| 难度维度 | ✅ `SceneWorld.dungeonDifficulty`（1~4）/`dungeonRating`（1~3），GM 面板"难度：普通/困难/地狱/修罗"按钮 |
+| BOSS 绑定 | ✅ BossClone003001~008 →（新）包 4399~4407；BossCloneTZ001~005 →【挑战】包 5976~5980（原映射在丢失 Lua，按包 Text 复原） |
+| 战斗管线接线 | ✅ `applySkillDamage` hp=0 → `onNpcDeath`；每秒 `tick` → `pump`（含重生后再出生） |
+| 验证 | ✅ AiEventEngineTest 8 用例：fixture 全机制 + 真实数据冒烟（韩似锦出生 buff、难度 1 死亡掉 BossBox003005A） |
+| 待办 | buff 属性加成与视觉帧、OpEvent 23/24（技能释放）、OpEvent 70/71（召唤组/台词组文本）、宝箱开启交互、玩家等级建模（修罗等级分箱） |
 
 ## 附：数据来源
 
 - 本地表：`rule/ai_editor_{package,event}.ini`、`rule/condition{,_formula}.ini`、`rule/condition.xml`（客户端条件语法文档）、`skill/{skill_new,skill_static,buff_new,buff_static}.ini`、`npc/npcconfig/clonenpc/bossnpc.txt`、`clone/cloneinfo.ini`、`clone/clonecolinfo.ini`
+- 国际版：
+  - [WushuWiki：Twilight Village（Age of Wushu 英文 Wiki）](https://ageofwushu.fandom.com/wiki/Twilight_Village)
+  - [WushuWiki：Twilight Village (Prologue)](https://ageofwushu.fandom.com/wiki/Twilight_Village_(Prologue))
+  - [DarvenAOW 实例攻略视频集（YouTube）](https://www.youtube.com/playlist?list=PLn7Bn-Q0SmzZ5b3H4G5k34bZKLsMql1Hw)
 - 攻略：
   - [17173：禁地暮色之村普通难度速通详细攻略](https://9yin.17173.com/news/08172025/225230268.shtml)
   - [17173：地狱暮色之村攻略 各BOSS注意要点](https://9yin.17173.com/content/2015-07-29/20150729233802823_all.shtml)

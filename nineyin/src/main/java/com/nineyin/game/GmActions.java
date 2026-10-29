@@ -286,6 +286,20 @@ public final class GmActions {
                 TwilightVerify.despawnTagged(fx, st, TwilightVerify.TAG_VILLAGER);
                 return null;
             }
+            case "twilight_difficulty" -> {
+                int level = cmd.intParam("level", 1);
+                if (level < 1 || level > 4) {
+                    return "level 应为 1~4（普通/困难/地狱/修罗）";
+                }
+                int rating = Math.max(1, Math.min(3, cmd.intParam("rating", 1)));
+                SceneWorld world = st.world != null && st.world.cloneScene
+                        ? st.world : sceneManager.world(TwilightVerify.SCENE_RESOURCE);
+                world.dungeonDifficulty = level;
+                world.dungeonRating = rating;
+                fx.send(S2CPackets.worldInfo(0,
+                        "副本难度：" + difficultyName(level) + "，评价档：" + rating));
+                return null;
+            }
             default -> {
                 return "动作未实现: " + cmd.action();
             }
@@ -342,6 +356,15 @@ public final class GmActions {
         }
         st.sentIds.clear();
         sceneFlow.sendSceneNpcs(session);
+    }
+
+    private static String difficultyName(int level) {
+        return switch (level) {
+            case 2 -> "困难";
+            case 3 -> "地狱";
+            case 4 -> "修罗";
+            default -> "普通";
+        };
     }
 
     private String sendState(FxSession fx, String action) {

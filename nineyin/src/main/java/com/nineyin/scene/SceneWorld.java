@@ -42,6 +42,10 @@ public final class SceneWorld {
     public final boolean cloneScene;
     /** 副本进度（NpcProgress 门控刻度）：1=初始，GM 验证可推到最大波次。 */
     public volatile int dungeonProgress = 1;
+    /** 副本难度档（AI 条件 Func(8,N)：1普通/2困难/3地狱/4修罗）。 */
+    public volatile int dungeonDifficulty = 1;
+    /** 通关评价档（AI 条件 Func(22,N)：1/2/3，默认甲等）。 */
+    public volatile int dungeonRating = 1;
     public final List<NpcInstance> npcs = new ArrayList<>();
     public final List<Portal> portals = new ArrayList<>();
     public final Map<String, List<Waypoint>> pathTable = new HashMap<>();
@@ -56,7 +60,8 @@ public final class SceneWorld {
         this(sceneResource, false);
     }
 
-    SceneWorld(String sceneResource, boolean cloneScene) {
+    /** 副本世界显式构造（测试/引擎可直接建世界，不走 SceneManager 全量加载）。 */
+    public SceneWorld(String sceneResource, boolean cloneScene) {
         this.sceneResource = sceneResource;
         this.cloneScene = cloneScene;
     }

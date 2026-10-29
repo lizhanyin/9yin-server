@@ -4,6 +4,7 @@ import com.nineyin.db.JsonRoleStore;
 import com.nineyin.db.MySqlRoleStore;
 import com.nineyin.db.MysqlDsn;
 import com.nineyin.db.RoleStore;
+import com.nineyin.game.AiEventEngine;
 import com.nineyin.game.GmActions;
 import com.nineyin.game.QinggongCatalog;
 import com.nineyin.game.SceneFlow;
@@ -15,9 +16,13 @@ import com.nineyin.gm.GmHub;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.Appearance;
+import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
+import com.nineyin.rule.AiRuleData;
+import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
+import com.nineyin.scene.SceneWorld;
 import com.nineyin.shop.ShopRepository;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.app.SummerApp;
@@ -80,7 +85,11 @@ public final class NineyinServer implements SummerApp {
         qinggongCatalog.load(shareRoot.resolve("skill").resolve("qinggong").resolve("qgdefine.ini"));
 
         LoginFlow loginFlow = new LoginFlow(roleStore);
-        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog);
+        AiRuleData aiRules = new AiRuleData();
+        aiRules.load(shareRoot);
+        AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates());
+        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine);
+        aiEngine.setBroadcaster((world, n) -> broadcastSpawn(world, n));
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.setReentryHandler(fx -> {
             LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
@@ -96,6 +105,24 @@ public final class NineyinServer implements SummerApp {
 
     public FxOpcodeRouter router() {
         return router;
+    }
+
+    /** AI 事件召唤物广播：向同场景且已下发 NPC 的会话补 0x0D + 0x1F。 */
+    private void broadcastSpawn(SceneWorld world, NpcInstance n) {
+        for (FxSession fx : sessions) {
+            LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+            if (login == null) {
+                continue;
+            }
+            SceneFlow.SceneState st = sceneFlow.stateOf(fx);
+            if (st.world != world || !st.npcsSent || st.awaitingReentryReady
+                    || st.sentIds.contains(n.objectId)) {
+                continue;
+            }
+            fx.send(NpcPackets.npcAddObject(n, sceneManager.templates()));
+            fx.send(S2CPackets.serverLocation(n.objectId, n.ownerId, n.x, n.y, n.z, n.orient));
+            st.sentIds.add(n.objectId);
+        }
     }
 
     /**

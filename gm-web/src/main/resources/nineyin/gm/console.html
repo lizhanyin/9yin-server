@@ -1302,6 +1302,24 @@
         <button onclick="story('twilight_stages_remove')">
           重置/清理暮色剧情验证
         </button>
+        <hr />
+        <p class="muted">
+          副本难度档（AI 条件 Func(8,N)，1普通/2困难/3地狱/4修罗）：影响 BOSS
+          出生 buff 与死亡掉宝箱矩阵（BossBox003[难度]05[评价]）。击杀 BOSS
+          后在原地掉落对应宝箱（评价档默认 1）。
+        </p>
+        <button onclick="story('twilight_difficulty', { level: 1 })">
+          难度：普通
+        </button>
+        <button onclick="story('twilight_difficulty', { level: 2 })">
+          难度：困难
+        </button>
+        <button onclick="story('twilight_difficulty', { level: 3 })">
+          难度：地狱
+        </button>
+        <button onclick="story('twilight_difficulty', { level: 4 })">
+          难度：修罗
+        </button>
       </section>
       <section>
         <h2>九阴志全局门控</h2>
@@ -1816,8 +1834,8 @@
       if (confirm("确定销毁当前已打开副本及其未结算进度？"))
         command({ action: "destroy_clone" });
     }
-    function story(action) {
-      command({ action });
+    function story(action, params) {
+      command(params ? { action, ...params } : { action });
     }
     function ninJiuZhiSet() {
       let stage = +document.querySelector("#ninjiuzhi-stage").value;

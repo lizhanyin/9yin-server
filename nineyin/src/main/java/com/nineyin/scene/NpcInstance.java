@@ -34,6 +34,11 @@ public final class NpcInstance {
     public int maxHp;
     public boolean dead;
     public long respawnAtMs;
+    public long lastCombatMs;   // 最近一次受击（AI 事件 EventType=6 战斗窗口判据）
+
+    // AI 事件引擎（buff 仅记录 ID；属性加成/视觉帧后续接入）
+    public final java.util.Set<String> buffs =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // 副本摆位（creator XML）
     public int npcProgress;        // NpcProgress：副本进度门控（0=常驻）

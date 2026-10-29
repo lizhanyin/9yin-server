@@ -65,6 +65,7 @@ public final class SceneFlow {
     private final RoleStore roleStore;
     private final QinggongCatalog qinggongCatalog;
     private final SceneSwitcher switcher;
+    private final AiEventEngine ai;   // 可空：未接线时无 AI 事件（测试旧路径）
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -102,10 +103,16 @@ public final class SceneFlow {
     }
 
     public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog) {
+        this(sceneManager, roleStore, qinggongCatalog, null);
+    }
+
+    public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog,
+                     AiEventEngine ai) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.qinggongCatalog = qinggongCatalog;
         this.switcher = new SceneSwitcher(sceneManager, roleStore, this);
+        this.ai = ai;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -502,6 +509,7 @@ public final class SceneFlow {
 
         int damage = 150;
         npc.hp = Math.max(0, npc.hp - damage);
+        npc.lastCombatMs = now;
         S2CPackets.Batch npcBatch = S2CPackets.batch(npc.objectId, npc.ownerId);
         npcBatch.i32(PropertyId.HP, npc.hp)
                 .i32(PropertyId.HP_RATIO, npc.maxHp > 0 ? (int) ((long) npc.hp * 100 / npc.maxHp) : 0);
@@ -514,6 +522,10 @@ public final class SceneFlow {
         if (npc.dead) {
             fx.send(S2CPackets.removeObject(npc.objectId, npc.ownerId));
             st.sentIds.remove(npc.objectId);
+            if (ai != null) {
+                // 玩家等级未建模：修罗等级分箱（Level 34-50/51-60）条件暂不满足
+                ai.onNpcDeath(st.world, npc, 0);
+            }
             log.info("npc {} ({}) defeated, respawn in {}ms", npc.objectId, npc.configId, NPC_RESPAWN_MS);
         }
     }
@@ -620,6 +632,9 @@ public final class SceneFlow {
         long now = System.currentTimeMillis();
         boolean changed = session.actor.tick(now);
         respawnDeadNpcs(fx, st, session, now);
+        if (st.world != null && ai != null) {
+            ai.pump(st.world, now);
+        }
         if (changed && now - st.lastVitalMs >= 1000) {
             st.lastVitalMs = now;
             fx.send(session.actor.vitalUpdate());

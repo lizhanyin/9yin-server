@@ -712,6 +712,37 @@ class SceneFlowTest {
         // （actor 存在时走 pending 分支，同样无帧）
     }
 
+    /** 第七轮：区间树解码批（2/15/31/54/70/84/107/145/187/243/266/295/442~445/886~889/938）。 */
+    @Test
+    void customRound7IntervalTreePinnedMsgIds() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // 54 手动招架：翻转 actor.parrying（日志对齐 publish manual parry state，无帧）
+        assertFalse(login.actor.parrying);
+        send(custom().u16(1).u8(2).i32(54).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20));
+        assertTrue(login.actor.parrying, "54 should toggle parrying on");
+        send(custom().u16(1).u8(2).i32(54).toByteArray());
+        drainOutbound();
+        assertFalse(login.actor.parrying, "54 again should toggle off");
+
+        // 校验层家族：全部无帧
+        for (int mid : new int[]{2, 15, 31, 70, 84, 107, 112, 145, 187, 243, 266,
+                295, 442, 443, 444, 445, 886, 887, 888, 889, 938}) {
+            send(custom().u16(2).u8(2).i32(mid).u8(2).i32(1).toByteArray());
+        }
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "round-7 validation handlers emit no frames");
+    }
+
     private static boolean containsUtf8(byte[] frame, String s) {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         outer:

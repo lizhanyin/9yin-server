@@ -68,10 +68,12 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 ### 2.1 编号与参数布局已钉死的消息（可直接对齐实现）
 
 证据为 exe 中的参数校验串 `expects TVarList(...)` / `handle ... NNN`：
+（**第七轮起 msgId→handler 权威映射见 §3.9 完整表**，本表只列布局/行为已细化的条目）
 
 | msgId | 功能 | 参数布局 | exe 行为要点 | Java 现状 |
 |---|---|---|---|---|
 | 1 | 聊天 | `[channel, ...]` | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)` | 🟨 第六轮：出生校验+日志（聊天广播未接） |
+| 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志 |
 | 19 | 时装套装 fashion_suit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` / `invalid sub-message %s` / `unhandled sub=%d args=[%s]`；wear/unwear/buy 与 FashionSuitRec 推送 | 🟨 第四轮：子消息类型分流 |
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
@@ -87,7 +89,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
 | 215 | 修炼进度（含内功子命令） | `[configId(str)]`（内功路径） | 反汇编：215 → handlePlayerProgressCustom；`player progress request before scene player exists`、`215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d` | 🟨 第六轮：进度/内功表未接，双拒绝分支 |
 | 216/217 | 轻功 基本/主动 | — | `reject basic qinggong hold cost=%d point=%d/%d`；ActiveQGSkillRec 行 | ✅ |
-| 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state` | ✅ |
+| 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state`（**第七轮修正：54=ManualParry，218=ActiveParry**） | ✅ |
 | 223 / 5223 / 99 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated`；**反汇编修正：Go switch 的 case 值是 99，223/5223 在 exe 全 .text 无比较点**（223/5223 为实机抓包有效编号，三者并存接入） | 🟨（见 §3 疑似偏差） |
 | 240 | 打坐 | `[start_or_stop:int]` | `sitcross native state %d -> %d via normal 0x10`（1=坐下 0/2=起身） | ✅ |
 | 270 | 暮色道具技能 | `[skillId(str)]` | `twilight item skill %s has no active scene` | 🟨 第三轮：无活跃暮色场景拒绝（日志对齐） |
@@ -109,12 +111,14 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 784 | 乱斗 | `[sub(int)=10 OPEN_LIMITE index, origin_id]` | `luandou 784: encode reply`、`missing sub_msg args=%d`、`bad sub_msg type %s`、`sub=10 OPEN_LIMITE index=%d origin_id=%d` | 🟨 第三轮：sub 路由（reply 格式待钉死） |
 | 864 | 生活职业 | `[jobName(str)]`（假设首参） | `unknown life job %q` / `life job %s already learned; republish job_rec`、`apprenticed life job=%s level=%d points=%d` | 🟨 第四轮：未知职业拒绝（职业表与 job_rec 未接） |
 | 865 | 踢馆 | sub 6=确认切换 / 7=离场 | `CUSTOM_MSG_TG_SWITCH`（见 audit/tiguan 文档完整线序）、`tiguan 865 bad sub_msg %s` | 🟨 第三轮：sub 6/7 校验+日志（分组场景生命周期待实装） |
-| 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action` | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
+| 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action`；**第七轮：868 非 custom case（Go 在 865 handler 内子路由）** | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
 | 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick（响应载体假设 0x1E 同 msgId，待抓包） |
 | 943 | 兵录修改 | `[943, sub(int), name(str), num(int)]` | `binglu modify: missing sub message`、`sub message is not an integer`、`unhandled sub=%d name=%q num=%d` | 🟨 第三轮：sub 三分支校验日志（binglu 数据表未接） |
 | 961 | 骑乘技能 | `[skillId(str)]`（假设） | 反汇编：961 → handleRideSkillUse；`ride skill (not dismount) id=%s mounted=%v` | 🟨 第六轮：日志（坐骑状态未接） |
-| 819 | 用户须知签署 | — | （Java 侧实测闭环） | ✅ |
-| 517 | GM 探针默认 msgId | `[subType]` | `GM custom probe msgID=%d subType=%d` | 🟨 第三轮：日志（GM 面板直驱未接） |
+| 819 | 用户须知签署 | — | （Java 侧实测闭环；**第七轮：819 非 custom case，Go 在登录/场景流处理**） | ✅ |
+| ~~517~~ | GM 探针（旧误传编号） | `[subType]` | `GM custom probe msgID=%d subType=%d`；**第七轮：GM 探针真身是 2（handleGMCustom），517 非 Go case** | 🟨 第七轮：2/517 并存日志 |
+| 886~889 | 一键穿 OnestepEquip | — | 反汇编区间叶四连号；`wear now requires one wearable equipment item` | 🟨 第七轮：库存校验+日志（穿路由待接） |
+| 938 | 武器重铸总入口 | — | 反汇编：938 → handleWeaponRecastCustom；`recast preview reject: need 5 args, got %d`、`recast lock reject %s has no rand pool`（Preview/Lock/Unlock/Sure 为子命令） | 🟨 第七轮：日志（重铸资源未接） |
 
 ### 2.2 exe 的 75 个 custom handler 按功能分组
 
@@ -165,8 +169,9 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 
 装备系统仍缺（对照 exe）：~~装备属性加成（equipStrAdd/equipPhyDef 等未接
 CombatStats）~~（**第五轮已闭合**，见 §3.7）、
-右键使用穿戴（EquipItemUse）/一键穿（OnestepEquip）两个未钉死编号的 msgId、
-时装外观刷新（FashionCoat=1352 系）、重铸 WeaponRecast 全套。
+右键使用穿戴（EquipItemUse，编号仍未定位）/一键穿（~~编号未钉死~~ **第七轮钉死
+886~889**，见 §3.9）、时装外观刷新（FashionCoat=1352 系）、重铸 WeaponRecast
+全套（~~编号未钉死~~ **第七轮钉死总入口 938**，Preview/Lock/Unlock/Sure 为其子命令）。
 
 ### 3.4 技能系统轮（2026-10-30 第二轮）
 
@@ -324,6 +329,62 @@ Java 侧：99 并入操作模式 case（223/5223/99 三编号并存）；新增 
 Shortcut(200)/Warning(292)/924/868 等的守卫比较因落入式 case / 参数装配段较长
 未读出——case 块经 `jl/jg` 子树进入且与树指令交错，需要完整的区间递归解码器；
 反汇编产物已存 `%TEMP%/text.asm`（1.8M 行）与 `/tmp/syms.txt` 可继续。
+
+### 3.9 区间树解码拉全 switch 表（2026-10-30 第七轮）
+
+修复第六轮解码器（objdump 跳转目标带 `<main.handle+0x…>` 注释，正则不可用行尾
+锚点），三种提取法并集出**完整 custom switch 表**：
+
+1. **je-相等对扫描**（全 main.handle 区间）：`cmp $imm,%ecx` + `je/jne` 的相等
+   分支 → 块内首个 handler 调用，52 个 handler；
+2. **区间树递归**（根 0x87dd08 / 0x8836a0，区间 [1,999]）：处理 `jl/jg` 子树与
+   **区间叶**（无相等比较、靠 `cmp $lo; jl away` 收敛的 `case A, B:` 连号块，
+   如 200/201、886~889）；
+3. **全 .text 常量扫描**：证伪非 case 编号。
+
+**完整表**（🎉 = 本轮新钉死；✓ = 与既有字符串/抓包知识互证）：
+
+| msgId | handler | | msgId | handler |
+|---|---|---|---|---|
+| 1 | Chat ✓ | | 249 | YufengHoldPowerEnd ✓ |
+| 2 | GMCustom 🎉（GM 探针真身；517 是旧误传，全 .text 零比较点） | | 266 | NewRide 🎉 |
+| 15 | signalAdvancedQingGongEntry 🎉 | | 270 | TwilightItemSkill ✓ |
+| 19 | FashionSuit ✓ | | 291/292/293 | PKMode/Warning/PKProtect ✓ |
+| 30 | MoveItem ✓ | | 295 | SetTitle 🎉 |
+| 31 | BodyItemUse 🎉 | | 301 | VIP ✓ |
+| 34/71 | ItemAction 🎉（71 ≠ 商店关闭） | | 326/388/442~445 | Team（6 编号）🎉 |
+| 54 | ManualParry 🎉（218=ActiveParry 互证） | | 353/359/361/365 | Mail（4 编号）🎉 |
+| 61 | ShowEquipType ✓ | | 380 | PickupDrop ✓ |
+| 70 | ShopBuy ✓（64 打开未在 custom switch 出现） | | 382 | CloseDrop ✓ |
+| 84/112/144/145 | Clone（进入/列表/结算确认/奖励拾取）🎉 | | 560 | ChargeShop ✓ |
+| 99 | SetOperateMode ✓（223/5223 零比较点） | | 688 | Tersure ✓ |
+| 107 | SaveCustomizing（捏脸）🎉 | | 692 | AttireEquipBlend ✓ |
+| 150/161/172 | JingMai（3 编号）🎉 | | 700~706 | Origin：700=Active/701=SetShow/702=GetPrize/705=Get/706=RequireNotify ✓ |
+| 180 | Card ✓ | | 713 | GiftBoxClaim ✓ |
+| 187 | AttributeMall 🎉 | | 770 | BodyScale ✓ |
+| 195 | SaveShortcutScheme ✓ | | 784 | LuanDou ✓ |
+| 200/201 | Shortcut（区间叶：`case 200, 201:`）✓ | | 864 | LifeJob ✓ |
+| 209 | TaskGiveUp ✓ | | 865 | Tiguan ✓ |
+| 211 | Skill ✓ | | 886~889 | OnestepEquip（区间叶四连号）🎉 |
+| 215 | PlayerProgress ✓ | | 924 | MessageDelay ✓ |
+| 216/217/218 | QingGong/ActiveQG/ActiveParry ✓ | | 938 | WeaponRecast（总入口；Preview/Lock/Unlock/Sure 为子命令）🎉 |
+| 240 | Sitcross ✓ | | 943 | Binglu ✓ |
+| 243 | Ride 🎉 | | 961 | RideSkillUse ✓ |
+
+**不在 custom switch 的编号**（全 .text 零比较点）：819（条款签署——Go 在登录/
+场景流处理，Java 实测编号保留）、868（踢馆轮盘——865 handler 内子路由）、
+517（旧误传）、223/5223（操作模式——Go case 为 99）。
+
+**仍未定位**：EquipItemUse（右键穿）、UseItem（道具使用）、CardSkillCast、
+QingGong 细分（BasicQingGongStart/End/Landing/GJLandingDetect 等，可能挂 216
+子命令）、WeaponRecastPreview/Lock/Unlock/Sure（938 子命令）、64（商店打开）——
+这些 handler 在符号表且有两处调用点，但守卫在长参数装配段之后，需要按调用点
+逐个回溯块首。
+
+Java 侧：`dispatchCustom` 新增 2/15/31/54/70/84/112/107/145/187/243/266/295/
+442~445/886~889/938 十八个 case（54 手动招架翻 `actor.parrying`；145 并入
+Clone 族保留精确拒绝文本；70 升级带 stock 校验串引用）；517/868/819 的注释
+按"非 Go case"事实修正（case 保留，客户端实测会发）。
 
 ## 4. 后续继续挖掘的方法
 

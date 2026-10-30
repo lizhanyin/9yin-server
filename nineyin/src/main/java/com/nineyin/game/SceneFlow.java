@@ -42,7 +42,9 @@ import java.util.concurrent.ThreadLocalRandom;
  *   943 兵录 / 784 乱斗 / 865/868 踢馆 / 180 卡片 / 209 任务 / 270 暮色 / 382 掉落 /
  *   249 御风 / 144 副本结算 / 517 GM 探针（C2S 校验层+日志对齐，见 docs §3.5）、
  *   215 内功 / 19 时装 / 301 VIP / 688 珍宝阁 / 692 面料 / origin 700~706 / 713 礼盒 /
- *   770 体型 / 864 生活职业 / 145 副本奖励 / 380 拾取（编号钉死批，见 docs §3.6）
+ *   770 体型 / 864 生活职业 / 145 副本奖励 / 380 拾取（编号钉死批，见 docs §3.6）、
+ *   2 GM 探针 / 54 手动招架 / 84+112+144+145 副本族 / 886~889 一键穿 / 938 重铸 /
+ *   15/31/70/107/187/243/266/295/442~445（区间树解码批，完整 msgId 表见 docs §3.9）
  * - 传送门：移动进入触发半径（door_data.ini MoveTarget/SpringRange）
  * - 巡逻广播（任意 0x0A 驱动，500ms 节流）
  * - 每秒 tick（NineyinServer 驱动）：actor 恢复 + vital 同步 + NPC 重生
@@ -435,11 +437,9 @@ public final class SceneFlow {
             case 291 -> handleChangePkMode(fx, session, msg);
             case 292 -> handleChangeWarning(fx, session, msg);
             case 293 -> handlePkProtectToggle(fx, session, msg);
-            // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认）
+            // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认；
+            // 反汇编：819 不在 custom switch（Go 在登录/场景流内处理），Java 保留实测编号）
             case 819 -> handleTermsSign(fx, session);
-            // 商店打开/购买（64/70；71 经反汇编证实是 ItemAction 不是商店关闭，S2C 响应待抓包）
-            case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
-            case 70 -> log.info("shop msg=70 buy argc={} (response pending capture)", msg.size());
             // ---- 2026-10-30 custom 轮：参数布局/行为已从 exe 字符串钉死的消息 ----
             // 消息延迟探测：[924, i64 tick]，回显 tick 供客户端测往返延迟
             case 924 -> handleMessageDelay(fx, session, msg);
@@ -447,7 +447,7 @@ public final class SceneFlow {
             case 560 -> handleChargeShop(fx, session, msg);
             // 御风蓄力完成确认（参考服在蓄力窗口内等待 249，无移动则超时取消）
             case 249 -> handleYufengChargeConfirm(fx, session);
-            // 副本结算确认（参考服推 col result 后 awaiting C2S 144）
+            // 副本结算确认（参考服推 col result 后 awaiting C2S 144；反汇编归属 Clone 族）
             case 144 -> handleColResultConfirm(fx, session);
             // 卡片（sub_command 路由，USE/USESKILL/SAVE 的子编号未钉死）
             case 180 -> handleCard(fx, session, msg);
@@ -463,10 +463,40 @@ public final class SceneFlow {
             case 784 -> handleLuanDou(fx, session, msg);
             // 踢馆：sub 6=确认切换 / 7=离场（线序见 artifacts/audit/tiguan 文档）
             case 865 -> handleTiguan(fx, session, msg);
-            // 踢馆轮盘：[868, action(str)]
+            // 踢馆轮盘：[868, action(str)]（反汇编：868 不在 custom switch——Go 在 865
+            // handler 内子路由轮盘；Java 按审计线序保留独立 case）
             case 868 -> handleTiguanRoulette(fx, session, msg);
-            // GM 探针默认 msgId：[517, subType]
-            case 517 -> handleGmProbe(fx, session, msg);
+            // ---- 2026-10-30 custom 第七轮：区间树解码拉全 switch 表 ----
+            // GM 探针（反汇编：2 → handleGMCustom；517 为旧误传，非 Go case）
+            case 2, 517 -> handleGmProbe(fx, session, msg);
+            // 高级轻功入场信号（反汇编：15 → signalAdvancedQingGongEntry）
+            case 15 -> handleAdvancedQingGongEntry(fx, session, msg);
+            // 身体道具使用（反汇编：31 → handleBodyItemUse）
+            case 31 -> handleBodyItemUse(fx, session, msg);
+            // 手动招架（反汇编：54 → handleManualParryCustom；218 为主动招架）
+            case 54 -> handleManualParry(fx, session, msg);
+            // 商店购买（反汇编：70 → handleShopBuyCustom；64 打开未在 custom switch 出现）
+            case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
+            case 70 -> log.info("shop msg=70 buy argc={} (response pending capture; "
+                    + "stock/capital check `shop %s item %s stock=%d < requested=%d` pending)", msg.size());
+            // 副本族（反汇编：84/112/144/145 → handleCloneCustom：进入/列表/结算确认/奖励拾取；
+            // 144 的精确日志见下方独立 case）
+            case 84, 112, 145 -> handleClone(fx, session, msg);
+            // 捏脸保存（反汇编：107 → handleSaveCustomizing）
+            case 107 -> handleSaveCustomizing(fx, session, msg);
+            // 属性商城（反汇编：187 → handleAttributeMallCustom）
+            case 187 -> handleAttributeMall(fx, session, msg);
+            // 称号佩戴（反汇编：295 → handleSetTitleCustom，`reject wear title %d: not owned`）
+            case 295 -> handleSetTitle(fx, session, msg);
+            // 骑乘上下骑/新坐骑（反汇编：243=Ride / 266=NewRide）
+            case 243, 266 -> handleRide(fx, session, msg);
+            // 组队（反汇编：326/388/442~445 → handleTeamCustomWithCompanion）
+            case 326, 388, 442, 443, 444, 445 -> handleTeam(fx, session, msg);
+            // 一键穿（反汇编：886~889 → handleOnestepEquipCustom，`wear now requires one
+            // wearable equipment item`）
+            case 886, 887, 888, 889 -> handleOnestepEquip(fx, session, msg);
+            // 武器重铸总入口（反汇编：938 → handleWeaponRecastCustom；Preview/Lock/Unlock/Sure 为其子命令）
+            case 938 -> handleWeaponRecast(fx, session, msg);
             // ---- 2026-10-30 custom 第六轮：反汇编钉死批（je-相等提取 + 全 .text 常量扫描） ----
             // 聊天（反汇编：1 → handleChatCustom）
             case 1 -> handleChat(fx, session, msg);
@@ -478,8 +508,6 @@ public final class SceneFlow {
             case 195 -> handleSaveShortcutScheme(fx, session, msg);
             // 修炼进度（反汇编：215 → handlePlayerProgressCustom，内功子命令同属此 handler）
             case 215 -> handlePlayerProgress(fx, session, msg);
-            // 组队（反汇编：326/388 → handleTeamCustomWithCompanion）
-            case 326, 388 -> handleTeam(fx, session, msg);
             // 邮件（反汇编：353/359/361 → handleMailCustom）
             case 353, 359, 361 -> handleMail(fx, session, msg);
             // 骑乘技能（反汇编：961 → handleRideSkillUse）
@@ -502,7 +530,6 @@ public final class SceneFlow {
             // 生活职业（`unknown life job %q`）
             case 864 -> handleLifeJob(fx, session, msg);
             // 副本奖励 View80 拾取（`reject 145 no clone awards view`）
-            case 145 -> handleCloneAwardPickup(fx, session, msg);
             // 掉落拾取（`reject 380 pickup without vpos` / `bad vpos %s`）
             case 380 -> handlePickup(fx, session, msg);
             default -> {
@@ -737,7 +764,87 @@ public final class SceneFlow {
                 goods.configId(), nums, chargeId, cost, actor.gold);
     }
 
-    // ---- 2026-10-30 custom 第六轮：反汇编钉死批 ----
+    // ---- 2026-10-30 custom 第七轮：区间树解码拉全 switch 表 ----
+
+    /**
+     * 副本族（反汇编：84/112/144/145 → handleCloneCustom）。Java 无副本实例运行时：
+     * 84/112 按 `clone %d unhandled` 分支；145 保留精确拒绝文本
+     * （`reject 145 no clone awards view`）。
+     */
+    private void handleClone(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (msg.msgId() == 145) {
+            log.info("reject 145 no clone awards view");
+            return;
+        }
+        log.info("clone msg={} unhandled (clone runtime not implemented; vals={})",
+                msg.msgId(), summarizeVals(msg));
+    }
+
+    /** 15 高级轻功入场信号（反汇编：signalAdvancedQingGongEntry；轻功状态机未接）。 */
+    private void handleAdvancedQingGongEntry(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("advanced qinggong entry signal vals={} (gj state machine not implemented)",
+                summarizeVals(msg));
+    }
+
+    /** 31 身体道具使用（参考服：`rejected body item %s for sex=%d body_type=%d`）。 */
+    private void handleBodyItemUse(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("body item use vals={} (body item table not implemented)", summarizeVals(msg));
+    }
+
+    /** 54 手动招架（反汇编：handleManualParryCustom；`publish manual parry state`，与 218 主动招架同翻状态）。 */
+    private void handleManualParry(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (session.actor == null) {
+            log.info("manual parry before scene player exists");
+            return;
+        }
+        session.actor.parrying = !session.actor.parrying;
+        log.info("publish manual parry state={} (endurance={})",
+                session.actor.parrying, session.actor.parryEndurance);
+    }
+
+    /** 107 捏脸保存（参考服：`customizing upload too large: %d`；customizing 存储未接）。 */
+    private void handleSaveCustomizing(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("handle customizing upload vals={} (customizing store not implemented)",
+                summarizeVals(msg));
+    }
+
+    /** 187 属性商城（反汇编：handleAttributeMallCustom）。 */
+    private void handleAttributeMall(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("attribute mall vals={} (mall catalog not implemented)", summarizeVals(msg));
+    }
+
+    /** 295 称号佩戴（参考服：`reject wear title %d: not owned`；称号库未接）。 */
+    private void handleSetTitle(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val title = msg.val(1);
+        int id = title != null && title.asExactInt() ? title.intOrZero() : -1;
+        log.info("reject wear title {}: not owned (title store not implemented)", id);
+    }
+
+    /** 243/266 骑乘（参考服：`ride activate`/`new_ride`；坐骑库未接）。 */
+    private void handleRide(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("ride msg={} vals={} (mount store not implemented)",
+                msg.msgId(), summarizeVals(msg));
+    }
+
+    /** 886~889 一键穿（参考服：`wear now requires one wearable equipment item`）。 */
+    private void handleOnestepEquip(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (session.liveBagged == null || session.liveEquipped == null) {
+            log.info("wear now requires one wearable equipment item (no live inventory)");
+            return;
+        }
+        log.info("onestep equip msg={} vals={} (wear routing pending)", msg.msgId(), summarizeVals(msg));
+    }
+
+    /**
+     * 938 武器重铸总入口（反汇编：handleWeaponRecastCustom；Preview/Lock/Unlock/Sure 是其
+     * 子命令——`recast preview reject: need 5 args, got %d`、`recast lock reject %s has no
+     * rand pool`；重铸资源 `weapon recast resources not loaded` 未接）。
+     */
+    private void handleWeaponRecast(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("weapon recast vals={} (recast resources not loaded)", summarizeVals(msg));
+    }
+
+
 
     /** 1 聊天（参考服：`reject chat before player spawn` / `ignore empty chat (channel=%d)`；聊天广播未实装）。 */
     private void handleChat(FxSession fx, LoginSession session, CustomMsg msg) {
@@ -1064,11 +1171,6 @@ public final class SceneFlow {
             return;
         }
         log.info("unknown life job \"{}\" (life job catalog not implemented)", job.str);
-    }
-
-    /** 145 副本奖励 View80 拾取（参考服：`reject 145 no clone awards view`；Java 无 View80 奖励视图）。 */
-    private void handleCloneAwardPickup(FxSession fx, LoginSession session, CustomMsg msg) {
-        log.info("reject 145 no clone awards view");
     }
 
     /**

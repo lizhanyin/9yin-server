@@ -100,6 +100,7 @@ public final class NineyinServer implements SummerApp {
         skillCatalog.load(shareRoot.getParent());
 
         LoginFlow loginFlow = new LoginFlow(roleStore, ninjiuzhi);
+        loginFlow.setSkillInitTable(skillInitTable);
         AiRuleData aiRules = new AiRuleData();
         aiRules.load(shareRoot);
         BuffCatalog buffCatalog = new BuffCatalog();

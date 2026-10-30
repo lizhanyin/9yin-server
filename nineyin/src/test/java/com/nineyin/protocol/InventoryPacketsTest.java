@@ -138,6 +138,26 @@ class InventoryPacketsTest {
         assertEquals(11, propValue(add, 2081));         // MaxLevel
     }
 
+    /** choose 阶段目录行（§3.16）：Level/MaxLevel=12 展示值，TotalFill 取文件 total。 */
+    @Test
+    void skillCatalogRowReferenceLayout() {
+        byte[] row = InventoryPackets.skillCatalogRow(1, "BSZ_skill_bwy_gdj", 14513, 1000, 156550);
+        assertEquals(0x18, row[0]);
+        assertEquals(40, leU16(row, 1));
+        assertEquals(1, leU16(row, 3));
+        assertEquals(10, leU16(row, 5));
+        assertEquals(12, propValue(row, 1464));      // Level=12（参考实测展示值）
+        assertEquals(12, propValue(row, 2081));      // MaxLevel=12
+        assertEquals(0, propValue(row, 763));        // CurFill=0
+        assertEquals(156550, propValue(row, 764));   // TotalFill=文件 total
+        assertEquals(14513, propValue(row, 2235));
+        assertEquals(17905, InventoryPackets.SKILL_CATALOG_CAPACITY);
+        // itemType=0 → 1000 兜底；负 total 夹 0
+        byte[] row2 = InventoryPackets.skillCatalogRow(2, "x", 5, 0, -3);
+        assertEquals(1000, propValue(row2, 1887));
+        assertEquals(0, propValue(row2, 764));
+    }
+
     // ---- 解析辅助：按 u16 索引在属性区线性找值（u8/i32 通吃小值） ----
 
     private static boolean containsProp(byte[] msg, int want) {

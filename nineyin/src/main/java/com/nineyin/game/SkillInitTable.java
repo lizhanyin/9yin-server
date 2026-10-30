@@ -26,9 +26,9 @@ public final class SkillInitTable {
     private static final Logger log = LoggerFactory.getLogger(SkillInitTable.class);
     private static final Charset GBK = Charset.forName("GBK");
 
-    /** 一条已学习技能（level 为学习等级，coolDown 为毫秒显示值）。 */
+    /** 一条已学习技能（level 为学习等级，coolDown 为毫秒显示值，totalFill 为修炼总量显示值）。 */
     public record LearnedSkill(String configId, int level, int staticData,
-                               int itemType, int maxLevel, int coolDownMs) {
+                               int itemType, int maxLevel, int coolDownMs, int totalFill) {
     }
 
     private final Map<String, LearnedSkill> skills = new LinkedHashMap<>();
@@ -96,14 +96,15 @@ public final class SkillInitTable {
                 parseInt(values.get("staticdata"), 0),
                 parseInt(values.get("itemtype"), 0),
                 parseInt(values.get("maxlevel"), 1),
-                parseInt(values.get("cooldown"), 0)));
+                parseInt(values.get("cooldown"), 0),
+                parseInt(values.get("total"), 0)));
     }
 
     private void seedBuiltIn(Path skillInitIni) {
         source = skillInitIni;
         for (SkillPackets.StarterSkill sk : SkillPackets.STARTER_SKILLS) {
             skills.put(sk.configId(), new LearnedSkill(sk.configId(), 1, sk.staticData(),
-                    sk.itemType(), sk.maxLevel(), sk.cooldownMs()));
+                    sk.itemType(), sk.maxLevel(), sk.cooldownMs(), 0));
         }
     }
 
@@ -115,6 +116,11 @@ public final class SkillInitTable {
 
     public LearnedSkill lookup(String configId) {
         return configId == null ? null : skills.get(configId);
+    }
+
+    /** 全量学习集（保持文件节序——choose 阶段目录整推的行序来源）。 */
+    public java.util.Collection<LearnedSkill> all() {
+        return java.util.Collections.unmodifiableCollection(skills.values());
     }
 
     public int size() {

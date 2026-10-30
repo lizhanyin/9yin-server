@@ -57,13 +57,15 @@ public final class PropPackCatalog {
                 if (mods == null || !line.startsWith("r=")) {
                     continue;
                 }
-                // r=,PropName,Value,Flag（首列固定空；多 r= 行并存）
+                // r=,PropName,Value,Flag（首列固定空；多 r= 行并存；实测 AirRushDistAdd 0.4 等
+                // 小数值行 ~5174 行，按 double 解析后截断保留——脏行跳过会整包丢失）
                 String[] cols = line.substring(2).split(",", -1);
                 if (cols.length < 4 || cols[1].isEmpty()) {
                     continue;
                 }
                 try {
-                    mods.add(new Mod(cols[1].trim(), Integer.parseInt(cols[2].trim()),
+                    mods.add(new Mod(cols[1].trim(),
+                            (int) Double.parseDouble(cols[2].trim()),
                             Integer.parseInt(cols[3].trim())));
                     rows++;
                 } catch (NumberFormatException e) {

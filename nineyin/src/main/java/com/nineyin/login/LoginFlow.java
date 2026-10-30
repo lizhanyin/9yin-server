@@ -63,6 +63,10 @@ public final class LoginFlow {
     private final RoleInventoryStore inventory;
     /** 0x0C 重进场景后的 Ready 处理（SceneSwitcher.finishReentry）。 */
     private Consumer<FxSession> reentryHandler;
+    /** 技能学习表（choose 阶段全技能目录整推；null = 不推，ready 走 starter 集）。 */
+    private com.nineyin.game.SkillInitTable skillInit;
+    /** 全技能目录帧缓存（账号无关，进程级构建一次）。 */
+    private volatile List<byte[]> skillCatalogFrames;
 
     public LoginFlow(RoleStore roleStore) {
         this(roleStore, NinJiuZhi.alwaysOpen());
@@ -81,6 +85,11 @@ public final class LoginFlow {
 
     public void setReentryHandler(Consumer<FxSession> handler) {
         this.reentryHandler = handler;
+    }
+
+    /** 注入技能学习表（NineyinServer 装配；启用 choose 阶段技能目录整推）。 */
+    public void setSkillInitTable(com.nineyin.game.SkillInitTable skillInit) {
+        this.skillInit = skillInit;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -223,6 +232,7 @@ public final class LoginFlow {
         // （参考 exe 抓包：容器在 0x0B 前创建，物品对象在 0x0B 后下发）
         CustomPackets.sendAll(fx, InventoryPackets.bagViewCreateFrames());
         CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames());
+        sendSkillCatalog(fx);
         fx.send(S2CPackets.entryScene(cfg, res));
         fx.send(S2CPackets.playerAddObject(
                 s.roleName.isEmpty() ? "LocalHero" : s.roleName, s.appearance, px, py, pz, po));
@@ -287,8 +297,16 @@ public final class LoginFlow {
         // 内功容器 View 43（九阴志 inner_books 门控）
         CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
                 id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
-        // 技能容器 View 40（库里有修炼进度的角色用真实技能，否则起始集）+ 技能开关 + 立即 0x38
-        CustomPackets.sendAll(fx, roleSkillFramesOf(s));
+        // 技能容器 View 40（库里有修炼进度的角色用真实技能，否则起始集）+ 技能开关 + 立即 0x38。
+        // choose 已整推目录时 View 40 容器已建，仅重推行（对齐参考 ready 批不含 0x15）
+        List<byte[]> skillFrames = roleSkillFramesOf(s);
+        if (s.skillCatalogSent && skillFrames.size() > 1) {
+            for (int i = 1; i < skillFrames.size(); i++) {
+                fx.send(skillFrames.get(i));
+            }
+        } else {
+            CustomPackets.sendAll(fx, skillFrames);
+        }
         // 快捷栏：库里有角色存档的用真实栏位（同步进权威行），否则起始集
         sendRoleShortcuts(fx, s);
         fx.send(CustomPackets.skillActionSwitch());
@@ -359,6 +377,43 @@ public final class LoginFlow {
                 fx.send(S2CPackets.shortcutAdd(sc.index(), "skill", sc.id()));
             }
         }
+    }
+
+    /**
+     * choose 阶段全技能目录整推（View 40）：参考 exe 实测 choose 批推全量目录
+     * （17,633 行，Level/MaxLevel=12 展示值、fill=0/total=文件值），ready 批再重推
+     * 已学子集。skill_init 回退内置集时跳过（保持原 starter 下发链路）。
+     * 帧与账号无关，进程级缓存一次。
+     */
+    private void sendSkillCatalog(FxSession fx) {
+        if (skillInit == null || skillInit.usingBuiltInFallback() || skillInit.size() == 0) {
+            return;
+        }
+        List<byte[]> frames = skillCatalogFrames;
+        if (frames == null) {
+            synchronized (this) {
+                if (skillCatalogFrames == null) {
+                    List<byte[]> built = new ArrayList<>(skillInit.size() + 1);
+                    built.add(SkillPackets.createView(SkillPackets.VIEW_SKILL,
+                            InventoryPackets.SKILL_CATALOG_CAPACITY));
+                    int index = 1;
+                    for (com.nineyin.game.SkillInitTable.LearnedSkill sk : skillInit.all()) {
+                        if (index > InventoryPackets.MAX_SKILL_CATALOG_ROWS) {
+                            log.warn("skill catalog truncated at u16 view capacity {}", index - 1);
+                            break;
+                        }
+                        built.add(InventoryPackets.skillCatalogRow(index++, sk.configId(),
+                                sk.staticData(), sk.itemType(), sk.totalFill()));
+                    }
+                    log.info("skill catalog frames ready rows={} capacity={}",
+                            built.size() - 1, InventoryPackets.SKILL_CATALOG_CAPACITY);
+                    skillCatalogFrames = built;
+                }
+                frames = skillCatalogFrames;
+            }
+        }
+        CustomPackets.sendAll(fx, frames);
+        sessionOf(fx).skillCatalogSent = true;
     }
 
     /**

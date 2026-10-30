@@ -211,7 +211,8 @@ Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 
 - **未对齐项（后续轮）**：skill_use_limit 武器门控（包表已装载、按技能的绑定键未钉死）、
   施法距离/空中校验（Java 无 airborne 状态，需先接轻功悬空态）、区域多跳 split/cadence
   （拆分公式未钉死，现单跳 split=1）、[skill-save] 学习进度持久化、
-  `learned skill count %d exceeds u16 view capacity` 的全量 View 推送。
+  ~~`learned skill count %d exceeds u16 view capacity` 的全量 View 推送~~
+  （**第十六轮已实现整推**，见 §3.16）。
 
 ### 3.5 custom 子协议轮（2026-10-30 第三轮）
 
@@ -719,3 +720,40 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   "回显载体"无参考行为可对齐，Java 现状（0x1E 回显 tick）保留为超集实现。
 - **GM 探针 2**：`handle gm command 2: gm msg 2 command text is empty`——
   布局为 `[2, cmd(int), text(str)]`，缺字符串命令文本即拒绝（此前"无日志"之谜）。
+
+### 3.16 装备词缀与技能目录整推轮（2026-10-30 第十六轮）
+
+基于商弘（满装满技能）+ 新号双份抓包的对照分析，两项落地。
+
+**A. 装备词缀（PropBuilt）线上格式实测钉死**：
+
+- **格式与 Java 完全一致**：`flag,id;flag,id;…`（抓包实测 `1,95021`、`1,95001;1,95011`、
+  `1,12592;1,12592;1,12592;1,62995;1,62995;1,62995`）。**同包号可重复叠加**
+  （3×12592=体质+117、3×62995=物防+1425），词缀条数 = ColorLevel 档位（≤MaxBuildCount）；
+  武器无 PropBuilt（走 EffectPackID 1001/1647）。
+- **proppack.ini 交叉验证**：包 12592=`StaAdd,39`、62995=`PhyDef,475`、95011=**双行包**
+  （ParryUpSpeedAdd 2/Flag1 + 1/Flag0）；全表 300 种属性名/82,658 行，其中**小数值行 5,174**
+  （AirRushDistAdd 0.4 等）。
+- **Java 修复两处真缺口**（EquipBonusTest 覆盖）：① 目录层 `Integer.parseInt` 丢小数行
+  → 改 double 解析截断保留；② 累积层缺 **`PhyDef`（576 行，实测装备主防御词缀）** 与
+  后缀省略变体（MaxHP/MaxMP/Str/Sta/Dex/Dodge/MeleePower，共 ~40 行）→ 并入对应
+  case。Java 属性名覆盖率 16 名/49,659 行 → 修复后 +PhyDef 系。
+- **Go 数据怪癖（记录不跟进）**：耳环/戒指双槽两件**共享同一 UniqueID**
+  （ear obj=11/12 同 `adc282961b7cd4ff`）——886 一键穿按 uid 认领时存在歧义；
+  Java 的 uid=MD5(roleId:bag:slot) 恒唯一，保持现状。
+
+**B. 技能目录（View 40）整推结构钉死并实现**：
+
+- **结构**（新号/满技能号 choose 批同构，与账号无关）：choose 阶段
+  `0x15 view=40 capacity=17905` + **全量目录 17,633 行**（≈skill_init 17,861 节减不可用），
+  每行 10 属性（ConfigID/StaticData/ItemType/Level/MaxLevel/CurFill/TotalFill/WuXing/
+  PrepareTime/TargetShapePara2），**Level/MaxLevel 恒 12 为展示值**（skill_init 的
+  level 列恒 1；fill=0、TotalFill=文件 total 恒 156550）；ready 阶段**重推已学子集**
+  （新号 13,949 行——13,782 门派技@12 + 167 数字 id 基础项@1；满技能号 16,885 行），
+  复用 choose 的对象索引（1..17,687），**ready 批不含 view 40 的 0x15**。
+  商弘号 View1 纸娃娃 11 件/View40 34,518 帧即两批之和。
+- **Java 落地**（§3.4 待决项闭环）：`LoginFlow.sendSkillCatalog`——choose 阶段在
+  8 视图/物品帧后整推（skill_init 回退内置集时保持原链路）；帧进程级缓存；
+  `skillCatalogRow` 10 属性同 roleSkillViewAdd 布局（Level=12 展示值）；u16 护栏
+  65,530；ready 批在目录已推时只重推行不重建容器（对齐参考）。SkillInitTable 的
+  LearnedSkill 补 totalFill 列 + `all()` 保序访问器。156 测试全绿。

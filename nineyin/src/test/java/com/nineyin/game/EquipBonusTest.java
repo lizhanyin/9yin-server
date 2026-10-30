@@ -47,6 +47,18 @@ class EquipBonusTest {
                 Comment=概率词缀（累积层不覆盖）
                 r=,PhyDefProbAdd,30,1
                 r=,MagicHitAdd,30,1
+
+                [12592]
+                Comment=实测包：体质（商弘护腿 3 连叠）
+                r=,StaAdd,39,0
+
+                [62995]
+                Comment=实测包：物理防御（后缀省略变体）
+                r=,PhyDef,475,0
+
+                [95061]
+                Comment=实测包：小数值词条
+                r=,AirRushDistAdd,0.4,0
                 """, GBK);
         return PropPackCatalog.load(ini);
     }
@@ -58,12 +70,26 @@ class EquipBonusTest {
     @Test
     void parsesPackRowsIncludingMultiRowSections() throws Exception {
         PropPackCatalog catalog = catalog();
-        assertEquals(4, catalog.size());
+        assertEquals(7, catalog.size());
         assertEquals(1, catalog.modsOf(2).size());
         assertEquals("StrAdd", catalog.modsOf(2).get(0).prop());
         assertEquals(2, catalog.modsOf(2).get(0).value());
         assertEquals(2, catalog.modsOf(3).size(), "多 r= 行并存");
         assertEquals(0, catalog.modsOf(999).size(), "未知包号返回空表");
+        // 小数值词条（实测 5174 行）：按 double 解析后截断保留，不再整行丢弃
+        assertEquals(1, catalog.modsOf(95061).size(), "小数值行保留");
+        assertEquals(0, catalog.modsOf(95061).get(0).value(), "0.4 截断为 0");
+    }
+
+    /** 实测形态（商弘护腿 leg_60702）：同包号重复叠加 + PhyDef 后缀省略变体入防御。 */
+    @Test
+    void accumulatesRepeatedPacksAndSuffixlessPhyDef() throws Exception {
+        PropPackCatalog catalog = catalog();
+        PlayerActor actor = new PlayerActor();
+        actor.recomputeEquipBonuses(catalog, List.of(
+                affixed("1,12592;1,12592;1,12592;1,62995;1,62995;1,62995")));
+        assertEquals(117, actor.equipStaAdd, "3×StaAdd39 叠加");
+        assertEquals(1425, actor.equipPhyDef, "3×PhyDef475 叠加（此前 PhyDef 名未映射丢失）");
     }
 
     @Test

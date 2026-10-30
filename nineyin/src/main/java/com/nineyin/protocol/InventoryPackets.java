@@ -267,6 +267,11 @@ public final class InventoryPackets {
 
     // ---- 技能容器（参考抓包的 10 属性布局） ----
 
+    /** View 40 目录容器容量（参考 exe choose 整推实测 0x15 capacity=17905）。 */
+    public static final int SKILL_CATALOG_CAPACITY = 17905;
+    /** 目录行数护栏（u16 对象索引上限，对齐参考 `exceeds u16 view capacity`）。 */
+    public static final int MAX_SKILL_CATALOG_ROWS = 65530;
+
     /** 角色技能容器（View 40）+ 全部技能，属性集对齐参考抓包。 */
     public static List<byte[]> roleSkillFrames(List<RoleInventoryStore.SkillRow> skills) {
         List<byte[]> frames = new ArrayList<>(skills.size() + 1);
@@ -275,6 +280,27 @@ public final class InventoryPackets {
             frames.add(roleSkillViewAdd(i + 1, skills.get(i)));
         }
         return frames;
+    }
+
+    /**
+     * 技能目录行（choose 阶段整推）：与 roleSkillViewAdd 同 10 属性布局，但
+     * Level/MaxLevel 固定 12（参考实测目录展示值——skill_init 的 level 列恒 1，
+     * 与账号无关，新号抓包同样 12/12）；TotalFill 取文件 total 列（恒 156550）。
+     */
+    public static byte[] skillCatalogRow(int index, String configId, int staticData,
+                                         int itemType, int totalFill) {
+        PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_SKILL, index, 10);
+        w.u16(SkillPackets.V_CONFIG_ID).string(configId);
+        w.u16(P_STATIC_DATA).i32(staticData);
+        w.u16(SkillPackets.V_ITEM_TYPE).i32(itemType == 0 ? 1000 : itemType);
+        w.u16(P_LEVEL).u8(12);
+        w.u16(P_MAX_LEVEL).i32(12);
+        w.u16(P_CUR_FILL).i32(0);
+        w.u16(P_TOTAL_FILL).i32(Math.max(0, totalFill));
+        w.u16(P_WU_XING).i32(0);
+        w.u16(P_PREPARE_TIME).i32(1000);
+        w.u16(P_TARGET_SHAPE2).f32(50.0f);
+        return w.toByteArray();
     }
 
     private static byte[] roleSkillViewAdd(int index, RoleInventoryStore.SkillRow sk) {

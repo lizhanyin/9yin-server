@@ -59,6 +59,9 @@ public final class LoginSession {
     /** 本角色的技能 view 帧缓存（首个 ClientReady 构建；0x0C 重进场景复用）。 */
     public List<byte[]> roleSkillFrames;
 
+    /** choose 阶段已整推技能目录（View 40 容器已建，ready 只重推行不重建容器）。 */
+    public boolean skillCatalogSent;
+
     /** 库存物品帧缓存（选角链构建；0x0C 重进场景重发）。 */
     public List<byte[]> inventoryFrames;
 

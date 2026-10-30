@@ -381,23 +381,25 @@ public final class PlayerActor {
         }
     }
 
-    /** 词缀属性名 → equip*Add 累积器；未覆盖词缀（概率%/倍率/内功防御系等）忽略。 */
+    /** 词缀属性名 → equip*Add 累积器；未覆盖词缀（概率%/倍率/内功防御系等）忽略。
+     *  后缀省略变体（PhyDef/MaxHP/Str/Sta/Dex/Dodge/MaxMP/MeleePower，实测 proppack
+     *  与抓包装备 62995=PhyDef+475）与 *Add 同累积器；重复包号逐条叠加。 */
     private void accumulateEquipMod(PropPackCatalog.Mod mod) {
         switch (mod.prop()) {
-            case "MaxHPAdd" -> equipMaxHpAdd += mod.value();
-            case "MaxMPAdd" -> equipMaxMpAdd += mod.value();
-            case "StrAdd" -> equipStrAdd += mod.value();
-            case "DexAdd" -> equipDexAdd += mod.value();
+            case "MaxHPAdd", "MaxHP" -> equipMaxHpAdd += mod.value();
+            case "MaxMPAdd", "MaxMP" -> equipMaxMpAdd += mod.value();
+            case "StrAdd", "Str" -> equipStrAdd += mod.value();
+            case "DexAdd", "Dex" -> equipDexAdd += mod.value();
             case "IngAdd" -> equipIngAdd += mod.value();
             case "SpiAdd" -> equipSpiAdd += mod.value();
-            case "StaAdd" -> equipStaAdd += mod.value();
-            case "PhyDefAdd" -> equipPhyDef += mod.value();
+            case "StaAdd", "Sta" -> equipStaAdd += mod.value();
+            case "PhyDefAdd", "PhyDef" -> equipPhyDef += mod.value();
             case "PhyHitAdd" -> equipPhyHit += mod.value();
             case "MagicHitAdd" -> equipMagicHit += mod.value();
-            case "DodgeAdd" -> equipDodge += mod.value();
+            case "DodgeAdd", "Dodge" -> equipDodge += mod.value();
             case "PhyVaAdd" -> equipPhyVa += mod.value();
             case "MagicVaAdd" -> equipMagicVa += mod.value();
-            case "MeleePowerAdd" -> equipMeleePowerAdd += mod.value();
+            case "MeleePowerAdd", "MeleePower" -> equipMeleePowerAdd += mod.value();
             case "MinMeleeDamage" -> equipMinMelee += mod.value();
             case "MaxMeleeDamage" -> equipMaxMelee += mod.value();
             default -> {

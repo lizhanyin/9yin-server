@@ -54,7 +54,7 @@
 | 0x0C | ServerExitScene | `encodeExitScene`（换场景 0x0C→等清理→0x0B） | ✅ `SceneSwitcher` |
 | 0x0D/0x0E | ServerAddObject/RemoveObject | `serverCreateView(WithProperties)`、`serverDeleteView`、`materialize scene object ... opcode=0x%02X payload_sha256=%x` | ✅ `NpcPackets` 等 |
 | 0x10 | ServerObjectProperty（增量） | `change warning %d -> %d via normal 0x10`、`sitcross native state %d -> %d via normal 0x10` | ✅（见 §3 疑似偏差） |
-| 0x11~0x14 | ServerRecord*（增删行/网格/清空） | `serverRecordAddCellRows/DelRow/Clear/CooldownRow/...` 十余变体；踢馆计时 `0x11 target=2 Time_Limit_Form_Rec` | ✅ 0x11/0x12；🟨 0x13/0x14 暂无使用场景 |
+| 0x11~0x14 | ServerRecord*（增删行/网格/清空） | `serverRecordAddCellRows/DelRow/Clear/CooldownRow/...` 十余变体；踢馆计时 `0x11 target=2 Time_Limit_Form_Rec` | ✅ 0x11/0x12；**0x13 单元格更新格式第二十三轮钉死（邮件已读/领件用，见 §3.23）**；🟨 0x14 暂无使用场景 |
 | 0x15~0x19 | ServerView*（AOI 视图） | `serverAllDest`、`encodePresenceWaypointSelf`、`scene viewport delta adds=%d removes=%d` | ✅ 0x18 ViewAdd / 0x19 ViewRemove（`InventoryPackets`） |
 | 0x1F/0x20 | ServerLocation/Moving | `serverLocation`（`replayed ServerLocation for %d scene objects`）、`serverMoving` | ✅ |
 | 0x1E/0x27（S2C 方向） | 定向 custom 帧 | `write qinggong 0x1E-02 idx=%d`、`0x1E-04 idx=205`、`0x1E-06 idx=20`、`0x1E-07 idx=337`（轻功走 0x1E 子命令；**第二十二轮勘误：此处 "0x1E-04" 指 S2C msgId=4 的轻功/UI 帧，与 ready 尾 msgId 414 的 'reset' 子命令是两回事，完整 S2C msgId 语义见 §3.22**） | ✅ `CustomPackets`/轻功槽位 |
@@ -98,7 +98,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 293 | PK 保护开关 | `[type:int, onoff:int]` | `toggle expects TVarList(293, type, onoff)`；`client pk protect toggle type=%d on=%d` | 🟨 本轮实现 |
 | 301 | VIP | `[301, cmd(int), ...]` | `VIP message 301 has no command` / `command is not an exact integer: %s`；购买链 `month count %d is outside 1..36`、`gold balance %d is below VIP cost %d`、`completed golden VIP purchase type=%d months=%d cost=%d gold=%d ...` | 🟨 第四轮：头部校验；价格表与购买 cmd 编号待钉死 |
 | 326/388 | 组队（含伙伴） | `[op(int), ...]` | 反汇编：326/388 → handleTeamCustomWithCompanion；`reject team op %d before player spawn`、`team: operation %d requires %d values`、`%s joined team %d via captain %d` | 🟨 第六轮：op 校验（队伍系统未接） |
-| 353/359/361 | 邮件 | — | 反汇编：353/359/361 → handleMailCustom；`mail selection has invalid fields`、MailDelete/MailSelection | 🟨 第六轮：日志（邮箱未接） |
+| 353/359/361 | 邮件 | — | 反汇编：353/359/361 → handleMailCustom；`mail selection has invalid fields`、MailDelete/MailSelection；**第二十三轮：家族实为 8 编号 350/353/355/356/357/359/361/365，全链实机钉死并落地（见 §3.23）** | ✅ 第二十三轮：邮箱/已读/领件/删除全链 |
 | 380 | 掉落拾取 | `[vpos(int), ...]`（首参假设） | `reject 380 pickup without vpos` / `reject 380 bad vpos %s`、`pickup 380 vpos=%d %s x%d -> %s bag[%v]` | 🟨 第四轮：vpos 校验；无掉落实体 |
 | 382 | 关闭掉落 | — | `handle close drop 382`、`closed DropBox via 382` | 🟨 第三轮：日志对齐（Java 无 DropBox 实体） |
 | 560 | 充值商店购买 | `[560, cmd, ...]`（buy=`[560,3,charge_id,nums]`） | `buy expects [560,3,charge_id,nums]`、`nums=%d outside 1..%d`、`no goods charge_id=%d`、`price_type=%d not supported`、`needs gold=%d, have %d`、`(%s): bag full`、`bought %s x%d (charge_id=%d) for %d gold, left=%d`；cmd 2/4/5 忽略 | 🟨 第三轮：货品表+完整校验链+金币扣减+入包 grant（页面 S2C 与 capital 映射待钉死） |
@@ -355,7 +355,7 @@ Shortcut(200)/Warning(292)/924/868 等的守卫比较因落入式 case / 参数�
 | 30 | MoveItem ✓ | | 295 | SetTitle 🎉 |
 | 31 | 使用物品链（BodyItemUse+右键穿）🎉 | | 301 | VIP ✓ |
 | 34/71 | ItemAction 🎉（71 ≠ 商店关闭） | | 326/388/442~445 | Team（6 编号）🎉 |
-| 54 | ManualParry 🎉（218=ActiveParry 互证） | | 353/359/361/365 | Mail（4 编号）🎉 |
+| 54 | ManualParry 🎉（218=ActiveParry 互证） | | 350/353/355/356/357/359/361/365 | Mail（8 编号，第二十三轮全链）🎉 |
 | 61 | ShowEquipType ✓ | | 380 | PickupDrop ✓ |
 | 70 | ShopBuy ✓（64 打开未在 custom switch 出现） | | 382 | CloseDrop ✓ |
 | 84/112/144/145 | Clone（进入/列表/结算确认/奖励拾取）🎉 | | 560 | ChargeShop ✓ |
@@ -887,6 +887,54 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   含 ~~0x1E-04 reset×N~~（**第二十二轮勘误：实为 msgId 414 的 'reset' 开关帧**）、1240B/1314B 全量属性批、BufferListStr 内功
   buff 行）——quiet 退出机制下 ready 尾部帧会落入后续窗口，分析窗口帧时需按时间
   归属核对服务端日志。完整清单见 §3.22。
+
+### 3.23 邮件系统全链轮（2026-10-30 第二十三轮）
+
+反汇编 `main.handleMailCustom` + GM `send_test_mail` 实机造邮件抓帧，§3.9 的邮件
+校验桩升级为全链实现。
+
+- **msgId→op 语义（反汇编钉死，8 编号）**：
+  | msgId | op | 证据 |
+  |---|---|---|
+  | 350 | 打开邮箱（Load 重读存储） | → `mailStore.Load`（mapclear+Load） |
+  | 353 | `[serial(str)]` 标记已读 | → `mailStore.SetRead` |
+  | 355/359 | `[serial(str)]` 领取附件 | → `mailStore.Attachment`（共享分支） |
+  | 356/361 | `[serial(str)]` 删除邮件 | → `handleMailDelete` |
+  | 357 | `[int,…]` 选择（`mail selection has invalid fields`） | `handleMailSelection`（exactInt32） |
+  | 365 | 刷新（Load 重读） | → `mailStore.Load` |
+
+  前置：需玩家 + `main.installedMailStore`；serial 取**最后一个值**且必须 string 型
+  （tag 6/7）非空；serial 未命中一律静默无响应（实机复测）。
+- **实机帧序**（`tools/smoke/mail_probe.py`，GM `send_test_mail itemConfig=yaopin_001
+  amount=2`）：GM 造件即时推 **0x11 记录 17（RecvLetterRec）行**（285B）；
+  353 → **0x13**（18B）；355 → **0x19/0x18 ×2**（背包 view 2 + 镜像 view 174 入包对，
+  与 560 商城同构；无 0x1E-05 提示帧、无扣款帧）+ **0x13**（26B）；
+  356 → **0x12** 删行；350/365/357 无 S2C 响应（Load 不重推行）。
+- **RecvLetterRec 15 列布局逐字节钉死**（285B 恰好消费）：
+  `[sender_id(str), ""(str), 101(u8), title_id(str), content_id(str), "0", "0",
+  附件XML(str，领取后=""), created_at(i64 秒), read(u8), serial(str), "0"(str),
+  0(u8), 2592000(i64 有效期 30 天), 0(u8)]`；附件 XML 实测
+  `<Mail><Object Config="yaopin_001"><Property Amount="2"></Property><Records>
+  </Records></Object></Mail>`；serial 形如 `sys-{roleId}-{nanotime}-0`；
+  sender/title/content 为 UI 文本 id（战报三件套 ui_mail_war_order_*）。
+- **0x13 单元格更新帧格式钉死**（`main.serverRecordGridCellsTarget` 逐指令 +
+  邮件 18B/26B 与轻功 ActiveQGSkillRec 38B 三样本互证，补 §1.2 语义）：
+  `0x13 + u8(0) + u32 oid + u32 owner + u16 表索引 + u16 单元格数 +
+  (u16 行号 + u8 列号 + 按列型值)*`——**每个单元格自带行号**；值编码与 0x11 行
+  一致（string = u32 len(含 NUL) + GBK + NUL）。
+- **数据模型**（Go 服 data/mail.json 实读，Java 同构共享同文件）：
+  `{version:1, roles:{roleId:[{serial, created_at, read, sender_id, title_id,
+  content_id, attachment?{config_id, amount}}]}}`；GM 面板动作
+  `POST /api/sessions/{id}/command {action:'send_test_mail', itemConfig, amount}`。
+- **Java 落地**：`game/MailStore`（JSON 持久化 + setRead/takeAttachment 一次性领取
+  /restoreAttachment 入包失败回滚）；`protocol/MailPackets`（0x11 行/0x13 已读/
+  0x13 领件/0x12 删行，金样测试逐字节对照实机 4 帧）；SceneFlow 八编号接入 +
+  ready 进场景推全部邮件行（sendSceneNpcs）+ 领件入包与 560 同构 + 删除后余下
+  行按新行号重推；GmActions 新增 `send_test_mail`；测试 +9
+  （MailStoreTest 3 / MailPacketsTest 5 / SceneFlowTest.mailLifecycle），
+  全量 **174 绿**。
+- **留待后续**：357 选择态（mailSelected）的消费语义；多邮件行号重排实机验证
+  （本轮单邮件）；邮件过期清理（col13 30 天）；多物品附件 XML（多 Object 节点）。
 
 ### 3.22 ready 迟到帧家族与 S2C 0x1E msgId 语义轮（2026-10-30 第二十二轮）
 

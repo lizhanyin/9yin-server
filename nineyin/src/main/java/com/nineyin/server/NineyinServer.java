@@ -109,6 +109,8 @@ public final class NineyinServer implements SummerApp {
         sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi,
                 skillCatalog, skillInitTable);
         sceneFlow.setShopRepository(shopRepository);
+        // 邮箱（data/mail.json，与参考服 Go mailStore 同构共享）
+        sceneFlow.setMailStore(com.nineyin.game.MailStore.load(Path.of("data")));
         worldBossManager = new WorldBossManager(sceneManager);
         worldBossManager.load(shareRoot);
         worldBossManager.setListener(new WorldBossManager.Listener() {

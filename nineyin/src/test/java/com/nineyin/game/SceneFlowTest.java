@@ -43,6 +43,8 @@ class SceneFlowTest {
     Path tempDir;
 
     private RoleStore roleStore;
+    private SceneFlow sceneFlow;
+    private MailStore mailStore;
     private EmbeddedChannel channel;
 
     @BeforeEach
@@ -64,8 +66,10 @@ class SceneFlowTest {
                 1=fashion_qg_test,0202,2,0,880,1,0,0,0
                 2=box_test_001,0400,2,0,15,1,0,0,0
                 """, GBK);
-        SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog(),
+        sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog(),
                 null, null, skillCatalog, skillInit);
+        mailStore = MailStore.inMemory();
+        sceneFlow.setMailStore(mailStore);
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
@@ -279,6 +283,68 @@ class SceneFlowTest {
     }
 
     /** 0x0A 自定义消息（21 字节头 + 类型化值）。 */
+    /** 邮件全链（§3.23）：GM 发件 → 0x11 行；353 已读 → 0x13；355 领件（无库存后端回滚）；356 删除 → 0x12。 */
+    @Test
+    void mailLifecycle() {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        login.roleId = 42;
+
+        // GM send_test_mail → 0x11 记录 17 行（含附件 XML 与 serial）
+        sceneFlow.sendTestMail(login.fx, login, "yaopin_001", 2);
+        List<byte[]> pushed = drainOutbound();
+        assertEquals(1, pushed.size());
+        byte[] row = pushed.get(0);
+        assertEquals(0x11, op(row));
+        assertEquals(17, leU16(row, 10), "RecvLetterRec 表索引");
+        String rowText = new String(row, StandardCharsets.US_ASCII);
+        assertTrue(rowText.contains("ui_mail_war_order_source"));
+        assertTrue(rowText.contains("sys-42-"), rowText);
+        String serial = mailStore.list(42).get(0).serial;
+
+        // 350 打开：重读存储，无行帧（对齐实机）
+        send(custom().u16(1).u8(2).i32(350).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20));
+
+        // 353 已读 → 0x13 col9=1（金样 `…1100 0100 0000 0901`）
+        byte[] s = serial.getBytes(StandardCharsets.US_ASCII);
+        send(custom().u16(2).u8(2).i32(353).u8(6).u32(s.length + 1).raw(s).u8(0).toByteArray());
+        List<byte[]> readFrames = drainOutbound();
+        assertEquals(1, readFrames.size());
+        assertEquals(0x13, op(readFrames.get(0)));
+        assertEquals(17, leU16(readFrames.get(0), 10));
+        assertEquals(1, leU16(readFrames.get(0), 12), "单元格数");
+        assertEquals(0, leU16(readFrames.get(0), 14), "行号");
+
+        // 355 领附件：JSON 存档无库存后端 → 附件回滚，不发行帧
+        send(custom().u16(2).u8(2).i32(355).u8(6).u32(s.length + 1).raw(s).u8(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x13 || op(f) == 0x18));
+        assertEquals("yaopin_001", mailStore.list(42).get(0).attachment.configId(), "附件回滚保留");
+
+        // 357 选择参数非整型：仅日志（`mail selection has invalid fields`）
+        send(custom().u16(2).u8(2).i32(357).u8(6).u32(2).raw(new byte[]{'x'}).u8(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20));
+
+        // 356 删除 → 0x12 记录 17 行 0
+        send(custom().u16(2).u8(2).i32(356).u8(6).u32(s.length + 1).raw(s).u8(0).toByteArray());
+        List<byte[]> delFrames = drainOutbound();
+        assertEquals(1, delFrames.size());
+        assertEquals(0x12, op(delFrames.get(0)));
+        assertEquals(17, leU16(delFrames.get(0), 10));
+        assertEquals(0, mailStore.count(42));
+    }
+
+    private static int leU16(byte[] msg, int off) {
+        return (msg[off] & 0xFF) | ((msg[off + 1] & 0xFF) << 8);
+    }
+
     private static PacketWriter custom() {
         PacketWriter w = new PacketWriter().u8(0x0A);
         while (w.size() < 21) {

@@ -7,6 +7,7 @@ import com.nineyin.protocol.Appearance;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.InventoryPackets;
+import com.nineyin.protocol.MailPackets;
 import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
@@ -186,6 +187,13 @@ public final class SceneFlow {
         this.shopRepository = shopRepository;
     }
 
+    /** 邮箱存储（NineyinServer 装配 data/mail.json；测试默认内存实例）。 */
+    private MailStore mailStore = MailStore.inMemory();
+
+    public void setMailStore(MailStore mailStore) {
+        this.mailStore = mailStore;
+    }
+
     public void register(FxOpcodeRouter router) {
         router.register(OP_ACTIVITY, this::onActivity);
         router.register(OP_PING, this::onPing);
@@ -237,6 +245,13 @@ public final class SceneFlow {
         st.lastNpcX = session.x;
         st.lastNpcZ = session.z;
         st.npcsSent = true;
+        // 邮箱行（记录 17 RecvLetterRec）：进场景推送该角色全部邮件（对齐 publishSystemMailRecords）
+        if (session.roleId != 0) {
+            List<MailStore.Mail> mails = mailStore.list(session.roleId);
+            for (int i = 0; i < mails.size(); i++) {
+                fx.send(mailRowFrame(i, mails.get(i)));
+            }
+        }
         log.info("scene {} NPCs sent={} of {} loaded (portals={})", session.spawnResource, sent,
                 st.world.npcs.size(), st.world.portals.size());
     }
@@ -535,8 +550,8 @@ public final class SceneFlow {
             case 195 -> handleSaveShortcutScheme(fx, session, msg);
             // 修炼进度（反汇编：215 → handlePlayerProgressCustom，内功子命令同属此 handler）
             case 215 -> handlePlayerProgress(fx, session, msg);
-            // 邮件（反汇编：353/359/361 → handleMailCustom）
-            case 353, 359, 361 -> handleMail(fx, session, msg);
+            // 邮件（反汇编：350/353/355/356/357/359/361/365 → handleMailCustom，§3.23 八编号全链）
+            case 350, 353, 355, 356, 357, 359, 361, 365 -> handleMail(fx, session, msg);
             // 骑乘技能（反汇编：961 → handleRideSkillUse）
             case 961 -> handleRideSkillUse(fx, session, msg);
             // ---- 2026-10-30 custom 第四轮：§3.5 候补清单编号钉死批 ----
@@ -1287,9 +1302,131 @@ public final class SceneFlow {
                 msg.msgId(), op.intOrZero());
     }
 
-    /** 353/359/361 邮件（参考服：`mail selection has invalid fields`；邮箱/附件系统未接）。 */
+    /**
+     * 邮件八编号（§3.23 反汇编 + 实机钉死）：
+     * 350/365 打开/刷新（mailStore.Load，行帧不重推）；353 [serial] 已读 → 0x13 col9=1；
+     * 355/359 [serial] 领附件 → 物品入包（0x19/0x18 页+镜像对）+ 0x13(col7="" + col9=1)；
+     * 356/361 [serial] 删除 → 0x12 删行 + 余下行按新行号重推；
+     * 357 [int,…] 选择（参数非整型对齐 `mail selection has invalid fields`）。
+     * serial 未命中一律静默（实机行为）。
+     */
     private void handleMail(FxSession fx, LoginSession session, CustomMsg msg) {
-        log.info("mail msg={} vals={} (mailbox not implemented)", msg.msgId(), summarizeVals(msg));
+        if (session.actor == null || session.roleId == 0) {
+            return;
+        }
+        switch (msg.msgId()) {
+            case 350, 365 -> {
+                mailStore.reload();
+                log.info("mail {} reload rows={}", msg.msgId(), mailStore.count(session.roleId));
+            }
+            case 353 -> {
+                String serial = lastMailSerial(msg);
+                int row = serial != null ? mailStore.setRead(session.roleId, serial) : -1;
+                if (row >= 0) {
+                    fx.send(MailPackets.readFlag(row));
+                    log.info("mail read serial={} row={}", serial, row);
+                }
+            }
+            case 355, 359 -> claimMailAttachment(fx, session, msg);
+            case 356, 361 -> {
+                String serial = lastMailSerial(msg);
+                int row = serial != null ? mailStore.delete(session.roleId, serial) : -1;
+                if (row >= 0) {
+                    fx.send(MailPackets.deleteRow(row));
+                    List<MailStore.Mail> rest = mailStore.list(session.roleId);
+                    for (int i = row; i < rest.size(); i++) {
+                        fx.send(mailRowFrame(i, rest.get(i)));
+                    }
+                    log.info("mail delete serial={} row={} left={}", serial, row, rest.size());
+                }
+            }
+            case 357 -> {
+                CustomMsg.Val v = msg.size() >= 2 ? msg.val(1) : null;
+                if (v == null || (v.type != CustomMsg.TYPE_I32 && v.type != CustomMsg.TYPE_I64)) {
+                    log.info("mail selection has invalid fields vals={}", summarizeVals(msg));
+                } else {
+                    log.info("mail selection field={}", v.asInt());
+                }
+            }
+            default -> log.info("mail msg={} vals={}", msg.msgId(), summarizeVals(msg));
+        }
+    }
+
+    /** 尾参 serial（Go 取最后一个值且要求 string 型非空；否则视为未命中静默）。 */
+    private String lastMailSerial(CustomMsg msg) {
+        if (msg.size() < 2) {
+            return null;
+        }
+        CustomMsg.Val v = msg.val(msg.size() - 1);
+        if (v == null || (v.type != CustomMsg.TYPE_STRING && v.type != CustomMsg.TYPE_WIDE_STRING)
+                || v.str == null || v.str.isEmpty()) {
+            return null;
+        }
+        return v.str;
+    }
+
+    private byte[] mailRowFrame(int rowNo, MailStore.Mail mail) {
+        return MailPackets.mailRow(rowNo, mail.senderId, mail.titleId, mail.contentId,
+                mail.attachment == null ? "" : MailPackets.attachmentXml(
+                        mail.attachment.configId(), mail.attachment.amount()),
+                mail.createdAt, mail.read, mail.serial);
+    }
+
+    /** 355/359 领附件：物品经 addBagItem 入包（与 560 充值商城同构，但不扣款、无 0x1E-05 提示）。 */
+    private void claimMailAttachment(FxSession fx, LoginSession session, CustomMsg msg) {
+        String serial = lastMailSerial(msg);
+        if (serial == null) {
+            return;
+        }
+        int row = mailStore.indexOf(session.roleId, serial);
+        MailStore.Mail claimed = row >= 0 ? mailStore.takeAttachment(session.roleId, serial) : null;
+        if (claimed == null || claimed.attachment == null) {
+            return;
+        }
+        if (inventory == null || session.liveBagged == null) {
+            mailStore.restoreAttachment(session.roleId, serial, claimed.attachment);
+            log.info("mail claim serial={} has no bag", serial);
+            return;
+        }
+        var add = inventory.addBagItem(session.roleId, claimed.attachment.configId(),
+                claimed.attachment.amount());
+        if (add.fail() != null) {
+            mailStore.restoreAttachment(session.roleId, serial, claimed.attachment);
+            log.info("mail claim serial={} {} bag reject: {}", serial,
+                    claimed.attachment.configId(), add.fail());
+            return;
+        }
+        int view = InventoryPackets.bagViewOf(add.view());
+        var item = new com.nineyin.db.RoleInventoryStore.Bagged(
+                add.slot(), claimed.attachment.configId(), 0,
+                claimed.attachment.amount(), add.view(), "");
+        List<byte[]> out = new ArrayList<>();
+        out.add(InventoryPackets.viewRemove(view, add.slot()));
+        out.add(InventoryPackets.bagViewAdd(
+                item, InventoryPackets.uniqueId(session.roleId, "bag", add.slot()), view));
+        int mirror = InventoryPackets.mirrorOf(view);
+        if (mirror != 0) {
+            out.add(InventoryPackets.viewRemove(mirror, add.slot()));
+        }
+        out.add(MailPackets.attachmentClaimed(row));
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.liveBagged.add(item);
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                session.roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+        log.info("mail claim serial={} row={} grant {} x{} bag[{}:{}]",
+                serial, row, claimed.attachment.configId(), claimed.attachment.amount(),
+                add.view(), add.slot());
+    }
+
+    /** GM send_test_mail（GM 面板动作）：写库并立即推新邮件行（对齐实机 gm-mail 推送）。 */
+    public void sendTestMail(FxSession fx, LoginSession session, String configId, int amount) {
+        MailStore.Mail mail = mailStore.sendTestMail(session.roleId, configId, amount);
+        int row = mailStore.count(session.roleId) - 1;
+        fx.send(mailRowFrame(row, mail));
+        log.info("GM send_test_mail config={} amount={} rows={}", configId, amount, row + 1);
     }
 
     /** 961 骑乘技能（参考服：`ride skill (not dismount) id=%s mounted=%v`；坐骑状态未接）。 */

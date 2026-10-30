@@ -190,6 +190,19 @@ public final class GmActions {
                 fx.send(goldUpdate(actor));
                 return null;
             }
+            case "send_test_mail" -> {
+                // 对齐 Go GM 面板动作：`GM send_test_mail config=%s amount=%d rows=%d`
+                String config = cmd.params().getString("itemConfig");
+                int amount = cmd.params().getIntValue("amount");
+                if (config == null || config.isBlank()) {
+                    return "itemConfig 不能为空";
+                }
+                if (sceneFlow == null) {
+                    return "邮件系统未接线";
+                }
+                sceneFlow.sendTestMail(fx, session, config, amount <= 0 ? 1 : amount);
+                return null;
+            }
             case "set_sp" -> {
                 actor.sp = clamp(cmd.intParam("sp", 0), 0, PlayerActor.MAX_SP);
                 fx.send(actor.vitalUpdate());

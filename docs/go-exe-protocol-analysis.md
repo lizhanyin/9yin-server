@@ -71,33 +71,39 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 
 | msgId | 功能 | 参数布局 | exe 行为要点 | Java 现状 |
 |---|---|---|---|---|
+| 1 | 聊天 | `[channel, ...]` | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)` | 🟨 第六轮：出生校验+日志（聊天广播未接） |
 | 19 | 时装套装 fashion_suit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` / `invalid sub-message %s` / `unhandled sub=%d args=[%s]`；wear/unwear/buy 与 FashionSuitRec 推送 | 🟨 第四轮：子消息类型分流 |
+| 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
-| 64/70/71 | 商店 打开/购买/关闭 | — | 完整商店系统（view/stock/capital），`shop %s item %s stock=%d < requested=%d`、`operate_type_swap_goods` | 🟨 仅日志（S2C 响应格式待钉死） |
+| 64/70 | 商店 打开/购买 | — | 完整商店系统（view/stock/capital），`shop %s item %s stock=%d < requested=%d`、`operate_type_swap_goods` | 🟨 仅日志（S2C 响应格式待钉死；71 经反汇编证实是 ItemAction 非商店关闭） |
 | 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | 🟨 第三轮：确认收下记日志（Java 无待确认 col result） |
 | 145 | 副本奖励 View80 拾取 | — | `reject 145 no clone awards view` / `reject 145 bad index %s`、`pickup clone award slot=%d` | 🟨 第四轮：无 View80 奖励视图拒绝 |
+| 150/161 | 经脉 JingMai | `[subcommand(int), ...]` | 反汇编：150/161 → handleJingMaiCustom；`jingmai custom requires an int subcommand`、`jingmai toggle active=%v name=%q role=%d` | 🟨 第六轮：subcommand 校验（经脉表未接） |
 | 180 | 卡片（activity card） | — | `handle activity card 180` | 🟨 第三轮：sub_command 路由桩（USE/USESKILL/SAVE 子编号待钉死） |
+| 195 | 快捷键方案保存 | `[sub(int)]` | 反汇编：195 → handleSaveShortcutScheme；`save shortcut scheme sub=%d len=%d` / `unknown sub=%d` | 🟨 第六轮：sub 校验（方案存储未接） |
 | 200/201 | 快捷键 设置/删除 | `[idx, kind(str), id(str)]` / `[idx]` | `shortcut expects int index and two strings`；同 index 先 0x12 删旧行 | ✅ |
-| 209 | 任务 | — | `handle task 209: %v`、`task 209 ignored: no active task` | 🟨 第三轮：无活跃任务忽略（日志对齐） |
+| 209 | 任务放弃 | — | `handle task 209: %v`、`task 209 ignored: no active task`；**反汇编互证：209 → handleTaskGiveUpCustom（`task panel gave up task=%d`）** | 🟨 第三轮：无活跃任务忽略（日志对齐） |
 | 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
-| 215 | 内功切换 | `[configId(str)]` | `215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d` | 🟨 第四轮：无内功学习表，未学习拒绝 |
+| 215 | 修炼进度（含内功子命令） | `[configId(str)]`（内功路径） | 反汇编：215 → handlePlayerProgressCustom；`player progress request before scene player exists`、`215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d` | 🟨 第六轮：进度/内功表未接，双拒绝分支 |
 | 216/217 | 轻功 基本/主动 | — | `reject basic qinggong hold cost=%d point=%d/%d`；ActiveQGSkillRec 行 | ✅ |
 | 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state` | ✅ |
-| 223 / 5223 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated` | 🟨（见 §3 疑似偏差） |
+| 223 / 5223 / 99 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated`；**反汇编修正：Go switch 的 case 值是 99，223/5223 在 exe 全 .text 无比较点**（223/5223 为实机抓包有效编号，三者并存接入） | 🟨（见 §3 疑似偏差） |
 | 240 | 打坐 | `[start_or_stop:int]` | `sitcross native state %d -> %d via normal 0x10`（1=坐下 0/2=起身） | ✅ |
 | 270 | 暮色道具技能 | `[skillId(str)]` | `twilight item skill %s has no active scene` | 🟨 第三轮：无活跃暮色场景拒绝（日志对齐） |
 | 291 | PK 模式切换 | `[mode:int]` | `change pk mode expects TVarList(291, mode)`；`change pk mode invalid mode %s`；GM 面板 `set_pk_mode` 同源 | 🟨 本轮实现 |
 | 292 | 警告开关 | 无参 | `warning expects TVarList(292) with no extra values`；`change warning %d -> %d via normal 0x10`（toggle 后 0x10 推送，属性 ID 未钉死） | 🟨 本轮实现（存储+日志） |
 | 293 | PK 保护开关 | `[type:int, onoff:int]` | `toggle expects TVarList(293, type, onoff)`；`client pk protect toggle type=%d on=%d` | 🟨 本轮实现 |
 | 301 | VIP | `[301, cmd(int), ...]` | `VIP message 301 has no command` / `command is not an exact integer: %s`；购买链 `month count %d is outside 1..36`、`gold balance %d is below VIP cost %d`、`completed golden VIP purchase type=%d months=%d cost=%d gold=%d ...` | 🟨 第四轮：头部校验；价格表与购买 cmd 编号待钉死 |
+| 326/388 | 组队（含伙伴） | `[op(int), ...]` | 反汇编：326/388 → handleTeamCustomWithCompanion；`reject team op %d before player spawn`、`team: operation %d requires %d values`、`%s joined team %d via captain %d` | 🟨 第六轮：op 校验（队伍系统未接） |
+| 353/359/361 | 邮件 | — | 反汇编：353/359/361 → handleMailCustom；`mail selection has invalid fields`、MailDelete/MailSelection | 🟨 第六轮：日志（邮箱未接） |
 | 380 | 掉落拾取 | `[vpos(int), ...]`（首参假设） | `reject 380 pickup without vpos` / `reject 380 bad vpos %s`、`pickup 380 vpos=%d %s x%d -> %s bag[%v]` | 🟨 第四轮：vpos 校验；无掉落实体 |
 | 382 | 关闭掉落 | — | `handle close drop 382`、`closed DropBox via 382` | 🟨 第三轮：日志对齐（Java 无 DropBox 实体） |
 | 560 | 充值商店购买 | `[560, cmd, ...]`（buy=`[560,3,charge_id,nums]`） | `buy expects [560,3,charge_id,nums]`、`nums=%d outside 1..%d`、`no goods charge_id=%d`、`price_type=%d not supported`、`needs gold=%d, have %d`、`(%s): bag full`、`bought %s x%d (charge_id=%d) for %d gold, left=%d`；cmd 2/4/5 忽略 | 🟨 第三轮：货品表+完整校验链+金币扣减+入包 grant（页面 S2C 与 capital 映射待钉死） |
 | 249 | 充值确认 | — | `Yufeng charge window expired … without C2S 249 (player never charged: no movement); cancelled, NOT complete` | 🟨 第三轮：御风蓄力确认收下记日志（Java 无蓄力窗口） |
 | 688 | 珍宝阁 tersure | 全 int `[sub_type, ...]` | `tersure 688 has non-int args: %v` / `unhandled tersure 688 sub_type=%d`；重铸/修复/洗练结果帧 | 🟨 第四轮：sub_type 路由校验（结果帧待钉死） |
 | 692 | 面料混合 | — | `attire blend 692 missing args args=[%s]`、`attire: restored blend items=%d show_type=%d` | 🟨 第四轮：缺参校验（attire store 未实装） |
-| 700~706 | 出身/起源 origin | `[origin_id(int)]` | `origin 700: missing origin id args=%d` / `bad origin id type %s`；700 取新出身（`send get_a_new_origin`）、705 送称号+声望（`repute %s +%d -> %d`）、706 刷新 sysinfo | 🟨 第四轮：id 校验（origin 目录未接） |
+| 700~706 | 出身/起源 origin | `[origin_id(int)]` | 反汇编归属：**700=Active / 701=Get / 702=GetPrize / 705=SetShow / 706=RequireNotify**；`origin 700: missing origin id args=%d` / `bad origin id type %s`；705 送称号+声望（`repute %s +%d -> %d`） | 🟨 第四轮：id 校验（origin 目录未接；归属第六轮反汇编修正） |
 | 713 | 礼盒领取 | — | `gift box catalog unavailable: %v` / `gift box %s claimed prizes=%d` | 🟨 第四轮：目录不可用分支 |
 | 770 | C 面板体型 BodyScale | — | `handle C-panel BodyScale 770`、`customizing upload too large: %d` | 🟨 第四轮：日志（customizing 上传/恢复未实装） |
 | 784 | 乱斗 | `[sub(int)=10 OPEN_LIMITE index, origin_id]` | `luandou 784: encode reply`、`missing sub_msg args=%d`、`bad sub_msg type %s`、`sub=10 OPEN_LIMITE index=%d origin_id=%d` | 🟨 第三轮：sub 路由（reply 格式待钉死） |
@@ -106,6 +112,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action` | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
 | 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick（响应载体假设 0x1E 同 msgId，待抓包） |
 | 943 | 兵录修改 | `[943, sub(int), name(str), num(int)]` | `binglu modify: missing sub message`、`sub message is not an integer`、`unhandled sub=%d name=%q num=%d` | 🟨 第三轮：sub 三分支校验日志（binglu 数据表未接） |
+| 961 | 骑乘技能 | `[skillId(str)]`（假设） | 反汇编：961 → handleRideSkillUse；`ride skill (not dismount) id=%s mounted=%v` | 🟨 第六轮：日志（坐骑状态未接） |
 | 819 | 用户须知签署 | — | （Java 侧实测闭环） | ✅ |
 | 517 | GM 探针默认 msgId | `[subType]` | `GM custom probe msgID=%d subType=%d` | 🟨 第三轮：日志（GM 面板直驱未接） |
 
@@ -283,6 +290,41 @@ Go 同构日志；**default 分支日志对齐**为参考服的
   重铸 WeaponRecast 全套（`recast preview reject: need 5 args` 等串已找到，
   编号未钉死）。
 
+### 3.8 反汇编钉死 msgId 轮（2026-10-30 第六轮）
+
+**突破**：COFF 符号表 + objdump 反汇编成功打开 msgId→handler 映射的提取通道
+（§4 已沉淀可复用命令）。custom 分发是 `main.handle` 内 %ecx 上的**二分搜索树**，
+出现两次（对应 0x0A 信封与 0x1E/0x27 直发两条路径，与 Java dispatchCustom 同构）。
+提取方法：跟随 `cmp $imm,%ecx` + `je <块>`（相等跳转）到块内第一个
+`call <main.handleXxx>`；`jl/jg` 是子树边界不作数；区间树末端 case 用 `jne` 落入式。
+
+**本轮钉死并互证**（je-相等 + 字符串证据双向验证）：
+
+| msgId | handler | 互证 |
+|---|---|---|
+| 1 | Chat | `reject chat before player spawn` |
+| 34/71 | ItemAction | `item action %d has invalid view/slot`；**71 旧分析误标"商店关闭"** |
+| 99 | SetOperateMode | **223/5223 在全 .text 无比较点**（223 是实机抓包有效值，Go 侧 case 实为 99） |
+| 150/161 | JingMai | `jingmai custom requires an int subcommand` |
+| 195 | SaveShortcutScheme | `save shortcut scheme sub=%d len=%d` |
+| 209 | TaskGiveUp | `handle task 209` + `task panel gave up task=%d` |
+| 215 | PlayerProgress | `player progress request before scene player exists`；内功子命令（`215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d`）同属此 handler——修正第四轮"215=纯内功切换"推断 |
+| 217 | ActiveQingGong | 既有知识 |
+| 249 | YufengHoldPowerEnd | `Yufeng charge window ... without C2S 249` |
+| 326/388 | Team(含伙伴) | `team: operation %d requires %d values` |
+| 353/359/361 | Mail | `mail selection has invalid fields` |
+| 700/702/706 | OriginActive/GetPrize/RequireNotify | `origin 700/702/705: missing origin id`（**修正第四轮 700=Get 推断**；701=Get、705=SetShow 由邻位推断） |
+| 961 | RideSkillUse | `ride skill (not dismount) id=%s mounted=%v` |
+
+Java 侧：99 并入操作模式 case（223/5223/99 三编号并存）；新增 1/34/71/150/161/
+195/326/388/353/359/361/961 十二个校验层 handler；215 重写为 PlayerProgress
+双拒绝分支（出生前 + 内功未学习）。
+
+**待续**（区间树解码器剩余）：OnestepEquip/EquipItemUse/ShopBuy/Skill(211)/
+Shortcut(200)/Warning(292)/924/868 等的守卫比较因落入式 case / 参数装配段较长
+未读出——case 块经 `jl/jg` 子树进入且与树指令交错，需要完整的区间递归解码器；
+反汇编产物已存 `%TEMP%/text.asm`（1.8M 行）与 `/tmp/syms.txt` 可继续。
+
 ## 4. 后续继续挖掘的方法
 
 exe 未剥符号，`strings + grep` 即可继续钉死协议细节（在 Git Bash 下）：
@@ -299,9 +341,31 @@ strings -n 4 "$EXE" | grep -aoE "main\.handle[A-Za-z0-9_]+" | sort -u
 strings -n 4 "$EXE" | grep -aoE "main\.(send|write|encode|publish)[A-Za-z0-9_]+" | sort -u
 ```
 
-局限性：msgId→handler 的精确映射（switch 跳表）与 0x10 属性 ID 常量在字符串层不可见，
-需要反汇编（IDA/Ghidra）或在 Go 服上用 GM 探针抓 S2C 帧；`H:/9yin-go-server2` 源码目录已不存在，
-若能找回源码则一切细节可直接闭合。
+### 4.1 反汇编提取 msgId→handler 映射（第六轮打通，无需 IDA）
+
+本机 `objdump`（D:/User/worktools/perl/c/bin）+ COFF 符号表即可；注意 exe 路径含中文时
+objdump 读不到，先 cd 进目录；符号值是节相对 RVA，**代码 VMA = 0x401000 + 符号值**：
+
+```bash
+cd /e/Workspace/九阴服务端
+# 1) 符号表（~3000 个 main.*）：
+objdump -t 9yin-game-native-menu.exe | grep -oE "0x[0-9a-f]{16} main\.[A-Za-z0-9_.]+" | sort
+#    → main.handle = 0x46acc0 → VMA 0x86bcc0（巨型函数，含全部 C2S 处理与 custom 分发）
+# 2) 全量反汇编（一次性，1.8M 行，可复用）：
+objdump -d --start-address=0x401000 --stop-address=0xa5b3f5 9yin-game-native-menu.exe > /tmp/text.asm
+# 3) 找某 handler 的调用点：
+grep -n "call.*<main.handleXxxCustom>" /tmp/text.asm
+# 4) custom 分发 = main.handle 内 %ecx 上的二分搜索树（出现两次：0x0A 信封 + 0x1E/0x27
+#    直发）。读守卫：跟随 cmp $imm,%ecx + je <块> 到块内第一个 call <main.handleXxx>；
+#    jl/jg 是子树边界不作数；区间末端 case 用 jne 落入式；default 分支的格式串
+#    ("%s: unhandled custom msg_id=%d args=[%s]" @ rdata VMA 0xb84dcf) 可作树定位锚点。
+# 5) 字符串地址反查：文件偏移 → .rdata VMA = 0xa5c000 + (off - 0x65aa00)，
+#    再在 text.asm 里搜 "# <vma>"（objdump 注释无 0x 前缀）。
+```
+
+局限性：落入式 case（jne 落入）与长参数装配段需要完整的区间递归解码器（见 §3.8 待续）；
+0x10 属性 ID 常量同法可挖（0x10 帧构造函数内的立即数）。IDA/Ghidra 或 GM 探针抓包
+仍是最后手段；`H:/9yin-go-server2` 源码目录已不存在，若能找回源码则一切细节可直接闭合。
 
 ## 5. 证据字符串摘录（关键几条）
 
@@ -414,4 +478,25 @@ wear now requires one wearable equipment item               ← OnestepEquip（�
 %s: right-click equip %s reject: %v / bound (first wear)    ← EquipItemUse（编号未钉死）
 %s: unhandled custom msg_id=%d args=[%s]                    ← default 分支（本轮对齐）
 custom message %s has unsupported outer opcode %#x          ← 载体 opcode 校验
+```
+
+### 5.3 第六轮新增摘录（反汇编钉死批，2026-10-30）
+
+```
+%s: reject chat before player spawn                     ← 1 聊天
+%s: ignore empty chat (channel=%d)
+item action %d has invalid view/slot                    ← 34/71 道具动作
+jingmai custom requires an int subcommand               ← 150/161 经脉（子命令 int）
+%s: jingmai toggle active=%v name=%q role=%d
+save shortcut scheme sub=%d len=%d / unknown sub=%d     ← 195 快捷键方案
+%s: reject team op %d before player spawn               ← 326/388 组队
+team: operation %d requires %d values
+%s: %s accepted invite into team %d / joined team %d via captain %d
+mail selection has invalid fields                       ← 353/359/361 邮件
+%s: ride skill (not dismount) id=%s mounted=%v          ← 961 骑乘技能
+player progress request before scene player exists      ← 215 修炼进度（出生校验）
+%s: handle inner-power msg=%d: %v                       ← 215 内功子命令（同 handler）
+set operate mode: invalid mode %d                       ← 99/223 操作模式（Go case=99）
+%s: task panel gave up task=%d                          ← 209 = TaskGiveUp（反汇编互证）
+%s: unhandled custom msg_id=%d args=[%s] @ rdata 0xb84dcf   ← custom 树定位锚点
 ```

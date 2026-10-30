@@ -417,7 +417,9 @@ public final class SceneFlow {
             case 216 -> handleQingGong(fx, session, msg);
             case 217 -> handleActiveQingGong(fx, session, msg);
             case 218 -> handleActiveParry(fx, session, msg);
-            case 223, 5223 -> {
+            // 操作模式切换：223/5223 为实机抓包编号；反汇编证实 Go switch 的 case 值是 99
+            //（223/5223 在 exe .text 无任何比较点），99 一并接入
+            case 223, 5223, 99 -> {
                 CustomMsg.Val v = msg.val(1);
                 if (v != null && v.type == CustomMsg.TYPE_I32) {
                     session.operateMode = v.asInt();
@@ -435,10 +437,9 @@ public final class SceneFlow {
             case 293 -> handlePkProtectToggle(fx, session, msg);
             // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认）
             case 819 -> handleTermsSign(fx, session);
-            // 商店购买流程（64 打开 / 70 购买 / 71 关闭）：S2C 响应格式待抓包钉死，先对齐 C++ 记日志
+            // 商店打开/购买（64/70；71 经反汇编证实是 ItemAction 不是商店关闭，S2C 响应待抓包）
             case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
             case 70 -> log.info("shop msg=70 buy argc={} (response pending capture)", msg.size());
-            case 71 -> log.info("shop msg=71 close argc={}", msg.size());
             // ---- 2026-10-30 custom 轮：参数布局/行为已从 exe 字符串钉死的消息 ----
             // 消息延迟探测：[924, i64 tick]，回显 tick 供客户端测往返延迟
             case 924 -> handleMessageDelay(fx, session, msg);
@@ -466,9 +467,24 @@ public final class SceneFlow {
             case 868 -> handleTiguanRoulette(fx, session, msg);
             // GM 探针默认 msgId：[517, subType]
             case 517 -> handleGmProbe(fx, session, msg);
+            // ---- 2026-10-30 custom 第六轮：反汇编钉死批（je-相等提取 + 全 .text 常量扫描） ----
+            // 聊天（反汇编：1 → handleChatCustom）
+            case 1 -> handleChat(fx, session, msg);
+            // 道具动作（反汇编：34/71 → handleItemActionCustom；71 曾被旧分析误标"商店关闭"）
+            case 34, 71 -> handleItemAction(fx, session, msg);
+            // 经脉（反汇编：150/161 → handleJingMaiCustom）
+            case 150, 161 -> handleJingMai(fx, session, msg);
+            // 快捷键方案保存（反汇编：195 → handleSaveShortcutScheme）
+            case 195 -> handleSaveShortcutScheme(fx, session, msg);
+            // 修炼进度（反汇编：215 → handlePlayerProgressCustom，内功子命令同属此 handler）
+            case 215 -> handlePlayerProgress(fx, session, msg);
+            // 组队（反汇编：326/388 → handleTeamCustomWithCompanion）
+            case 326, 388 -> handleTeam(fx, session, msg);
+            // 邮件（反汇编：353/359/361 → handleMailCustom）
+            case 353, 359, 361 -> handleMail(fx, session, msg);
+            // 骑乘技能（反汇编：961 → handleRideSkillUse）
+            case 961 -> handleRideSkillUse(fx, session, msg);
             // ---- 2026-10-30 custom 第四轮：§3.5 候补清单编号钉死批 ----
-            // 内功切换（`215 requires a learned neigong ConfigID string`）
-            case 215 -> handleNeigongSwitch(fx, session, msg);
             // 时装套装（子消息按类型分流：str→invalid sub-message / int→unhandled sub）
             case 19 -> handleFashionSuit(fx, session, msg);
             // VIP（头部校验：无命令/命令非整数；价格与购买的 cmd 编号待钉死）
@@ -721,6 +737,80 @@ public final class SceneFlow {
                 goods.configId(), nums, chargeId, cost, actor.gold);
     }
 
+    // ---- 2026-10-30 custom 第六轮：反汇编钉死批 ----
+
+    /** 1 聊天（参考服：`reject chat before player spawn` / `ignore empty chat (channel=%d)`；聊天广播未实装）。 */
+    private void handleChat(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (session.actor == null) {
+            log.info("reject chat before player spawn");
+            return;
+        }
+        CustomMsg.Val channel = msg.val(1);
+        if (channel == null || !channel.asExactInt()) {
+            log.info("ignore empty chat (channel=none) vals={}", summarizeVals(msg));
+            return;
+        }
+        log.info("chat channel={} pending broadcast (chat system not implemented) vals={}",
+                channel.intOrZero(), summarizeVals(msg));
+    }
+
+    /** 34/71 道具动作（参考服：`item action %d has invalid view/slot`；动作语义子表未接）。 */
+    private void handleItemAction(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("item action msg={} vals={} (action table not implemented)",
+                msg.msgId(), summarizeVals(msg));
+    }
+
+    /** 150/161 经脉（参考服：`jingmai custom requires an int subcommand` / `jingmai toggle active=%v name=%q`；经脉表未接）。 */
+    private void handleJingMai(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null || !sub.asExactInt()) {
+            log.info("jingmai custom requires an int subcommand (vals={})", summarizeVals(msg));
+            return;
+        }
+        log.info("jingmai msg={} sub={} (jingmai store not implemented)",
+                msg.msgId(), sub.intOrZero());
+    }
+
+    /** 195 快捷键方案保存（参考服：`save shortcut scheme sub=%d len=%d` / `unknown sub=%d`；方案存储未接）。 */
+    private void handleSaveShortcutScheme(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null || !sub.asExactInt()) {
+            log.info("save shortcut scheme malformed vals={}", summarizeVals(msg));
+            return;
+        }
+        log.info("save shortcut scheme unknown sub={} len={} (scheme store not implemented)",
+                sub.intOrZero(), msg.size() - 2);
+    }
+
+    /** 326/388 组队（参考服：`reject team op %d before player spawn` / `team: operation %d requires %d values`；队伍系统未接）。 */
+    private void handleTeam(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val op = msg.val(1);
+        if (session.actor == null) {
+            log.info("reject team op {} before player spawn",
+                    op != null && op.asExactInt() ? op.intOrZero() : -1);
+            return;
+        }
+        if (op == null || !op.asExactInt()) {
+            log.info("team malformed vals={}", summarizeVals(msg));
+            return;
+        }
+        log.info("team msg={} op={} (team system not implemented; per-op arity pending)",
+                msg.msgId(), op.intOrZero());
+    }
+
+    /** 353/359/361 邮件（参考服：`mail selection has invalid fields`；邮箱/附件系统未接）。 */
+    private void handleMail(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("mail msg={} vals={} (mailbox not implemented)", msg.msgId(), summarizeVals(msg));
+    }
+
+    /** 961 骑乘技能（参考服：`ride skill (not dismount) id=%s mounted=%v`；坐骑状态未接）。 */
+    private void handleRideSkillUse(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val id = msg.val(1);
+        String skillId = id != null && id.str != null ? id.str : "";
+        log.info("ride skill (not dismount) id={} mounted=false (mount system not implemented)",
+                skillId.isEmpty() ? "<missing>" : skillId);
+    }
+
     /** 249 御风蓄力完成确认（参考服在蓄力窗口内等 249；Java 无蓄力窗口，收下即记日志）。 */
     private void handleYufengChargeConfirm(FxSession fx, LoginSession session) {
         log.info("yufeng charge confirm 249 ignored (no charge window active)");
@@ -855,10 +945,15 @@ public final class SceneFlow {
     // ---- 2026-10-30 custom 第四轮：编号钉死批（校验层 + 日志对齐） ----
 
     /**
-     * 215 内功切换（参考服：`215 requires a learned neigong ConfigID string`）。
-     * Java 无内功学习表（neigong static/varprop 未接入），任何 ConfigID 均按"未学习"拒绝。
+     * 215 修炼进度（反汇编：handlePlayerProgressCustom；`player progress request before
+     * scene player exists` + inner-power 子命令 `215 requires a learned neigong
+     * ConfigID string` 同属此 handler）。Java 无进度/内功学习表：未出生拒绝 + 内功未学习拒绝。
      */
-    private void handleNeigongSwitch(FxSession fx, LoginSession session, CustomMsg msg) {
+    private void handlePlayerProgress(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (session.actor == null) {
+            log.info("player progress request before scene player exists");
+            return;
+        }
         CustomMsg.Val id = msg.val(1);
         boolean malformed = id == null || id.str == null || id.str.isEmpty();
         log.info("215 requires a learned neigong ConfigID string ({} vals={})",
@@ -928,9 +1023,9 @@ public final class SceneFlow {
     }
 
     /**
-     * origin 家族 700/701/702/705/706（参考服：`origin 700: missing origin id args=%d` /
-     * `bad origin id type %s` / `send get_a_new_origin`；出身目录
-     * `origin: loaded %d origins from %s` 的数据文件未接入，带 id 亦先记 pending）。
+     * origin 家族（反汇编钉死归属：700=Active / 701=Get / 702=GetPrize / 705=SetShow /
+     * 706=RequireNotify；校验串 `origin 700: missing origin id args=%d` / `bad origin id
+     * type %s`）。出身目录 `origin: loaded %d origins from %s` 的数据文件未接入，带 id 亦先记 pending。
      */
     private void handleOrigin(FxSession fx, LoginSession session, CustomMsg msg) {
         int mid = msg.msgId();

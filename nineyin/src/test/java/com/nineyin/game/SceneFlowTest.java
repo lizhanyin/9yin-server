@@ -669,6 +669,49 @@ class SceneFlowTest {
                 "round-4 validation handlers emit no frames");
     }
 
+    /** 第六轮：反汇编钉死批（1/34/71/99/150/161/195/215/326/388/353/359/361/961）；99 走 223 同路推 OperateMode。 */
+    @Test
+    void customRound6DisasmPinnedMsgIds() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // 99 操作模式（反汇编修正：Go switch 的 case 值；223/5223 保留兼容）→ 与 223 同路
+        send(custom().u16(2).u8(2).i32(99).u8(2).i32(1).toByteArray());
+        List<byte[]> mode = drainOutbound().stream().filter(f -> op(f) == 0x10).toList();
+        assertEquals(1, mode.size(), "99 should push one 0x10 like 223");
+        assertEquals(1, login.operateMode);
+
+        // 聊天 / 道具动作 / 经脉 / 快捷键方案 / 修炼进度 / 组队 / 邮件 / 骑乘技能：校验层无帧
+        send(custom().u16(2).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(34).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(71).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(150).u8(2).i32(1).toByteArray());
+        byte[] nm = "ren".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(161).u8(6).u32(nm.length + 1).raw(nm).u8(0).toByteArray());
+        send(custom().u16(2).u8(2).i32(195).u8(2).i32(2).toByteArray());
+        byte[] ng = "ng_test".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(215).u8(6).u32(ng.length + 1).raw(ng).u8(0).toByteArray());
+        send(custom().u16(2).u8(2).i32(326).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(388).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(353).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(359).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(361).u8(2).i32(1).toByteArray());
+        byte[] rs = "ride_1".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(961).u8(6).u32(rs.length + 1).raw(rs).u8(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "round-6 validation handlers emit no frames (99 excluded above)");
+
+        // 1 聊天：未出生拒绝（登录后未 Ready 前无 actor——上面已完成 Ready，此处验证 actor 分支即可）
+        // （actor 存在时走 pending 分支，同样无帧）
+    }
+
     private static boolean containsUtf8(byte[] frame, String s) {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         outer:

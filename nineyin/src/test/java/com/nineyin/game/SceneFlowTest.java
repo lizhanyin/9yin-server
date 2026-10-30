@@ -51,7 +51,13 @@ class SceneFlowTest {
         roleStore = new JsonRoleStore(tempDir.resolve("roles.json"));
         FxOpcodeRouter router = new FxOpcodeRouter();
         LoginFlow loginFlow = new LoginFlow(roleStore);
-        SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog());
+        // 技能目录：fixture ini 链（test_self 自 buff 技 / test_atk 单体伤害技）
+        SkillCatalog skillCatalog = new SkillCatalog();
+        skillCatalog.load(tempDir);
+        SkillInitTable skillInit = new SkillInitTable();
+        skillInit.load(share.resolve("skill").resolve("skill_init.ini"));
+        SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog(),
+                null, null, skillCatalog, skillInit);
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
@@ -93,7 +99,114 @@ class SceneFlowTest {
                 r=,880.6,1,750.6,0,200
                 r=,881.2,1,751.2,0,200
                 """, GBK);
+        writeSkillFixture(share);
         return share;
+    }
+
+    /** 技能编译链 fixture：test_self（自 buff，5s 持续 + 两段动作）/ test_atk（单体伤害 113）。 */
+    private void writeSkillFixture(Path share) throws Exception {
+        Path skill = share.resolve("skill");
+        Files.createDirectories(skill);
+        Files.writeString(skill.resolve("skill_new.ini"), """
+                [test_self]
+                StaticData=900001
+                script=SkillNormal
+                ItemType=1000
+                AddCoolDownTime=7000
+
+                [test_atk]
+                StaticData=900002
+                script=SkillNormal
+                ItemType=1000
+                """, GBK);
+        Files.writeString(skill.resolve("skill_static.ini"), """
+                [900001]
+                MinVarPropNo=800001
+                MaxVarPropNo=800005
+                CoolDownCategory=12446
+                CoolDownTeam=50267
+                IsDamage=0
+                TaoLu=test
+
+                [900002]
+                MinVarPropNo=800011
+                MaxVarPropNo=800015
+                CoolDownCategory=12447
+                CoolDownTeam=50267
+                IsDamage=1
+                TaoLu=test
+                """, GBK);
+        Files.writeString(skill.resolve("skill_normal_varprop.ini"), """
+                [800001]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                CoolDownTime=15000
+
+                [800011]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                CoolDownTime=15000
+                DamageCalculate=23033
+                """, GBK);
+        Files.writeString(skill.resolve("skill_consume.ini"), """
+                [15608]
+                AConsumeMP=11
+                AConsumeSP=0
+                AConsumeQGP=0
+                """, GBK);
+        Files.writeString(skill.resolve("damage_calculate.ini"), """
+                [23033]
+                r=494,JujDamage,113,1,1,
+                """, GBK);
+        Files.writeString(skill.resolve("attack_hitshape.ini"), """
+                [1]
+                HitShape=0
+                HitShapePara1=0
+                HitShapePara2=0
+                """, GBK);
+        Files.writeString(skill.resolve("buff_new.ini"), """
+                [buf_test_self]
+                StaticData=15105
+                LifeTime=5000
+                """, GBK);
+        Files.writeString(skill.resolve("buff_static.ini"), """
+                [15105]
+                IsDamage=0
+                MinVarPropNo=296913
+                MaxVarPropNo=296913
+                """, GBK);
+        Files.writeString(skill.resolve("buff_varprop.ini"), """
+                [296913]
+                Level=1
+                LifeTime=5000
+                """, GBK);
+        Files.writeString(skill.resolve("skill_init.ini"), """
+                [test_self]
+                staticData=900001
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
+
+                [test_atk]
+                staticData=900002
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
+                """, GBK);
+        Path action = tempDir.resolve("ini/action");
+        Files.createDirectories(action);
+        Files.writeString(action.resolve("zhaoshi_player.ini"), """
+                [test_self]
+                1=self_act;0;30;-1;-1;1
+                2=self_act2;0;20;0;0;1
+
+                [test_atk]
+                1=atk_act;0;43;-1;-1;1
+                """, GBK);
     }
 
     private void send(byte[] plain) {
@@ -330,6 +443,65 @@ class SceneFlowTest {
         send(custom().u16(2).u8(2).i32(61).u8(2).i32(-1).toByteArray());
         drainOutbound();
         assertEquals(1, login.showEquipType, "负值不得覆盖");
+    }
+
+    private static byte[] useSkill(String id) {
+        byte[] b = id.getBytes(StandardCharsets.UTF_8);
+        return custom().u16(2)
+                .u8(2).i32(211)
+                .u8(6).u32(b.length + 1).raw(b).u8(0)
+                .toByteArray();
+    }
+
+    /** 211 校验链与释放：未学习拒绝 → 自 buff 技完整链（CD 行/vital/State/扣蓝）→ CD 内拒绝 → 需目标无选中拒绝。 */
+    @Test
+    void skill211ValidationAndCast() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // 未学习技能：拒绝且零技能帧（0x0A 可能伴随巡逻广播 0x20，只断言无 0x11/0x10 技能响应）、零扣费
+        send(useSkill("no_such_skill"));
+        List<byte[]> rejected = drainOutbound();
+        assertTrue(rejected.stream().noneMatch(f -> op(f) == 0x11 || op(f) == 0x10),
+                "unlearned skill must not emit skill frames: " + rejected.size());
+        assertEquals(500, login.actor.mp);
+
+        // 已学习 + 可编译：0x11 cooldown 行（表 5）→ 0x10 vital → 0x10 State 起手动作
+        send(useSkill("test_self"));
+        List<byte[]> cast = drainOutbound();
+        List<byte[]> skillFrames = cast.stream().filter(f -> op(f) == 0x11 || op(f) == 0x10).toList();
+        assertEquals(3, skillFrames.size(), "cooldown row + vital + state, got " + skillFrames.size());
+        assertEquals(0x11, op(skillFrames.get(0)));
+        assertEquals(5, leU32(skillFrames.get(0), 10) & 0xFFFF, "cooldown_rec = table index 5");
+        assertEquals(0x10, op(skillFrames.get(1)));
+        assertEquals(0x10, op(skillFrames.get(2)));
+        assertTrue(containsUtf8(skillFrames.get(2), "self_act"), "State 起手动作 self_act");
+        assertEquals(489, login.actor.mp, "MP 500 - 11");
+        assertEquals("test_self", login.actor.curSkillId);
+        assertEquals("test_self", login.actor.curSkillEffectId);
+        assertEquals(1, login.actor.curSkillLevel);
+        assertEquals(PlayerActor.LOGIC_STATE_FIGHTING, login.actor.logicState);
+
+        // 个人 CD（15s）内再放：拒绝且不重复扣费
+        send(useSkill("test_self"));
+        List<byte[]> cooled = drainOutbound();
+        assertTrue(cooled.stream().noneMatch(f -> op(f) == 0x11 || op(f) == 0x10),
+                "cooldown rejection must not emit skill frames");
+        assertEquals(489, login.actor.mp);
+
+        // 需目标技能而无选中目标：拒绝
+        send(useSkill("test_atk"));
+        List<byte[]> noTarget = drainOutbound();
+        assertTrue(noTarget.stream().noneMatch(f -> op(f) == 0x11 || op(f) == 0x10),
+                "no selected target must reject without skill frames");
+        assertEquals(489, login.actor.mp);
     }
 
     private static boolean containsUtf8(byte[] frame, String s) {

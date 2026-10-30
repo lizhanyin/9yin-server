@@ -36,8 +36,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * 场景同步与自定义消息总线：
  * - 67 字节移动包：更新位置、取消打坐、2 秒节流落库、>1m 触发 NPC 增量补发（上限 50）
  * - 自定义 msg（0x0A 信封 + 0x1E/0x27 直连两种载体，对齐 Go）：
- *   240 打坐、200/201 快捷键、211 技能（含选中 NPC 轻量战斗）、216/217 轻功、218 招架、
- *   223/5223 操作模式、64/70/71 商店（打开流程见 SelectFlow）
+ *   240 打坐、200/201 快捷键、211 技能（skill_init 学习校验 + 编译目录计费/CD/动作/区域结算）、
+ *   216/217 轻功、218 招架、223/5223 操作模式、64/70/71 商店（打开流程见 SelectFlow）
  * - 传送门：移动进入触发半径（door_data.ini MoveTarget/SpringRange）
  * - 巡逻广播（任意 0x0A 驱动，500ms 节流）
  * - 每秒 tick（NineyinServer 驱动）：actor 恢复 + vital 同步 + NPC 重生
@@ -72,6 +72,9 @@ public final class SceneFlow {
     private final NinJiuZhi ninjiuzhi;  // 全服阶段门控（缺省 alwaysOpen）
     /** 库存查询（MySQL 后端；JSON 后端为 null，msgId=30 移动回退日志）。 */
     private final com.nineyin.db.RoleInventoryStore inventory;
+    /** 技能编译目录与学习表（211；空目录时全部走"未编译"拒绝路径）。 */
+    private final SkillCatalog skillCatalog;
+    private final SkillInitTable skillInit;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -98,8 +101,7 @@ public final class SceneFlow {
         public boolean awaitingReentryReady;
         public boolean qinggongGranted;
         public boolean progressGranted;
-        // 轻量战斗
-        public long lastSkillMs;
+        // 轻量战斗（历史节流字段已由技能锁/CD 取代）
         public long lastPortalMs;
         // 每秒 tick
         public long lastVitalMs;
@@ -119,6 +121,12 @@ public final class SceneFlow {
 
     public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog,
                      AiEventEngine ai, NinJiuZhi ninjiuzhi) {
+        this(sceneManager, roleStore, qinggongCatalog, ai, ninjiuzhi, new SkillCatalog(), new SkillInitTable());
+    }
+
+    public SceneFlow(SceneManager sceneManager, RoleStore roleStore, QinggongCatalog qinggongCatalog,
+                     AiEventEngine ai, NinJiuZhi ninjiuzhi,
+                     SkillCatalog skillCatalog, SkillInitTable skillInit) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.qinggongCatalog = qinggongCatalog;
@@ -126,6 +134,8 @@ public final class SceneFlow {
         this.switcher = new SceneSwitcher(sceneManager, roleStore, this, this.ninjiuzhi);
         this.ai = ai;
         this.inventory = com.nineyin.db.RoleInventoryStore.from(roleStore);
+        this.skillCatalog = skillCatalog != null ? skillCatalog : new SkillCatalog();
+        this.skillInit = skillInit != null ? skillInit : new SkillInitTable();
     }
 
     /** 九阴志全局门控（GM / 广播接线用）。 */
@@ -774,86 +784,356 @@ public final class SceneFlow {
         }
     }
 
-    /** 211 技能：原生动作 + State 动作名 + 选中怪轻量战斗（掉血/死亡/重生）。 */
+    /**
+     * 211 技能释放（对照参考 exe handleSkillCustom 的校验链与日志）：
+     * 参数 → 出生 → 已学习 → 可编译 → 目标 → 锁/CD/死亡/MP/SP/轻功点计费
+     * → Buff 暂驻 + cooldown_rec 行 + vital + State 起手动作与后续段 → 伤害/控制结算 →
+     * 击杀碎银掉落 + total_action 后技能态清零回 stand。
+     */
     private void handleSkill(FxSession fx, LoginSession session, CustomMsg msg) {
-        String skillId = "";
-        for (int i = 1; i < msg.size(); i++) {
-            CustomMsg.Val v = msg.val(i);
-            if (v.type == CustomMsg.TYPE_STRING && v.str != null && !v.str.isEmpty()) {
-                skillId = v.str;
-                break;
-            }
-        }
-        fx.send(nativeSkillAction(1, 1, skillId, 1, 1));
-        String action = "attack";
-        String low = skillId.toLowerCase(Locale.ROOT);
-        for (int i = 1; i <= 7; i++) {
-            if (low.contains("hsqs0" + i)) {
-                action = "hsqs_0" + i;
-                break;
-            }
-        }
-        fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, action));
-        SceneState st = stateOf(fx);
-        applySkillDamage(fx, session, st, skillId);
-        log.info("use skill id={} action={}", skillId, action);
-    }
-
-    /** 轻量战斗：选中单位按 CombatFormulas 结算（攻防减免/破防/暴击）；死亡 0x0E 移除 + 15s 重生（tick 内补发）。 */
-    private void applySkillDamage(FxSession fx, LoginSession session, SceneState st, String skillId) {
-        if (session.actor == null || st.world == null || st.selectedOid == 0) {
+        CustomMsg.Val idVal = msg.val(1);
+        if (idVal == null || idVal.type != CustomMsg.TYPE_STRING
+                || idVal.str == null || idVal.str.isEmpty()) {
+            log.info("reject malformed or unlearned USE_SKILL argc={} vals={}",
+                    msg.size(), summarizeVals(msg));
             return;
         }
+        String skillId = idVal.str;
+        PlayerActor actor = session.actor;
+        if (actor == null) {
+            log.info("reject skill before player spawn id={}", skillId);
+            return;
+        }
+        // 学习校验：全局 skill_init.ini 表优先（私服全学形态），否则角色内置集
+        int level = skillInit.size() > 0 ? skillInit.level(skillId) : 0;
+        if (level <= 0) {
+            level = actor.learnedSkillLevel(skillId);
+        }
+        if (level <= 0) {
+            log.info("reject unlearned installed skill id={}", skillId);
+            return;
+        }
+        SkillCatalog.Definition def = skillCatalog.definition(skillId, level);
+        if (def == null) {
+            log.info("reject learned skill without compiled level response id={} level={}", skillId, level);
+            return;
+        }
+        SceneState st = stateOf(fx);
+        int targetOid = S2CPackets.PLAYER_OBJECT_ID;
+        int targetOwner = S2CPackets.PLAYER_OWNER_ID;
+        NpcInstance selected = null;
+        if (def.requiresTarget()) {
+            selected = selectedLivingTarget(st);
+            if (selected == null) {
+                log.info("reject skill id={} without living selected target", skillId);
+                return;
+            }
+            targetOid = selected.objectId;
+            targetOwner = selected.ownerId;
+        }
         long now = System.currentTimeMillis();
-        if (now - st.lastSkillMs < 700) {
-            return; // 动作节流
+        String reject = beginSkillUse(actor, def, targetOid, targetOwner, now);
+        if (reject != null) {
+            log.info("reject skill id={}: {}", skillId, reject);
+            return;
+        }
+        stageSkillBuffs(fx, actor, def, now);
+        // cooldown_rec 行（表 5：category, startMs, endMs, team）
+        fx.send(S2CPackets.recordAddRow(com.nineyin.protocol.RecordId.COOLDOWN_REC, 0,
+                def.cooldownCategory(), now, now + def.personalCdMs(), def.cooldownTeam()));
+        fx.send(actor.vitalUpdate());
+        if (!def.actionName().isEmpty()) {
+            fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, def.actionName()));
+            scheduleFollowupActions(fx, def);
+        }
+        int damageDealt = 0;
+        int targetCount = 0;
+        int lootTotal = 0;
+        for (SkillCatalog.Effect effect : def.effects()) {
+            if (effect.kind() != SkillCatalog.EffectKind.DAMAGE || effect.amount() <= 0) {
+                continue;
+            }
+            if (def.targetMode() == SkillCatalog.TargetMode.SELF) {
+                continue;   // 自身技无目标结算（对齐参考实现的 damage switch 无 SELF 分支）
+            }
+            SettleSummary settle = def.targetMode() == SkillCatalog.TargetMode.SELECTED
+                    ? settleSelected(fx, session, st, def, selected, now)
+                    : settleArea(fx, session, st, def, selected, msg, now);
+            damageDealt += settle.damage();
+            targetCount += settle.targets();
+            lootTotal += settle.loot();
+        }
+        for (SkillCatalog.Effect effect : def.effects()) {
+            if (effect.kind() == SkillCatalog.EffectKind.TARGET_CONTROL) {
+                log.info("settled compiled target control skill={} buff={} targets={} lifetime={}ms",
+                        def.id(), effect.buff().configId(), targetCount, effect.buff().lifetimeMs());
+            }
+        }
+        if (lootTotal > 0) {
+            actor.silver += lootTotal;
+            fx.send(S2CPackets.playerBatch()
+                    .i64(PropertyId.CAPITAL_TYPE1, actor.silver).build());
+            log.info("skill defeated NPCs targets={} silver_drop={}", targetCount, lootTotal);
+        }
+        log.info("accepted skill id={} mp={} sp={} qg={} damage={} target={} targets={} personal_cd={}ms public_cd={}ms",
+                skillId, actor.mp, actor.sp, actor.qinggongPoint, damageDealt, targetOid,
+                targetCount, def.personalCdMs(), def.publicCdMs());
+        scheduleCurrentSkillClear(fx, actor, def);
+    }
+
+    /** 计费与互斥（对照 Go beginSkillUse；失败返回原因文本，成功返回 null 并落账）。 */
+    private String beginSkillUse(PlayerActor actor, SkillCatalog.Definition def,
+                                 int targetOid, int targetOwner, long now) {
+        if (now < actor.skillLockUntilMs) {
+            return "skill locked remaining=" + (actor.skillLockUntilMs - now) + "ms";
+        }
+        Long ready = actor.skillCooldowns.get(def.id());
+        if (ready != null && ready > now) {
+            return "personal cooldown remaining=" + (ready - now) + "ms";
+        }
+        int teamKey = def.cooldownTeam() != 0 ? def.cooldownTeam() : -def.cooldownCategory();
+        Long teamReady = actor.skillTeamCooldowns.get(teamKey);
+        if (teamReady != null && teamReady > now) {
+            return "public cooldown team=" + teamKey + " remaining=" + (teamReady - now) + "ms";
+        }
+        if (actor.hp <= 0) {
+            return "player is dead";
+        }
+        if (actor.mp < def.mpCost()) {
+            return "MP " + actor.mp + " < " + def.mpCost();
+        }
+        if (actor.sp < def.spCost()) {
+            return "SP " + actor.sp + " < " + def.spCost();
+        }
+        if (def.qgCost() > 0 && !actor.useQingGong(def.qgCost())) {
+            return "QingGongPoint cannot pay " + def.qgCost();
+        }
+        if (!actor.spendMp(def.mpCost())) {
+            return "MP spend rejected";
+        }
+        actor.sp -= def.spCost();
+        actor.skillCooldowns.put(def.id(), now + def.personalCdMs());
+        actor.skillTeamCooldowns.put(teamKey, now + def.publicCdMs());
+        actor.skillLockUntilMs = now + SKILL_LOCK_MS;
+        actor.curSkillId = def.id();
+        actor.curSkillEffectId = def.id();
+        actor.curSkillLevel = def.level();
+        actor.curSkillTargetOid = targetOid;
+        actor.curSkillTargetOwner = targetOwner;
+        actor.logicState = PlayerActor.LOGIC_STATE_FIGHTING;
+        return null;
+    }
+
+    /** 技能 Buff 暂驻（自身 Buff / 架势轮换 / 红霸体），日志与参考服同构。 */
+    private void stageSkillBuffs(FxSession fx, PlayerActor actor, SkillCatalog.Definition def, long now) {
+        for (SkillCatalog.Effect effect : def.effects()) {
+            SkillCatalog.BuffDef buff = null;
+            switch (effect.kind()) {
+                case PLAYER_BUFF -> buff = effect.buff();
+                case STANCE_CYCLE -> buff = actor.nextStanceVariant(effect.buffVariants(), now);
+                case RED_ARMOR -> buff = new SkillCatalog.BuffDef("buf_fixed_red",
+                        PlayerActor.RED_ARMOR_STATIC, 1,
+                        Math.max(1, def.totalActionDurationMs()), PlayerActor.BUFF_SLOT_RED_ARMOR);
+                default -> {
+                    continue;
+                }
+            }
+            if (buff == null) {
+                continue;
+            }
+            int slot = actor.activateSkillBuff(buff, now);
+            if (slot == 0) {
+                log.info("no native BuffInfo slot available skill={} buff={}", def.id(), buff.configId());
+                continue;
+            }
+            log.info("staged compiled skill Buff skill={} buff={} property={} value={} expiry={}",
+                    def.id(), buff.configId(), PropertyId.bufferInfoSlot(slot),
+                    actor.buffInfo(slot), actor.buffExpiresAt(slot));
+        }
+    }
+
+    /** zhaoshi 后续段：按 at 偏移补发 State 动作。 */
+    private void scheduleFollowupActions(FxSession fx, SkillCatalog.Definition def) {
+        for (SkillCatalog.Segment segment : def.followupActions()) {
+            GameScheduler.schedule(Math.max(0, segment.atMs()), () -> {
+                fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, segment.action()));
+                log.info("skill follow-up State sent id={} action={} at={}ms",
+                        def.id(), segment.action(), segment.atMs());
+            });
+        }
+    }
+
+    /** total_action 后清技能态并回 stand（旧定时器不覆盖新技能）。 */
+    private void scheduleCurrentSkillClear(FxSession fx, PlayerActor actor, SkillCatalog.Definition def) {
+        long delay = Math.max(1, def.totalActionDurationMs());
+        GameScheduler.schedule(delay, () -> {
+            if (!actor.clearCurrentSkill(def.id())) {
+                return;
+            }
+            fx.send(actor.currentSkillClearFrame());
+            fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, "stand"));
+            log.info("skill state cleared id={} total_action={}ms", def.id(), delay);
+        });
+    }
+
+    /** 选中且存活的可攻击目标。 */
+    private NpcInstance selectedLivingTarget(SceneState st) {
+        if (st.world == null || st.selectedOid == 0) {
+            return null;
         }
         NpcInstance npc;
         synchronized (st.world) {
             npc = st.world.npcById(st.selectedOid);
         }
-        if (npc == null || npc.dead) {
-            return;
-        }
-        st.lastSkillMs = now;
-        // 技能状态元组（CurSkill* + LogicState=1），5s 后清除
-        session.actor.curSkillId = skillId;
-        session.actor.curSkillTargetOid = npc.objectId;
-        session.actor.curSkillTargetOwner = npc.ownerId;
-        session.actor.logicState = PlayerActor.LOGIC_STATE_FIGHTING;
-        String expected = skillId;
-        GameScheduler.schedule(5000, () -> {
-            PlayerActor actor = session.actor;
-            if (actor == null || !expected.equals(actor.curSkillId)) {
-                return;
-            }
-            actor.curSkillId = "";
-            actor.curSkillTargetOid = 0;
-            actor.curSkillTargetOwner = 0;
-            if (actor.logicState == PlayerActor.LOGIC_STATE_FIGHTING) {
-                actor.logicState = PlayerActor.LOGIC_STATE_NORMAL;
-            }
-            fx.send(actor.vitalUpdate());
-        });
-        fx.send(session.actor.vitalUpdate());
+        return npc != null && !npc.dead && npc.hp > 0 ? npc : null;
+    }
 
+    /** 效果结算汇总：实际伤害 / 命中目标数 / 击杀掉落（碎银）。 */
+    private record SettleSummary(int damage, int targets, int loot) {
+    }
+
+    /** 单体伤害效果结算（SELECTED）。 */
+    private SettleSummary settleSelected(FxSession fx, LoginSession session, SceneState st,
+                                         SkillCatalog.Definition def, NpcInstance selected, long now) {
+        if (selected == null) {
+            return new SettleSummary(0, 0, 0);
+        }
+        HitResult hit = settleSkillHit(fx, session, st, selected, def, now);
+        return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, hit.loot());
+    }
+
+    /** 区域伤害效果结算（圆/扇/矩形/目标区域；日志与参考服同构，split/cadence 待钉死）。 */
+    private SettleSummary settleArea(FxSession fx, LoginSession session, SceneState st,
+                                     SkillCatalog.Definition def, NpcInstance selected,
+                                     CustomMsg msg, long now) {
+        CastCenter center = castCenter(st, selected, msg, session);
+        if (center == null) {
+            log.info("compiled area skill id={} has no center; no targets settled", def.id());
+            return new SettleSummary(0, 0, 0);
+        }
+        List<NpcInstance> hits = areaTargets(st, center, def);
+        int damage = 0;
+        int targets = 0;
+        int loot = 0;
+        for (NpcInstance npc : hits) {
+            HitResult hit = settleSkillHit(fx, session, st, npc, def, now);
+            damage += hit.damage();
+            targets += hit.landed() ? 1 : 0;
+            loot += hit.loot();
+        }
+        log.info("settled compiled area skill id={} mode={} center=({},{},{}) radius={} angle={} width={} hits={} split={} cadence={}ms damage_total={}",
+                def.id(), def.targetMode().ordinal(),
+                String.format(Locale.ROOT, "%.2f", center.x()),
+                String.format(Locale.ROOT, "%.2f", center.y()),
+                String.format(Locale.ROOT, "%.2f", center.z()),
+                String.format(Locale.ROOT, "%.1f", def.areaRadius()),
+                String.format(Locale.ROOT, "%.1f", def.sectorAngle()),
+                String.format(Locale.ROOT, "%.1f", def.areaWidth()),
+                hits.size(), 1, 0, damage);
+        return new SettleSummary(damage, targets, loot);
+    }
+
+    /** 区域技能中心：SELECTED_AREA 取目标位置，其余取施法者报点（msg 2/3/4=xyz，5=朝向）。 */
+    private record CastCenter(float x, float y, float z, float orient) {
+    }
+
+    private CastCenter castCenter(SceneState st, NpcInstance selected, CustomMsg msg, LoginSession session) {
+        if (selected != null) {
+            return new CastCenter(selected.x, selected.y, selected.z, selected.orient);
+        }
+        float x = session.x;
+        float y = session.y;
+        float z = session.z;
+        float orient = session.orient;
+        CustomMsg.Val vx = msg.val(2);
+        CustomMsg.Val vy = msg.val(3);
+        CustomMsg.Val vz = msg.val(4);
+        if (vx != null && vy != null && vz != null
+                && (vx.type == CustomMsg.TYPE_F32 || vx.type == CustomMsg.TYPE_F64)) {
+            x = vx.asFloat();
+            y = vy.asFloat();
+            z = vz.asFloat();
+            CustomMsg.Val vo = msg.val(5);
+            if (vo != null && (vo.type == CustomMsg.TYPE_F32 || vo.type == CustomMsg.TYPE_F64)) {
+                orient = vo.asFloat();
+            }
+        }
+        return new CastCenter(x, y, z, orient);
+    }
+
+    /** 形状过滤（圆/扇/矩形 + 高度差），与参考 exe applyShapedSkillDamage 同式。 */
+    private List<NpcInstance> areaTargets(SceneState st, CastCenter center, SkillCatalog.Definition def) {
+        if (st.world == null || def.areaRadius() <= 0) {
+            return List.of();
+        }
+        List<NpcInstance> candidates;
+        synchronized (st.world) {
+            candidates = st.world.snapshotNear(center.x(), center.z(), def.areaRadius(),
+                    AREA_TARGET_CAP, n -> !n.dead && n.hp > 0);
+        }
+        List<NpcInstance> hits = new ArrayList<>(candidates.size());
+        float radiusSq = def.areaRadius() * def.areaRadius();
+        for (NpcInstance n : candidates) {
+            float dx = n.x - center.x();
+            float dz = n.z - center.z();
+            float dy = Math.abs(n.y - center.y());
+            if (def.areaHeight() > 0 && dy > def.areaHeight()) {
+                continue;
+            }
+            if (def.areaWidth() > 0) {
+                double facingX = Math.cos(center.orient());
+                double facingZ = Math.sin(center.orient());
+                double forward = dx * facingX + dz * facingZ;
+                double side = -dx * facingZ + dz * facingX;
+                if (forward < 0 || forward > def.areaRadius()
+                        || Math.abs(side) > def.areaWidth() / 2.0) {
+                    continue;
+                }
+            } else if (dx * dx + dz * dz > radiusSq) {
+                continue;
+            } else if (def.sectorAngle() > 0) {
+                double targetAngle = Math.atan2(dz, dx);
+                double delta = Math.atan2(
+                        Math.sin(targetAngle - center.orient()),
+                        Math.cos(targetAngle - center.orient()));
+                if (Math.abs(delta) > def.sectorAngle() * Math.PI / 360.0) {
+                    continue;
+                }
+            }
+            hits.add(n);
+        }
+        hits.sort(Comparator.comparingInt(n -> n.objectId));
+        return hits;
+    }
+
+    /** 单目标结算结果：实际伤害 / 是否命中 / 击杀掉落（碎银 = MaxHP/100 夹 [1,99]）。 */
+    private record HitResult(int damage, boolean landed, int loot) {
+    }
+
+    /**
+     * 单目标伤害结算：CombatFormulas 掷未命中/暴击（技能倍率 = 编译伤害/100），
+     * 命中掉血 + 0x10 血条批，死亡 0x0E 移除 + 重生排期 + AI/九阴志事件。
+     */
+    private HitResult settleSkillHit(FxSession fx, LoginSession session, SceneState st,
+                                     NpcInstance npc, SkillCatalog.Definition def, long now) {
+        double ratio = def.baseDamage() > 0 ? def.baseDamage() / 100.0 : 1.0;
         CombatFormulas.DamageResult hit = CombatFormulas.calc(session.actor.combatStats(),
                 CombatStats.defender(npc.defense, npc.evasion),
-                CombatFormulas.skillRatio(skillId), ThreadLocalRandom.current(), false);
+                ratio, ThreadLocalRandom.current(), false);
         if (hit.miss()) {
-            // 未命中：不掉血，但攻击意图仍拉仇恨/进战斗窗口
-            log.info("skill {} -> npc {} MISS", skillId, npc.configId);
+            log.info("skill {} -> npc {} MISS", def.id(), npc.configId);
             if (ai != null) {
                 ai.onNpcDamaged(st.world, npc, fx, now);
             } else {
                 npc.lastCombatMs = now;
             }
-            return;
+            return new HitResult(0, false, 0);
         }
         int damage = hit.damage();
         npc.hp = Math.max(0, npc.hp - damage);
         log.info("skill {} -> npc {} damage={} crit={} reductionPct={}",
-                skillId, npc.configId, damage, hit.crit(), String.format(Locale.ROOT, "%.1f", hit.reductionPct() * 100));
+                def.id(), npc.configId, damage, hit.crit(),
+                String.format(Locale.ROOT, "%.1f", hit.reductionPct() * 100));
         if (ai != null) {
             ai.onNpcDamaged(st.world, npc, fx, now);
         } else {
@@ -862,26 +1142,31 @@ public final class SceneFlow {
         S2CPackets.Batch npcBatch = S2CPackets.batch(npc.objectId, npc.ownerId);
         npcBatch.i32(PropertyId.HP, npc.hp)
                 .i32(PropertyId.HP_RATIO, npc.maxHp > 0 ? (int) ((long) npc.hp * 100 / npc.maxHp) : 0);
+        int loot = 0;
         if (npc.hp == 0) {
             npc.dead = true;
-            // 世界 BOSS 不走固定摆位重生（WorldBossManager 负责回收与下轮时间档）
             npc.respawnAtMs = WorldBossManager.TAG.equals(npc.tag)
                     ? Long.MAX_VALUE : now + respawnDelay(npc);
             npcBatch.u8(PropertyId.DEAD, 1);
+            loot = Math.max(1, Math.min(99, npc.maxHp / 100));
         }
         fx.send(npcBatch.build());
         if (npc.dead) {
             fx.send(S2CPackets.removeObject(npc.objectId, npc.ownerId));
             st.sentIds.remove(npc.objectId);
             if (ai != null) {
-                // 玩家等级未建模：修罗等级分箱（Level 34-50/51-60）条件暂不满足
                 ai.onNpcDeath(st.world, npc, 0);
             }
-            // 九阴志事件点：击杀累计到阈值自动推进全服阶段
             ninjiuzhi.onKill();
             log.info("npc {} ({}) defeated, respawn in {}ms", npc.objectId, npc.configId, NPC_RESPAWN_MS);
         }
+        return new HitResult(damage, true, loot);
     }
+
+    /** 211 起手互斥窗口（参考实现 500ms）。 */
+    private static final long SKILL_LOCK_MS = 500;
+    /** 区域技能单次结算目标上限（参考无上限，此处防摆位异常爆帧）。 */
+    private static final int AREA_TARGET_CAP = 64;
 
     // ---------- 轻功 ----------
 
@@ -965,7 +1250,7 @@ public final class SceneFlow {
                 session.actor.parryEndurance);
     }
 
-    /** 0x1E msg=20 原生技能动作帧。 */
+    /** 0x1E msg=20 原生技能动作帧（AI 出招广播用；玩家 211 走 State 动作路由）。 */
     static byte[] nativeSkillAction(int casterOid, int casterOwner, String skillId,
                                     int targetOid, int targetOwner) {
         return CustomPackets.intMessage(20,

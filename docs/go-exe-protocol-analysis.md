@@ -78,7 +78,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 180 | 卡片（activity card） | — | `handle activity card 180` | ⬜ |
 | 200/201 | 快捷键 设置/删除 | `[idx, kind(str), id(str)]` / `[idx]` | `shortcut expects int index and two strings`；同 index 先 0x12 删旧行 | ✅ |
 | 209 | 任务 | — | `handle task 209: %v` | ⬜ |
-| 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | 🟨（未校验"已学习"） |
+| 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
 | 216/217 | 轻功 基本/主动 | — | `reject basic qinggong hold cost=%d point=%d/%d`；ActiveQGSkillRec 行 | ✅ |
 | 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state` | ✅ |
 | 223 / 5223 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated` | 🟨（见 §3 疑似偏差） |
@@ -124,7 +124,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 |---|---|---|---|
 | 1 | `LoginFlow:264`、`SceneFlow:393`（223 OperateMode） | 官服属性表声明 OperateMode 为 **i64(type 3)**，Java 用 `objectPropertyInt`（i32 编码）推送，初始值与增量两处一致地"错" | 若客户端按 0x09 表类型解析 0x10 值，i32 会少 4 字节。两处编码一致，说明若链路"能用"可能是客户端容忍或忽略该属性。**建议实机抓包比对 Go 侧 223 推送的宽度**后再改 |
 | 2 | 223 处理 | Go 在切模式时会同步更新 ShortcutKey（`shortcutKey updated`），Java 只推 OperateMode | 客户端 3D/2.5D 快捷栏布局可能不同步；待实机验证后补 ShortcutKey 推送 |
-| 3 | 211 技能 | Go 校验"技能已安装/已学习"（`reject unlearned installed skill id=%s`），Java 无此校验任意技能串都放行 | 私服可接受；正式对齐需接 `skill_init.ini` 学习表 |
+| 3 | 211 技能 | Go 校验"技能已安装/已学习"（`reject unlearned installed skill id=%s`），Java 无此校验任意技能串都放行 | **已闭环（2026-10-30 技能系统轮）**：学习表 `skill_init.ini` + 编译目录落地，见 §3.4 |
 | 4 | 292 警告开关 | exe 确认走 `normal 0x10` 属性推送，但**具体属性 ID 未能从字符串钉死** | 本轮先做状态翻转+存储+日志；后续用 GM 探针（msgId=292）在 Go 服上抓 S2C 帧即可钉死 |
 
 ### 3.3 本轮新增对齐项
@@ -148,6 +148,45 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 装备系统仍缺（对照 exe）：装备属性加成（equipStrAdd/equipPhyDef 等未接 CombatStats）、
 右键使用穿戴（EquipItemUse）/一键穿（OnestepEquip）两个未钉死编号的 msgId、
 时装外观刷新（FashionCoat=1352 系）、重铸 WeaponRecast 全套。
+
+### 3.4 技能系统轮（2026-10-30 第二轮）
+
+以 §4 方法在权威 exe（18.4MB）逐条核实后落地。**重要警示**：工作区
+`/e/Workspace/project/game/9yin-go-server1/` 存有 Go 源码，但其根目录 exe 为
+7 月 26 日 11MB 旧构建（md5 `ddd1eb9f…`），与在用 10 月 16 日 18.4MB exe
+（md5 `f0f4356a…`）**不一致**——该源码只能当结构提示，行为以 exe 字符串为准。
+本轮 exe 新钉死的演进证据（旧源码没有）：`loaded skill_init.ini skills=%d path=%s`、
+`skill_init.ini empty (%s); using built-in starter set`、`[skill-save]` 角色存档
+（`.json unavailable; falling back to skill_init.ini`）、`reject skill id=%s
+use_limit=%s need_weapon=%v worn=%d (%s)`（skill_use_limit.ini 543 包武器门控）、
+`target out of range (%.1fm > %.1fm)` / `requires air` / `while airborne` 三类新校验、
+区域技能多跳 `hits=%d split=%d cadence=%s damage_total=%d`、`settled compiled
+target debuff`。
+
+Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 211 重写）：
+
+- **学习表**：skill_init.ini（GBK，17,855 节）→ 已学习集；缺失/为空回退内置 23 技
+  （`SkillPackets.STARTER_SKILLS`：花神七式 / 心佛掌 / 太极拳古谱，staticData/itemType
+  与 skill_init.ini 逐一核对一致）。View 40 下发维持 DB 角色技能优先、内置集兜底
+  （exe 将全量学习集推入 View 40 并有 u16 容量护栏，17,855 行的整推留待实机抓包后再决策）。
+- **编译目录**：skill_new → skill_static →（normal/lock）varprop → consume →
+  damage_calculate → attack_hitshape → zhaoshi_player*（动作时间轴）→ buff 三表，
+  仅 SkillNormal/SkillLock 入索引，(id,level) 惰性编译缓存。真实数据实测：
+  `indexed=17855 executable_level1=3550 skipped={missing_level_varprop=34,
+  missing_player_action=14269, missing_static=2} action_files=4`，加载 ~1.7s。
+- **211 链路**：malformed / before spawn / unlearned / without compiled level response /
+  without living selected target / 锁(500ms) / 个人 CD / 公共 CD(team 回退 -category) /
+  dead / MP / SP / 轻功点 全链拒绝，日志与 exe 同构；成功路径发
+  cooldown_rec(0x11 表5) 行 + vital(0x10) + State 起手动作（zhaoshi 首段）+ 后续段按
+  `前段时长−入融` 排期；伤害效果按目标模式结算（单体/圆/扇/矩形/目标区域 + 高度差），
+  伤害掷点仍走 CombatFormulas（倍率 = 编译伤害/100，如 hsqs01 一级 113 → 1.13）；
+  击杀掉碎银 MaxHP/100 夹 [1,99] 并 0x10 推 CapitalType1(416)；技能 Buff 按
+  首选槽→同 ConfigID 复用→11..24 空闲槽分配（红霸体/架势轮换 overlay 已接）；
+  total_action 后清 CurSkill*（仅匹配本次技能，旧定时器不误清）并回 stand。
+- **未对齐项（后续轮）**：skill_use_limit 武器门控（包表已装载、按技能的绑定键未钉死）、
+  施法距离/空中校验（Java 无 airborne 状态，需先接轻功悬空态）、区域多跳 split/cadence
+  （拆分公式未钉死，现单跳 split=1）、[skill-save] 学习进度持久化、
+  `learned skill count %d exceeds u16 view capacity` 的全量 View 推送。
 
 ## 4. 后续继续挖掘的方法
 
@@ -186,4 +225,11 @@ sitcross expects TVarList(240, int start_or_stop), got %v
 %s: sent ServerPlayerRoles(opcode=0x04, role_exists=%t)
 %s: sent PlayerEntry opcode=0x0B object=1 scene=%s resource=%s
 buy expects [560,3,charge_id,nums], got %d values           ← 560 充值商店
+reject skill before player spawn id=%s                      ← 211 未出生拒绝
+reject unlearned installed skill id=%s                      ← 211 未学习拒绝（本轮闭环）
+reject skill id=%s without living selected target           ← 211 需目标技无选中
+accepted skill id=%s mp=%d sp=%d qg=%d damage=%d target=%d targets=%d personal_cd=%s public_cd=%s
+loaded skill_init.ini skills=%d path=%s                     ← 学习表装载（17,855）
+settled compiled area skill id=%s mode=%d ... hits=%d split=%d cadence=%s damage_total=%d
+skill defeated NPCs targets=%d silver_drop=%d               ← 击杀掉碎银（MaxHP/100 夹 [1,99]）
 ```

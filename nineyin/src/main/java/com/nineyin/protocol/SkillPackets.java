@@ -39,20 +39,45 @@ public final class SkillPackets {
     public static final int V_LEAD_TIME = 2268;
     public static final int V_LEAD_SEP_TIME = 2269;
 
-    /** 起始技能表（官服建号抓包，8 项）。 */
+    /** 起始技能行（官服 View 40 抓包布局的字段来源）。 */
     public record StarterSkill(String configId, int staticData, int itemType,
                                int maxLevel, int cooldownMs, int varPropNo) {
     }
 
+    /**
+     * 内置起始学习集（23 技）：参考 exe 回退集（`using built-in starter set`），
+     * ConfigID 均内嵌于 exe 字符串表。zs_default_01 为打坐前置（走 240 原生路由）；
+     * 花神七式 / 心佛掌 / 太极拳(古谱) 三套套路。staticData/itemType 与
+     * skill_init.ini 逐一核对一致；maxLevel 取 varprop 区间真实上限（skill_init 的
+     * maxlevel 列恒为 1，仅占位）；cooldownMs 为官服抓包显示值。
+     */
     public static final java.util.List<StarterSkill> STARTER_SKILLS = java.util.List.of(
             new StarterSkill("zs_default_01", 22, 1000, 1, 5000, 421),
+            // 花神七式（CS_yhwq_hsqs）
+            new StarterSkill("CS_yhwq_hsqs01", 12636, 1000, 11, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs02", 12637, 1001, 11, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs03", 12638, 1000, 11, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs04", 12639, 1000, 9, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs05", 12640, 1000, 4, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs06", 12641, 1000, 11, 1500, 0),
+            new StarterSkill("CS_yhwq_hsqs07", 12642, 1001, 11, 1500, 0),
+            // 心佛掌（CS_jh_xfz）：03/04/07 单 varprop 行 → 一级封顶
             new StarterSkill("CS_jh_xfz01", 13189, 1001, 12, 1500, 0),
             new StarterSkill("CS_jh_xfz02", 13190, 1000, 12, 1500, 0),
             new StarterSkill("CS_jh_xfz03", 13205, 1000, 1, 1500, 0),
             new StarterSkill("CS_jh_xfz04", 13206, 1000, 1, 1500, 0),
-            new StarterSkill("CS_yhwq_hsqs01", 12636, 1000, 11, 1500, 0),
-            new StarterSkill("CS_yhwq_hsqs02", 12637, 1001, 11, 1500, 0),
-            new StarterSkill("CS_yhwq_hsqs03", 12638, 1000, 11, 1500, 0));
+            new StarterSkill("CS_jh_xfz05", 13207, 1000, 12, 1500, 0),
+            new StarterSkill("CS_jh_xfz06", 13208, 1000, 12, 1500, 0),
+            new StarterSkill("CS_jh_xfz07", 13203, 1000, 1, 1500, 0),
+            // 太极拳(古谱)（CS_wd_tjq）：07 三级封顶，其余 varprop 19 行
+            new StarterSkill("CS_wd_tjq01", 4057, 1000, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq02", 4058, 1001, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq03", 4238, 1000, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq04", 4045, 1000, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq05", 5451, 1000, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq06", 5452, 1000, 19, 1500, 0),
+            new StarterSkill("CS_wd_tjq07", 5453, 1000, 3, 1500, 0),
+            new StarterSkill("CS_wd_tjq08", 2107, 1000, 19, 1500, 0));
 
     private SkillPackets() {
     }

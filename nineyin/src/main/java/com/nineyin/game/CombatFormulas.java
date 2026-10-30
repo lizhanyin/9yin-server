@@ -153,8 +153,9 @@ public final class CombatFormulas {
     }
 
     /**
-     * 玩家技能倍率骨架：默认 1.0。正式倍率待接技能表
-     * （官方为每技能一条红/蓝/绿参数公式，参见 nineyinmanual.com 逆向资料）。
+     * 玩家技能倍率骨架：默认 1.0。211 实际结算已由 SkillCatalog 接管——
+     * 倍率 = damage_calculate.ini 编译伤害 / 100（SceneFlow.settleSkillHit），
+     * 本方法仅保留给未编译技能的兜底路径。
      */
     public static double skillRatio(String skillId) {
         return 1.0;

@@ -10,6 +10,8 @@ import com.nineyin.game.NinJiuZhi;
 import com.nineyin.game.QinggongCatalog;
 import com.nineyin.game.SceneFlow;
 import com.nineyin.game.SelectFlow;
+import com.nineyin.game.SkillCatalog;
+import com.nineyin.game.SkillInitTable;
 import com.nineyin.game.WorldBossManager;
 import com.nineyin.gm.GmCatalog;
 import com.nineyin.gm.GmCommand;
@@ -91,6 +93,11 @@ public final class NineyinServer implements SummerApp {
         shopRepository.load(shareRoot.resolve("trade").resolve("shop.ini"));
         QinggongCatalog qinggongCatalog = new QinggongCatalog();
         qinggongCatalog.load(shareRoot.resolve("skill").resolve("qinggong").resolve("qgdefine.ini"));
+        // 技能系统：学习表（skill_init.ini，缺失回退内置 23 技）+ 编译目录（share/skill + ini/action）
+        SkillInitTable skillInitTable = new SkillInitTable();
+        skillInitTable.load(shareRoot.resolve("skill").resolve("skill_init.ini"));
+        SkillCatalog skillCatalog = new SkillCatalog();
+        skillCatalog.load(shareRoot.getParent());
 
         LoginFlow loginFlow = new LoginFlow(roleStore, ninjiuzhi);
         AiRuleData aiRules = new AiRuleData();
@@ -98,7 +105,8 @@ public final class NineyinServer implements SummerApp {
         BuffCatalog buffCatalog = new BuffCatalog();
         buffCatalog.load(shareRoot.resolve("skill"));
         AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates(), buffCatalog);
-        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi);
+        sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi,
+                skillCatalog, skillInitTable);
         worldBossManager = new WorldBossManager(sceneManager);
         worldBossManager.load(shareRoot);
         worldBossManager.setListener(new WorldBossManager.Listener() {

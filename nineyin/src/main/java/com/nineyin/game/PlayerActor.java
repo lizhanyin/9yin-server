@@ -29,9 +29,17 @@ public final class PlayerActor {
     public static final int BUFF_SLOT_WATER_DRIFT = 2;
     public static final int BUFF_SLOT_WATER_JUMP = 3;
     public static final int BUFF_SLOT_INNER_POWER = 4;
+    public static final int BUFF_SLOT_YIHUA = 5;        // 花神四式自 Buff（35s 租约）
+    public static final int BUFF_SLOT_YIHUA_05 = 6;     // 花神五式
+    public static final int BUFF_SLOT_TAIJI_STANCE = 7; // 太极架势轮换（攻/守两态）
+    public static final int BUFF_SLOT_TAIJI_05 = 8;
+    public static final int BUFF_SLOT_TAIJI_07 = 9;
+    public static final int BUFF_SLOT_YIHUA_PASSIVE = 10; // 系统租约保留段上界
     public static final int RED_ARMOR_STATIC = 8682;
     public static final int WATER_DRIFT_STATIC = 216;
     public static final int WATER_JUMP_STATIC = 5786;
+    /** BuffStore 总槽位；系统租约占 1..10，常规技能 Buff 从 11 起分配。 */
+    public static final int BUFF_SLOT_LAST = 24;
 
     private static final int SITCROSS_FULL_SECONDS = 10;
     private static final int QINGGONG_REGEN_PER_SECOND = 10;
@@ -101,8 +109,26 @@ public final class PlayerActor {
 
     public int logicState = LOGIC_STATE_NORMAL;
     public String curSkillId = "";
+    public String curSkillEffectId = "";
+    public int curSkillLevel;
     public int curSkillTargetOid;
     public int curSkillTargetOwner;
+
+    /** 已学习技能（ConfigID → 等级）：默认内置 23 技，后续接 [skill-save] 角色存档。 */
+    public final Map<String, Integer> learnedSkills = new LinkedHashMap<>();
+    /** 技能个人 CD（ConfigID → 就绪时刻 ms）。 */
+    public final Map<String, Long> skillCooldowns = new HashMap<>();
+    /** 公共 CD（teamKey → 就绪时刻 ms；teamKey=CoolDownTeam 或 -CoolDownCategory）。 */
+    public final Map<Integer, Long> skillTeamCooldowns = new HashMap<>();
+    /** 通用技能锁（起手互斥窗口）。 */
+    public volatile long skillLockUntilMs;
+
+    public PlayerActor() {
+        for (com.nineyin.protocol.SkillPackets.StarterSkill sk
+                : com.nineyin.protocol.SkillPackets.STARTER_SKILLS) {
+            learnedSkills.put(sk.configId(), 1);
+        }
+    }
 
     private final Map<Integer, ActiveBuff> buffs = new LinkedHashMap<>();
     private final List<Shortcut> shortcuts = new ArrayList<>();
@@ -139,6 +165,111 @@ public final class PlayerActor {
         }
         return String.format(Locale.ROOT, "%X,%X,%X,%X,%X,%X",
                 buff.staticData, 1, 1, buff.level, buff.expiresMs, 1);
+    }
+
+    // ---------- 技能（211） ----------
+
+    /** 已学习等级（>0 已学习；对照 Go learnedSkillLevel）。 */
+    public int learnedSkillLevel(String configId) {
+        Integer level = configId == null ? null : learnedSkills.get(configId);
+        return level == null ? 0 : level;
+    }
+
+    public void learnSkill(String configId, int level) {
+        if (configId == null || configId.isEmpty() || level < 1) {
+            return;
+        }
+        learnedSkills.put(configId, level);
+    }
+
+    public boolean spendMp(int cost) {
+        if (cost <= 0) {
+            return true;
+        }
+        if (mp < cost) {
+            return false;
+        }
+        mp -= cost;
+        return true;
+    }
+
+    /**
+     * 技能 Buff 槽分配（Go activateSkillBuff）：首选槽 → 同 ConfigID 复用 →
+     * 11..24 首个空闲/过期槽；无槽可用返回 0。
+     */
+    public int activateSkillBuff(SkillCatalog.BuffDef def, long nowMs) {
+        int slot = def.preferredSlot();
+        if (slot == 0) {
+            for (Map.Entry<Integer, ActiveBuff> e : buffs.entrySet()) {
+                if (e.getValue().configId.equals(def.configId())) {
+                    slot = e.getKey();
+                    break;
+                }
+            }
+        }
+        if (slot == 0) {
+            for (int candidate = BUFF_SLOT_YIHUA_PASSIVE + 1; candidate <= BUFF_SLOT_LAST; candidate++) {
+                ActiveBuff active = buffs.get(candidate);
+                if (active == null || active.expiresMs <= nowMs) {
+                    slot = candidate;
+                    break;
+                }
+            }
+        }
+        if (slot <= 0 || slot > BUFF_SLOT_LAST) {
+            return 0;
+        }
+        long lifetime = def.lifetimeMs() <= 0 ? 1 : def.lifetimeMs();
+        ActiveBuff applied = new ActiveBuff(def.staticData(), nowMs + lifetime,
+                Math.max(1, def.level()), def.configId());
+        buffs.put(slot, applied);
+        return slot;
+    }
+
+    /** 槽上 Buff 的到期时刻（ms；空槽 0）。 */
+    public long buffExpiresAt(int slot) {
+        ActiveBuff buff = buffs.get(slot);
+        return buff == null ? 0 : buff.expiresMs;
+    }
+
+    /** 架势轮换：首选槽空闲→首变体；当前 StaticData 命中某变体→下一变体（循环）。 */
+    public SkillCatalog.BuffDef nextStanceVariant(List<SkillCatalog.BuffDef> variants, long nowMs) {
+        if (variants == null || variants.isEmpty()) {
+            return null;
+        }
+        ActiveBuff active = buffs.get(variants.get(0).preferredSlot());
+        if (active == null || active.expiresMs <= nowMs) {
+            return variants.get(0);
+        }
+        for (int i = 0; i < variants.size(); i++) {
+            if (active.staticData == variants.get(i).staticData()) {
+                return variants.get((i + 1) % variants.size());
+            }
+        }
+        return variants.get(0);
+    }
+
+    /** 仅当 curSkillId 仍为 expected 时清理（旧定时器不得清掉新技能；Go clearCurrentSkill）。 */
+    public boolean clearCurrentSkill(String expected) {
+        if (!expected.equals(curSkillId)) {
+            return false;
+        }
+        curSkillId = "";
+        curSkillEffectId = "";
+        curSkillLevel = 0;
+        curSkillTargetOid = 0;
+        curSkillTargetOwner = 0;
+        logicState = LOGIC_STATE_NORMAL;
+        return true;
+    }
+
+    /** 技能态清零帧（0x10：LogicState/CurSkillID/CurSkillTarget；官服表无 EffectID/Level 项）。 */
+    public byte[] currentSkillClearFrame() {
+        return S2CPackets.playerBatch()
+                .u8(PropertyId.LOGIC_STATE, logicState)
+                .str(PropertyId.CUR_SKILL_ID, curSkillId)
+                .obj(PropertyId.CUR_SKILL_TARGET, curSkillTargetOid, curSkillTargetOwner)
+                .build();
     }
 
     // ---------- 轻功 ----------

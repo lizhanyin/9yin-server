@@ -611,6 +611,64 @@ class SceneFlowTest {
                 | ((b[off + 6] & 0xFFL) << 48) | ((b[off + 7] & 0xFFL) << 56);
     }
 
+    /** 第四轮：编号钉死批（215/19/301/688/692/700~706/713/770/864/145/380）校验层，全部无 S2C 帧。 */
+    @Test
+    void customRound4PinnedMsgIdsValidate() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+
+        byte[] ng = "ng_wudang_01".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(215).u8(6).u32(ng.length + 1).raw(ng).u8(0).toByteArray());
+
+        // 19 时装：无 sub / int sub / str sub 三分支
+        send(custom().u16(1).u8(2).i32(19).toByteArray());
+        send(custom().u16(2).u8(2).i32(19).u8(2).i32(3).toByteArray());
+        byte[] fs = "wear".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(19).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+
+        // 301 VIP：无命令 / 非整数命令 / 未知命令
+        send(custom().u16(1).u8(2).i32(301).toByteArray());
+        send(custom().u16(2).u8(2).i32(301).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+        send(custom().u16(2).u8(2).i32(301).u8(2).i32(9).toByteArray());
+
+        // 688 珍宝阁：非 int 参数 / 全 int unhandled sub
+        send(custom().u16(2).u8(2).i32(688).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+        send(custom().u16(3).u8(2).i32(688).u8(2).i32(1).u8(2).i32(2).toByteArray());
+
+        // 692 面料：缺参 / 带参
+        send(custom().u16(1).u8(2).i32(692).toByteArray());
+        send(custom().u16(3).u8(2).i32(692).u8(2).i32(1).u8(2).i32(2).toByteArray());
+
+        // origin 家族：缺 id / 坏类型 / 合法 id（700/701/702/705/706 各一）
+        for (int mid : new int[]{700, 701, 702, 705, 706}) {
+            send(custom().u16(1).u8(2).i32(mid).toByteArray());
+            send(custom().u16(2).u8(2).i32(mid).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+            send(custom().u16(2).u8(2).i32(mid).u8(2).i32(7).toByteArray());
+        }
+
+        send(custom().u16(2).u8(2).i32(713).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+        send(custom().u16(3).u8(2).i32(770).u8(2).i32(1).u8(2).i32(2).toByteArray());
+        byte[] job = "fishing".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(864).u8(6).u32(job.length + 1).raw(job).u8(0).toByteArray());
+        send(custom().u16(2).u8(2).i32(145).u8(2).i32(1).toByteArray());
+        send(custom().u16(1).u8(2).i32(380).toByteArray());
+        send(custom().u16(2).u8(2).i32(380).u8(2).i32(4).toByteArray());
+        send(custom().u16(2).u8(2).i32(380).u8(6).u32(fs.length + 1).raw(fs).u8(0).toByteArray());
+        // 未知 msgId：default 分支（对齐 unhandled custom msg_id）也不得发帧
+        send(custom().u16(2).u8(2).i32(777).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(777).u8(2).i32(1).toByteArray());
+
+        // 巡逻广播（0x20，任意 0x0A 驱动、500ms 节流）与本轮无关，排除后必须无帧
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "round-4 validation handlers emit no frames");
+    }
+
     private static boolean containsUtf8(byte[] frame, String s) {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         outer:

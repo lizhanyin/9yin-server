@@ -71,14 +71,17 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 
 | msgId | 功能 | 参数布局 | exe 行为要点 | Java 现状 |
 |---|---|---|---|---|
+| 19 | 时装套装 fashion_suit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` / `invalid sub-message %s` / `unhandled sub=%d args=[%s]`；wear/unwear/buy 与 FashionSuitRec 推送 | 🟨 第四轮：子消息类型分流 |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
 | 64/70/71 | 商店 打开/购买/关闭 | — | 完整商店系统（view/stock/capital），`shop %s item %s stock=%d < requested=%d`、`operate_type_swap_goods` | 🟨 仅日志（S2C 响应格式待钉死） |
 | 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | 🟨 第三轮：确认收下记日志（Java 无待确认 col result） |
+| 145 | 副本奖励 View80 拾取 | — | `reject 145 no clone awards view` / `reject 145 bad index %s`、`pickup clone award slot=%d` | 🟨 第四轮：无 View80 奖励视图拒绝 |
 | 180 | 卡片（activity card） | — | `handle activity card 180` | 🟨 第三轮：sub_command 路由桩（USE/USESKILL/SAVE 子编号待钉死） |
 | 200/201 | 快捷键 设置/删除 | `[idx, kind(str), id(str)]` / `[idx]` | `shortcut expects int index and two strings`；同 index 先 0x12 删旧行 | ✅ |
 | 209 | 任务 | — | `handle task 209: %v`、`task 209 ignored: no active task` | 🟨 第三轮：无活跃任务忽略（日志对齐） |
 | 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
+| 215 | 内功切换 | `[configId(str)]` | `215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d` | 🟨 第四轮：无内功学习表，未学习拒绝 |
 | 216/217 | 轻功 基本/主动 | — | `reject basic qinggong hold cost=%d point=%d/%d`；ActiveQGSkillRec 行 | ✅ |
 | 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state` | ✅ |
 | 223 / 5223 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated` | 🟨（见 §3 疑似偏差） |
@@ -87,10 +90,18 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 291 | PK 模式切换 | `[mode:int]` | `change pk mode expects TVarList(291, mode)`；`change pk mode invalid mode %s`；GM 面板 `set_pk_mode` 同源 | 🟨 本轮实现 |
 | 292 | 警告开关 | 无参 | `warning expects TVarList(292) with no extra values`；`change warning %d -> %d via normal 0x10`（toggle 后 0x10 推送，属性 ID 未钉死） | 🟨 本轮实现（存储+日志） |
 | 293 | PK 保护开关 | `[type:int, onoff:int]` | `toggle expects TVarList(293, type, onoff)`；`client pk protect toggle type=%d on=%d` | 🟨 本轮实现 |
+| 301 | VIP | `[301, cmd(int), ...]` | `VIP message 301 has no command` / `command is not an exact integer: %s`；购买链 `month count %d is outside 1..36`、`gold balance %d is below VIP cost %d`、`completed golden VIP purchase type=%d months=%d cost=%d gold=%d ...` | 🟨 第四轮：头部校验；价格表与购买 cmd 编号待钉死 |
+| 380 | 掉落拾取 | `[vpos(int), ...]`（首参假设） | `reject 380 pickup without vpos` / `reject 380 bad vpos %s`、`pickup 380 vpos=%d %s x%d -> %s bag[%v]` | 🟨 第四轮：vpos 校验；无掉落实体 |
 | 382 | 关闭掉落 | — | `handle close drop 382`、`closed DropBox via 382` | 🟨 第三轮：日志对齐（Java 无 DropBox 实体） |
 | 560 | 充值商店购买 | `[560, cmd, ...]`（buy=`[560,3,charge_id,nums]`） | `buy expects [560,3,charge_id,nums]`、`nums=%d outside 1..%d`、`no goods charge_id=%d`、`price_type=%d not supported`、`needs gold=%d, have %d`、`(%s): bag full`、`bought %s x%d (charge_id=%d) for %d gold, left=%d`；cmd 2/4/5 忽略 | 🟨 第三轮：货品表+完整校验链+金币扣减+入包 grant（页面 S2C 与 capital 映射待钉死） |
 | 249 | 充值确认 | — | `Yufeng charge window expired … without C2S 249 (player never charged: no movement); cancelled, NOT complete` | 🟨 第三轮：御风蓄力确认收下记日志（Java 无蓄力窗口） |
+| 688 | 珍宝阁 tersure | 全 int `[sub_type, ...]` | `tersure 688 has non-int args: %v` / `unhandled tersure 688 sub_type=%d`；重铸/修复/洗练结果帧 | 🟨 第四轮：sub_type 路由校验（结果帧待钉死） |
+| 692 | 面料混合 | — | `attire blend 692 missing args args=[%s]`、`attire: restored blend items=%d show_type=%d` | 🟨 第四轮：缺参校验（attire store 未实装） |
+| 700~706 | 出身/起源 origin | `[origin_id(int)]` | `origin 700: missing origin id args=%d` / `bad origin id type %s`；700 取新出身（`send get_a_new_origin`）、705 送称号+声望（`repute %s +%d -> %d`）、706 刷新 sysinfo | 🟨 第四轮：id 校验（origin 目录未接） |
+| 713 | 礼盒领取 | — | `gift box catalog unavailable: %v` / `gift box %s claimed prizes=%d` | 🟨 第四轮：目录不可用分支 |
+| 770 | C 面板体型 BodyScale | — | `handle C-panel BodyScale 770`、`customizing upload too large: %d` | 🟨 第四轮：日志（customizing 上传/恢复未实装） |
 | 784 | 乱斗 | `[sub(int)=10 OPEN_LIMITE index, origin_id]` | `luandou 784: encode reply`、`missing sub_msg args=%d`、`bad sub_msg type %s`、`sub=10 OPEN_LIMITE index=%d origin_id=%d` | 🟨 第三轮：sub 路由（reply 格式待钉死） |
+| 864 | 生活职业 | `[jobName(str)]`（假设首参） | `unknown life job %q` / `life job %s already learned; republish job_rec`、`apprenticed life job=%s level=%d points=%d` | 🟨 第四轮：未知职业拒绝（职业表与 job_rec 未接） |
 | 865 | 踢馆 | sub 6=确认切换 / 7=离场 | `CUSTOM_MSG_TG_SWITCH`（见 audit/tiguan 文档完整线序）、`tiguan 865 bad sub_msg %s` | 🟨 第三轮：sub 6/7 校验+日志（分组场景生命周期待实装） |
 | 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action` | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
 | 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick（响应载体假设 0x1E 同 msgId，待抓包） |
@@ -223,6 +234,25 @@ Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 
   （`jingmai msg=%d`）、770 C-面板 BodyScale、19 时装套装、692 面料混合(692 缺参校验串)、
   origin 700/701/702/705/706、145 副本奖励 View80 拾取、380 掉落拾取(vpos)。
 
+### 3.6 custom 子协议轮（2026-10-30 第四轮）
+
+把 §3.5 候补清单里编号已钉死的消息全部接入 `dispatchCustom`（12 个新 case 组：
+215/19/301/688/692/700+701+702+705+706/713/770/864/145/380），实现为 C2S 校验层 +
+Go 同构日志；**default 分支日志对齐**为参考服的
+`unhandled custom msg_id=%d args=[%s]`（保留首现 INFO/重复 DEBUG 的防刷屏策略）。
+
+- **本轮新钉死编号**：215 内功切换（`215 requires a learned neigong ConfigID
+  string`）、713 礼盒领取（`handle gift box claim 713`）、19 时装套装、692 面料混合、
+  145 副本奖励 View80 拾取、380 掉落拾取。
+- **各 handler 的 Go 证据串**见 §2.1 表与 §5.2；共同形态：参数缺失/类型不符的拒绝
+  分支文本与 exe 完全同构，数据系统（内功表/时装 store/珍宝阁结果帧/VIP 价格表/
+  origin 目录/礼盒目录/生活职业表/View80 奖励/掉落实体）未实装的分支带
+  pending 标注，不伪造 S2C 帧。
+- **jingmai 的 msgId 仍未钉死**（`jingmai msg=%d` 是变量日志，字符串层不可见；
+  GM 侧动作名为 `set_jingmai_tier`）；下一批可挖：`wear now requires one wearable
+  equipment item`（OnestepEquip）与 `right-click equip %s reject`（EquipItemUse）
+  的行为串已找到，但编号未钉死，需反汇编或 GM 探针。
+
 ## 4. 后续继续挖掘的方法
 
 exe 未剥符号，`strings + grep` 即可继续钉死协议细节（在 Git Bash 下）：
@@ -316,4 +346,42 @@ jingmai custom requires an int subcommand                   ← jingmai 子命�
 origin 700: missing origin id args=%d                       ← origin 700~706 家族
 %s: reject 145 no clone awards view / reject 145 bad index %d   ← 145 副本奖励拾取
 %s: reject 380 pickup without vpos                          ← 380 掉落拾取
+```
+
+### 5.2 第四轮新增摘录（编号钉死批，2026-10-30）
+
+```
+215 requires a learned neigong ConfigID string              ← 215 内功切换
+%s: handle inner-power msg=%d: %v                           ← inner-power 家族（215）
+VIP message 301 has no command                              ← 301 VIP 头部校验
+VIP message 301 command is not an exact integer: %s
+VIP price query: unsupported type %s                        ← 价格查询（cmd 编号待钉死）
+VIP purchase: invalid month count %s
+VIP month count %d is outside 1..36
+gold balance %d is below VIP cost %d
+%s: completed golden VIP purchase type=%d months=%d cost=%d gold=%d valid_until=%d total_seconds=%d
+VIP purchase arrived before player creation
+%s: tersure 688 has non-int args: %v                        ← 688 珍宝阁（全 int 参数）
+%s: unhandled tersure 688 sub_type=%d
+send tersure recast/repair/lock refresh/restore taolu result: %w   ← 688 结果帧家族
+%s: fashion_suit has no sub-message                         ← 19 时装套装
+%s: fashion_suit invalid sub-message %s                     ← str 子消息 → invalid
+%s: fashion_suit unhandled sub=%d args=[%s]                 ← int 子消息 → unhandled
+%s: fashion_suit worn config=%s (list state) / unworn via prop=%s / buy config=%s added=%v
+fashion: pushed FashionSuitRec rows=%d (activated %d, cleared %d old rows)
+unknown life job %q                                         ← 864 生活职业
+%s: life job %s already learned; republish job_rec
+%s: apprenticed life job=%s level=%d points=%d
+%s: handle C-panel BodyScale 770: %v                        ← 770 体型
+customizing upload too large: %d                            ← SaveCustomizing 上传
+%s: handle gift box claim 713: %v                           ← 713 礼盒领取
+gift box catalog unavailable: %v / gift box %s claimed prizes=%d
+origin 701: missing origin id args=%d / origin 702: … / origin 705: …
+%s: origin prize %d: repute %s +%d -> %d (level %d)         ← 705 出身奖励（声望+称号）
+origin: loaded %d origins from %s                           ← origin 目录装载
+%s: handle pickup 380: %v                                   ← 380 拾取 handler 注册确认
+wear now requires one wearable equipment item               ← OnestepEquip（编号未钉死）
+%s: right-click equip %s reject: %v / bound (first wear)    ← EquipItemUse（编号未钉死）
+%s: unhandled custom msg_id=%d args=[%s]                    ← default 分支（本轮对齐）
+custom message %s has unsupported outer opcode %#x          ← 载体 opcode 校验
 ```

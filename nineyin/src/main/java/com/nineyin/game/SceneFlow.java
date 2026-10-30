@@ -40,7 +40,9 @@ import java.util.concurrent.ThreadLocalRandom;
  *   216/217 轻功、218 招架、223/5223 操作模式、64/70/71 商店（打开流程见 SelectFlow）、
  *   924 消息延迟回显、560 充值商城（货品表+校验链+金币扣减+入包）、
  *   943 兵录 / 784 乱斗 / 865/868 踢馆 / 180 卡片 / 209 任务 / 270 暮色 / 382 掉落 /
- *   249 御风 / 144 副本结算 / 517 GM 探针（C2S 校验层+日志对齐，见 docs §3.5）
+ *   249 御风 / 144 副本结算 / 517 GM 探针（C2S 校验层+日志对齐，见 docs §3.5）、
+ *   215 内功 / 19 时装 / 301 VIP / 688 珍宝阁 / 692 面料 / origin 700~706 / 713 礼盒 /
+ *   770 体型 / 864 生活职业 / 145 副本奖励 / 380 拾取（编号钉死批，见 docs §3.6）
  * - 传送门：移动进入触发半径（door_data.ini MoveTarget/SpringRange）
  * - 巡逻广播（任意 0x0A 驱动，500ms 节流）
  * - 每秒 tick（NineyinServer 驱动）：actor 恢复 + vital 同步 + NPC 重生
@@ -456,14 +458,37 @@ public final class SceneFlow {
             case 868 -> handleTiguanRoulette(fx, session, msg);
             // GM 探针默认 msgId：[517, subType]
             case 517 -> handleGmProbe(fx, session, msg);
+            // ---- 2026-10-30 custom 第四轮：§3.5 候补清单编号钉死批 ----
+            // 内功切换（`215 requires a learned neigong ConfigID string`）
+            case 215 -> handleNeigongSwitch(fx, session, msg);
+            // 时装套装（子消息按类型分流：str→invalid sub-message / int→unhandled sub）
+            case 19 -> handleFashionSuit(fx, session, msg);
+            // VIP（头部校验：无命令/命令非整数；价格与购买的 cmd 编号待钉死）
+            case 301 -> handleVip(fx, session, msg);
+            // 珍宝阁（全 int 参数 + sub_type 路由）
+            case 688 -> handleTersure(fx, session, msg);
+            // 面料混合（`attire blend 692 missing args args=[%s]`）
+            case 692 -> handleAttireBlend(fx, session, msg);
+            // 出身/起源家族（[70X, origin_id(int)]）
+            case 700, 701, 702, 705, 706 -> handleOrigin(fx, session, msg);
+            // 礼盒领取（`gift box catalog unavailable: %v`）
+            case 713 -> handleGiftBoxClaim(fx, session, msg);
+            // C 面板体型（BodyScale）
+            case 770 -> handleBodyScale(fx, session, msg);
+            // 生活职业（`unknown life job %q`）
+            case 864 -> handleLifeJob(fx, session, msg);
+            // 副本奖励 View80 拾取（`reject 145 no clone awards view`）
+            case 145 -> handleCloneAwardPickup(fx, session, msg);
+            // 掉落拾取（`reject 380 pickup without vpos` / `bad vpos %s`）
+            case 380 -> handlePickup(fx, session, msg);
             default -> {
-                // 监控：未识别 custom 消息按会话首现打 INFO（含解析后的参数），
-                // 用于发现"同意用户协议"等稀疏客户端事件的 msgId；重复出现降为 DEBUG 防刷屏
+                // 监控：对齐参考服 default 分支 `unhandled custom msg_id=%d args=[%s]`；
+                // 参考服逐条打，这里首现 INFO、重复 DEBUG 防刷屏（语义一致）
                 if (session.seenCustomMsgIds.add(mid)) {
-                    log.info("custom msgId={} first this session account={} argc={} vals={}",
-                            mid, session.accountKey, msg.size(), summarizeVals(msg));
+                    log.info("unhandled custom msg_id={} args=[{}] (first this session account={})",
+                            mid, summarizeVals(msg), session.accountKey);
                 } else {
-                    log.debug("custom msgId={} argc={} vals={}", mid, msg.size(), summarizeVals(msg));
+                    log.debug("unhandled custom msg_id={} args=[{}]", mid, summarizeVals(msg));
                 }
             }
         }
@@ -817,6 +842,147 @@ public final class SceneFlow {
         CustomMsg.Val sub = msg.val(1);
         log.info("GM custom probe msgID={} subType={}", msg.msgId(),
                 sub != null ? sub.intOrZero() : 0);
+    }
+
+    // ---- 2026-10-30 custom 第四轮：编号钉死批（校验层 + 日志对齐） ----
+
+    /**
+     * 215 内功切换（参考服：`215 requires a learned neigong ConfigID string`）。
+     * Java 无内功学习表（neigong static/varprop 未接入），任何 ConfigID 均按"未学习"拒绝。
+     */
+    private void handleNeigongSwitch(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val id = msg.val(1);
+        boolean malformed = id == null || id.str == null || id.str.isEmpty();
+        log.info("215 requires a learned neigong ConfigID string ({} vals={})",
+                malformed ? "malformed" : "id=" + id.str + " unlearned; neigong table pending",
+                summarizeVals(msg));
+    }
+
+    /**
+     * 19 时装套装（参考服：`fashion_suit has no sub-message` / `invalid sub-message %s` /
+     * `unhandled sub=%d args=[%s]`；wear/unwear/buy 的子编号与 FashionSuitRec 推送待钉死）。
+     */
+    private void handleFashionSuit(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null) {
+            log.info("fashion_suit has no sub-message");
+            return;
+        }
+        if (sub.asExactInt()) {
+            log.info("fashion_suit unhandled sub={} args=[{}] (wear/buy routing pending capture)",
+                    sub.intOrZero(), summarizeVals(msg));
+            return;
+        }
+        log.info("fashion_suit invalid sub-message {}", sub);
+    }
+
+    /**
+     * 301 VIP（参考服头部校验：`VIP message 301 has no command` /
+     * `command is not an exact integer: %s`）。价格查询与购买链的 cmd 编号、
+     * 价格表（`month count %d is outside 1..36`、`gold balance %d is below VIP cost %d`、
+     * `completed golden VIP purchase type=%d months=%d cost=%d gold=%d ...`）待钉死。
+     */
+    private void handleVip(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val cmd = msg.val(1);
+        if (cmd == null) {
+            log.info("VIP message 301 has no command");
+            return;
+        }
+        if (!cmd.asExactInt()) {
+            log.info("VIP message 301 command is not an exact integer: {}", cmd);
+            return;
+        }
+        log.info("unhandled VIP command {} (price table pending capture)", cmd.intOrZero());
+    }
+
+    /**
+     * 688 珍宝阁（参考服：`tersure 688 has non-int args: %v` /
+     * `unhandled tersure 688 sub_type=%d`；重铸/修复/洗练各 sub 的结果帧未钉死）。
+     */
+    private void handleTersure(FxSession fx, LoginSession session, CustomMsg msg) {
+        for (int i = 1; i < msg.size(); i++) {
+            if (!msg.val(i).asExactInt()) {
+                log.info("tersure 688 has non-int args: {}", summarizeVals(msg));
+                return;
+            }
+        }
+        int subType = msg.size() >= 2 ? msg.val(1).intOrZero() : 0;
+        log.info("unhandled tersure 688 sub_type={}", subType);
+    }
+
+    /** 692 面料混合（参考服：`attire blend 692 missing args args=[%s]`；attire store 未实装）。 */
+    private void handleAttireBlend(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (msg.size() < 2) {
+            log.info("attire blend 692 missing args args=[{}]", summarizeVals(msg));
+            return;
+        }
+        log.info("attire blend 692 args=[{}] (attire store not implemented)", summarizeVals(msg));
+    }
+
+    /**
+     * origin 家族 700/701/702/705/706（参考服：`origin 700: missing origin id args=%d` /
+     * `bad origin id type %s` / `send get_a_new_origin`；出身目录
+     * `origin: loaded %d origins from %s` 的数据文件未接入，带 id 亦先记 pending）。
+     */
+    private void handleOrigin(FxSession fx, LoginSession session, CustomMsg msg) {
+        int mid = msg.msgId();
+        CustomMsg.Val id = msg.val(1);
+        if (id == null) {
+            log.info("origin {}: missing origin id args={}", mid, msg.size());
+            return;
+        }
+        if (!id.asExactInt()) {
+            log.info("origin {}: bad origin id type {}", mid, id);
+            return;
+        }
+        log.info("origin {} id={} (origin catalog not implemented)", mid, id.intOrZero());
+    }
+
+    /** 713 礼盒领取（参考服：`gift box catalog unavailable: %v` / `gift box %s claimed prizes=%d`）。 */
+    private void handleGiftBoxClaim(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("gift box claim 713 ignored (gift box catalog not implemented; vals={})",
+                summarizeVals(msg));
+    }
+
+    /** 770 C 面板体型（参考服：`handle C-panel BodyScale 770`；customizing 上传/恢复未实装）。 */
+    private void handleBodyScale(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("handle C-panel BodyScale 770 vals={} (customizing store not implemented)",
+                summarizeVals(msg));
+    }
+
+    /**
+     * 864 生活职业（参考服：`unknown life job %q` / `life job %s already learned;
+     * republish job_rec`；职业表与 job_rec 记录表未接入，任何职业名均按未知拒绝）。
+     */
+    private void handleLifeJob(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val job = msg.val(1);
+        if (job == null || job.str == null || job.str.isEmpty()) {
+            log.info("life job 864 malformed vals={}", summarizeVals(msg));
+            return;
+        }
+        log.info("unknown life job \"{}\" (life job catalog not implemented)", job.str);
+    }
+
+    /** 145 副本奖励 View80 拾取（参考服：`reject 145 no clone awards view`；Java 无 View80 奖励视图）。 */
+    private void handleCloneAwardPickup(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("reject 145 no clone awards view");
+    }
+
+    /**
+     * 380 掉落拾取（参考服：`reject 380 pickup without vpos` / `reject 380 bad vpos %s`；
+     * vpos 假定为首参整数（成功日志 `pickup 380 vpos=%d ...`），Java 无掉落实体，校验后记 pending）。
+     */
+    private void handlePickup(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val vpos = msg.val(1);
+        if (vpos == null) {
+            log.info("reject 380 pickup without vpos");
+            return;
+        }
+        if (!vpos.asExactInt()) {
+            log.info("reject 380 bad vpos {}", vpos);
+            return;
+        }
+        log.info("pickup 380 vpos={} ignored (no drop entities)", vpos.intOrZero());
     }
 
     /** 参数摘要（单值 48 字符、总长 160 截断）：统一走 TVarList.describe，与校验错误文本同格式。 */

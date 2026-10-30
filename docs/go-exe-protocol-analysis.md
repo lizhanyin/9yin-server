@@ -117,7 +117,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 961 | 骑乘技能 | `[skillId(str)]`（假设） | 反汇编：961 → handleRideSkillUse；`ride skill (not dismount) id=%s mounted=%v` | 🟨 第六轮：日志（坐骑状态未接） |
 | 819 | 用户须知签署 | — | （Java 侧实测闭环；**第七轮：819 非 custom case，Go 在登录/场景流处理**） | ✅ |
 | ~~517~~ | GM 探针（旧误传编号） | `[subType]` | `GM custom probe msgID=%d subType=%d`；**第七轮：GM 探针真身是 2（handleGMCustom），517 非 Go case** | 🟨 第七轮：2/517 并存日志 |
-| 886~889 | 一键穿 OnestepEquip | — | 反汇编区间叶四连号；`wear now requires one wearable equipment item` | 🟨 第七轮：库存校验+日志（穿路由待接） |
+| 886~889 | 一键穿 OnestepEquip | `[uid(str)]` | 反汇编区间叶四连号；`onestep equip uid=%s` / `not found in bags` / `wear now requires one wearable equipment item` | ✅ 第九轮：uid 反查+槽位映射（官方 equip.json 存档实测：Hat=1/Cloth=3/Pants=4/Wrist=6/Leg=7/Shoes=8/Earring=11,12/Necklace=13/Fingerring=14,15/Weapon=22，双槽取空槽）+穿装帧序/持久化/词缀加成（与 msgId=30 同构） |
 | 938 | 武器重铸总入口 | — | 反汇编：938 → handleWeaponRecastCustom；`recast preview reject: need 5 args, got %d`、`recast lock reject %s has no rand pool`（Preview/Lock/Unlock/Sure 为子命令） | 🟨 第七轮：日志（重铸资源未接） |
 
 ### 2.2 exe 的 75 个 custom handler 按功能分组
@@ -407,6 +407,29 @@ case 19: FashionSuitCustom → YufengItemUse → GiftBoxItemUse
   BasicQingGong 三段/BigQingGongRelease/GJLandingDetect（疑挂 216 子命令）、
   WeaponRecast 四子命令（疑 938 内部）、MountSummon、NinJiuZhi、ItemBuffUse、
   FightwordDebug、64（商店打开）。
+
+### 3.11 一键穿功能实现轮（2026-10-30 第九轮）
+
+校验桩升级为功能实现的第一例：**msgId 886~889 一键穿全链落地**（uid 认领 →
+槽位映射 → 穿装帧序/持久化/词缀加成）。
+
+- **槽位映射的数据来源**：`/e/Workspace/九阴服务端/data/equip.json`（官服存档
+  导出，7 角色 33 件已穿装备）聚合 slot↔EquipType 实测对：
+  Hat=1 / Cloth=3 / Pants=4 / Wrist=6 / Leg=7 / Shoes=8 / Earring=11,12 /
+  Necklace=13 / Fingerring=14,15 / Weapon=22。双槽类型穿第一个空槽，全占用
+  替换第一槽；未收录类型（Mask/暗器/内功武器等）按不可穿拒绝
+  （`wear now requires one wearable equipment item`），留待存档样本补齐。
+- **uid 认领**：参考服 `onestep equip uid=%s`——uid 就是服务器在 ViewAdd 帧下发的
+  物品唯一串；Java 的 uid 是 `MD5(roleId:bag:slot)`（`InventoryPackets.uniqueId`），
+  客户端回传后按 liveBagged 反查，找不到打 `not found in bags`（与 Go 同构）。
+- **穿装路径**：与 msgId=30 穿上分支帧序同构（背包清格+镜像 → 旧装备让位到
+  装备页 → 0x18 纸娃娃 ViewAdd → WeaponMode 模型帧 → §3.7 词缀加成重算 +
+  MaxHP/MaxMP 增量 → inventoryFrames 缓存重建 → moveBagToEquip/swapEquipSlot
+  持久化）。MySQL 后端全程生效；JSON 后端拒绝在"无库存"分支。
+- **测试**：槽位映射单测（含双槽/全占用替换/未收录拒绝）+ env-gated 全链测试
+  （NINEYIN_SERVER_ROOT 指真实表时：假 uid 拒绝 + helmet_sell_10101 穿上槽 1
+  + 0x18 纸娃娃帧断言），已实跑验证。
+
 
 ## 4. 后续继续挖掘的方法
 

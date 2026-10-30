@@ -743,6 +743,74 @@ class SceneFlowTest {
                 "round-7 validation handlers emit no frames");
     }
 
+    /** 槽位映射（官方 equip.json 存档实测值）。 */
+    @Test
+    void equipSlotMappingMatchesOfficialExport() {
+        var empty = java.util.List.<com.nineyin.db.RoleInventoryStore.Equipped>of();
+        assertEquals(1, SceneFlow.equipSlotFor("Hat", empty));
+        assertEquals(3, SceneFlow.equipSlotFor("Cloth", empty));
+        assertEquals(22, SceneFlow.equipSlotFor("Weapon", empty));
+        // 双槽：空时 11；11 占用时 12；全占用替换 11
+        var oneEarring = java.util.List.of(new com.nineyin.db.RoleInventoryStore.Equipped(
+                11, "ring_1", 140, "Earring", 100, 100, ""));
+        assertEquals(11, SceneFlow.equipSlotFor("Earring", empty));
+        assertEquals(12, SceneFlow.equipSlotFor("Earring", oneEarring));
+        var twoEarrings = java.util.List.of(
+                new com.nineyin.db.RoleInventoryStore.Equipped(11, "a", 140, "Earring", 100, 100, ""),
+                new com.nineyin.db.RoleInventoryStore.Equipped(12, "b", 140, "Earring", 100, 100, ""));
+        assertEquals(11, SceneFlow.equipSlotFor("Earring", twoEarrings), "全占用替换第一槽");
+        assertEquals(0, SceneFlow.equipSlotFor("Mask", empty), "未收录类型不可穿");
+        assertEquals(0, SceneFlow.equipSlotFor(null, empty));
+    }
+
+    /**
+     * 一键穿 886 全链（需 NINEYIN_SERVER_ROOT 真实 equipment.ini 解析 EquipType）：
+     * uid 反查 → Hat→槽 1 → 0x18 纸娃娃 ViewAdd + 词缀加成。无 env 时跳过。
+     */
+    @Test
+    void onestepEquip886WearsViaUid() {
+        String root = System.getenv("NINEYIN_SERVER_ROOT");
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null && !root.isEmpty(),
+                "NINEYIN_SERVER_ROOT 未设置，跳过真实表一键穿链路");
+        try {
+            send(loginPacket());
+            drainOutbound();
+            send(createRolePacket());
+            drainOutbound();
+            send(new byte[]{0x04});
+            drainOutbound();
+            send(new byte[]{0x09});
+            drainOutbound();
+            LoginSession login = channel.attr(LoginFlow.SESSION).get();
+            login.roleId = 42;
+            login.liveEquipped = new ArrayList<>();
+            login.liveBagged = new ArrayList<>();
+            login.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
+                    3, "helmet_sell_10101", 140, 1, 2, ""));
+
+            // uid 不在包内 → not found in bags
+            byte[] bad = "deadbeef".getBytes(StandardCharsets.UTF_8);
+            send(custom().u16(2).u8(2).i32(886).u8(6).u32(bad.length + 1).raw(bad).u8(0).toByteArray());
+            assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x18),
+                    "unknown uid must not wear");
+
+            // 正确 uid → 穿上：0x18 纸娃娃 ViewAdd（View 1, slot 1）
+            String uid = com.nineyin.protocol.InventoryPackets.uniqueId(42, "bag", 3);
+            byte[] u = uid.getBytes(StandardCharsets.UTF_8);
+            send(custom().u16(2).u8(2).i32(886).u8(6).u32(u.length + 1).raw(u).u8(0).toByteArray());
+            List<byte[]> worn = drainOutbound();
+            assertTrue(worn.stream().anyMatch(f -> op(f) == 0x18),
+                    "onestep equip must emit doll ViewAdd");
+            assertEquals(1, login.liveEquipped.size());
+            assertEquals(1, login.liveEquipped.get(0).slot(), "Hat -> slot 1");
+            assertEquals("helmet_sell_10101", login.liveEquipped.get(0).configId());
+            assertTrue(login.liveBagged.isEmpty(), "bag item consumed");
+        } finally {
+            // EquipmentModels 是静态懒加载，避免污染同 JVM 其他用例——无法卸载，
+            // 但其它用例不依赖装备表解析，保持现状
+        }
+    }
+
     private static boolean containsUtf8(byte[] frame, String s) {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         outer:

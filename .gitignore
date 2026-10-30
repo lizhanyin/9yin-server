@@ -8,7 +8,7 @@ build
 *.iml
 
 /__pycache__/
-/logs/
+/logs/*
 -----
 
 *.ctxt

@@ -827,13 +827,149 @@ public final class SceneFlow {
                 msg.msgId(), summarizeVals(msg));
     }
 
-    /** 886~889 一键穿（参考服：`wear now requires one wearable equipment item`）。 */
+    /**
+     * 886~889 一键穿（参考服：`onestep equip uid=%s` / `not found in bags` /
+     * `wear now requires one wearable equipment item`）。按背包 uid（ViewAdd 下发的
+     * MD5 串）认领物品，EquipType→身体槽位映射取自官方存档实测（equip.json 33 件：
+     * Hat=1/Cloth=3/Pants=4/Wrist=6/Leg=7/Shoes=8/Earring=11,12/Necklace=13/
+     * Fingerring=14,15/Weapon=22），双槽类型落第一个空槽。穿上帧序与 msgId=30 同构。
+     */
     private void handleOnestepEquip(FxSession fx, LoginSession session, CustomMsg msg) {
-        if (session.liveBagged == null || session.liveEquipped == null) {
+        CustomMsg.Val uidVal = msg.val(1);
+        String uid = uidVal != null && uidVal.str != null ? uidVal.str : "";
+        if (session.roleId == 0 || session.liveBagged == null || session.liveEquipped == null) {
             log.info("wear now requires one wearable equipment item (no live inventory)");
             return;
         }
-        log.info("onestep equip msg={} vals={} (wear routing pending)", msg.msgId(), summarizeVals(msg));
+        if (uid.isEmpty()) {
+            log.info("wear now requires one wearable equipment item (no uid vals={})",
+                    summarizeVals(msg));
+            return;
+        }
+        // uid 反查背包（uid 即 ViewAdd 下发的 MD5(roleId:bag:slot)）
+        com.nineyin.db.RoleInventoryStore.Bagged item = null;
+        int fromView = 0;
+        for (var b : session.liveBagged) {
+            int view = InventoryPackets.bagViewOf(b.viewId());
+            if (InventoryPackets.uniqueId(session.roleId, "bag", b.slot()).equals(uid)) {
+                item = b;
+                fromView = view;
+                break;
+            }
+        }
+        if (item == null) {
+            log.info("onestep equip uid={} not found in bags", uid);
+            return;
+        }
+        String equipType = equipTypeOf(item.configId());
+        int slot = equipSlotFor(equipType, session.liveEquipped);
+        if (equipType.isEmpty() || slot <= 0) {
+            log.info("wear now requires one wearable equipment item (uid={} config={} type={})",
+                    uid, item.configId(), equipType);
+            return;
+        }
+        // 穿上（帧序与 msgId=30 穿上分支同构：背包清格+镜像 → 旧装备让位 → 纸娃娃落位 →
+        // 武器模型 → 词缀加成重算 → 库存缓存重建）
+        long roleId = session.roleId;
+        int fromSlot = item.slot();
+        int category = bagWireToCategory(fromView);
+        session.liveBagged.remove(item);
+        List<byte[]> out = new ArrayList<>();
+        out.add(InventoryPackets.viewRemove(fromView, fromSlot));
+        int fromMirror = InventoryPackets.mirrorOf(fromView);
+        if (fromMirror != 0) {
+            out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
+        }
+        com.nineyin.db.RoleInventoryStore.Equipped old = removeEquipped(session, slot);
+        if (old != null) {
+            int oldSlot = freeBagSlot(session.liveBagged, InventoryPackets.VIEW_EQUIP_BAG);
+            out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_BAG, oldSlot));
+            out.add(InventoryPackets.bagViewAdd(
+                    new com.nineyin.db.RoleInventoryStore.Bagged(
+                            oldSlot, old.configId(), old.itemType(), 1, 2, ""),
+                    InventoryPackets.uniqueId(roleId, "bag", oldSlot),
+                    InventoryPackets.VIEW_EQUIP_BAG));
+            int m = InventoryPackets.mirrorOf(InventoryPackets.VIEW_EQUIP_BAG);
+            if (m != 0) {
+                out.add(InventoryPackets.viewRemove(m, oldSlot));
+            }
+            session.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
+                    oldSlot, old.configId(), old.itemType(), 1, 2, ""));
+            if (inventory != null && !inventory.swapEquipSlot(roleId, slot, oldSlot)) {
+                log.warn("onestep swap equip[{}]->bag[{}] persist failed", slot, oldSlot);
+            }
+        }
+        com.nineyin.db.RoleInventoryStore.Equipped worn =
+                new com.nineyin.db.RoleInventoryStore.Equipped(
+                        slot, item.configId(), item.itemType(), equipType, 100, 100, "");
+        out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_DOLL, slot));
+        out.add(InventoryPackets.equipmentViewAdd(
+                worn, InventoryPackets.uniqueId(roleId, "equip", slot)));
+        session.liveEquipped.add(worn);
+        if (inventory != null && !inventory.moveBagToEquip(roleId, fromSlot, slot, category)) {
+            log.warn("onestep bag[{}]->equip[{}] persist failed", fromSlot, slot);
+        }
+        out.add(InventoryPackets.weaponModeFrame(session.liveEquipped,
+                Appearance.resolveVisual(session.appearance).sex()));
+        if (session.actor != null) {
+            int hpBefore = session.actor.maxHp();
+            int mpBefore = session.actor.maxMp();
+            session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+            if (session.actor.maxHp() != hpBefore || session.actor.maxMp() != mpBefore) {
+                out.add(S2CPackets.playerBatch()
+                        .i32(PropertyId.MAX_HP, session.actor.maxHp())
+                        .i32(PropertyId.MAX_MP, session.actor.maxMp()).build());
+                out.add(session.actor.vitalUpdate());
+            }
+        }
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+        log.info("onestep equip uid={} config={} -> slot={}{}", uid, item.configId(), slot,
+                old != null ? " (swapped out " + old.configId() + ")" : "");
+    }
+
+    /**
+     * EquipType → 身体槽位（官方 equip.json 存档 33 件实测；双槽类型给两个候选，
+     * 运行时选第一个空槽，全占用时替换第一槽）。未收录类型返回 0（按不可穿拒绝）。
+     */
+    private static final Map<String, int[]> EQUIP_SLOTS = Map.of(
+            "hat", new int[]{1},
+            "cloth", new int[]{3},
+            "pants", new int[]{4},
+            "wrist", new int[]{6},
+            "leg", new int[]{7},
+            "shoes", new int[]{8},
+            "earring", new int[]{11, 12},
+            "necklace", new int[]{13},
+            "fingerring", new int[]{14, 15},
+            "weapon", new int[]{22});
+
+    /** 类型对应的穿戴槽：双槽类型优先空槽；类型未收录返回 0。 */
+    static int equipSlotFor(String equipType, List<com.nineyin.db.RoleInventoryStore.Equipped> equipped) {
+        if (equipType == null) {
+            return 0;
+        }
+        int[] slots = EQUIP_SLOTS.get(equipType.toLowerCase(Locale.ROOT));
+        if (slots == null) {
+            return 0;
+        }
+        for (int s : slots) {
+            boolean taken = false;
+            for (var e : equipped) {
+                if (e.slot() == s) {
+                    taken = true;
+                    break;
+                }
+            }
+            if (!taken) {
+                return s;
+            }
+        }
+        return slots[0];
     }
 
     /**

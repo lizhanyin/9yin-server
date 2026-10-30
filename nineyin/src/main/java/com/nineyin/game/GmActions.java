@@ -184,6 +184,12 @@ public final class GmActions {
                 fx.send(silverUpdate(actor));
                 return null;
             }
+            case "set_gold" -> {
+                long gold = cmd.params().getLongValue("gold");
+                actor.gold = Math.max(0, gold);
+                fx.send(goldUpdate(actor));
+                return null;
+            }
             case "set_sp" -> {
                 actor.sp = clamp(cmd.intParam("sp", 0), 0, PlayerActor.MAX_SP);
                 fx.send(actor.vitalUpdate());
@@ -502,6 +508,12 @@ public final class GmActions {
     private static byte[] silverUpdate(PlayerActor actor) {
         return S2CPackets.playerBatch()
                 .i64(PropertyId.CAPITAL_TYPE1, actor.silver)
+                .build();
+    }
+
+    private static byte[] goldUpdate(PlayerActor actor) {
+        return S2CPackets.playerBatch()
+                .i64(PropertyId.CAPITAL_TYPE0, actor.gold)
                 .build();
     }
 

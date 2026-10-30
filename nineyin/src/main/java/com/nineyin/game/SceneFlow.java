@@ -37,7 +37,10 @@ import java.util.concurrent.ThreadLocalRandom;
  * - 67 字节移动包：更新位置、取消打坐、2 秒节流落库、>1m 触发 NPC 增量补发（上限 50）
  * - 自定义 msg（0x0A 信封 + 0x1E/0x27 直连两种载体，对齐 Go）：
  *   240 打坐、200/201 快捷键、211 技能（skill_init 学习校验 + 编译目录计费/CD/动作/区域结算）、
- *   216/217 轻功、218 招架、223/5223 操作模式、64/70/71 商店（打开流程见 SelectFlow）
+ *   216/217 轻功、218 招架、223/5223 操作模式、64/70/71 商店（打开流程见 SelectFlow）、
+ *   924 消息延迟回显、560 充值商城（货品表+校验链+金币扣减+入包）、
+ *   943 兵录 / 784 乱斗 / 865/868 踢馆 / 180 卡片 / 209 任务 / 270 暮色 / 382 掉落 /
+ *   249 御风 / 144 副本结算 / 517 GM 探针（C2S 校验层+日志对齐，见 docs §3.5）
  * - 传送门：移动进入触发半径（door_data.ini MoveTarget/SpringRange）
  * - 巡逻广播（任意 0x0A 驱动，500ms 节流）
  * - 每秒 tick（NineyinServer 驱动）：actor 恢复 + vital 同步 + NPC 重生
@@ -75,6 +78,8 @@ public final class SceneFlow {
     /** 技能编译目录与学习表（211；空目录时全部走"未编译"拒绝路径）。 */
     private final SkillCatalog skillCatalog;
     private final SkillInitTable skillInit;
+    /** 充值商城货品表（560；缺失时购买链按 no goods 拒绝）。 */
+    private final ChargeShopCatalog chargeShop;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -136,6 +141,11 @@ public final class SceneFlow {
         this.inventory = com.nineyin.db.RoleInventoryStore.from(roleStore);
         this.skillCatalog = skillCatalog != null ? skillCatalog : new SkillCatalog();
         this.skillInit = skillInit != null ? skillInit : new SkillInitTable();
+        // 充值商城货品表（ini/charge_shop_goods.ini，share 根的上级即 resources/modern）
+        java.nio.file.Path iniRoot = sceneManager.shareRoot().getParent();
+        this.chargeShop = iniRoot != null
+                ? ChargeShopCatalog.load(iniRoot.resolve("ini").resolve("charge_shop_goods.ini"))
+                : new ChargeShopCatalog();
     }
 
     /** 九阴志全局门控（GM / 广播接线用）。 */
@@ -419,6 +429,33 @@ public final class SceneFlow {
             case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
             case 70 -> log.info("shop msg=70 buy argc={} (response pending capture)", msg.size());
             case 71 -> log.info("shop msg=71 close argc={}", msg.size());
+            // ---- 2026-10-30 custom 轮：参数布局/行为已从 exe 字符串钉死的消息 ----
+            // 消息延迟探测：[924, i64 tick]，回显 tick 供客户端测往返延迟
+            case 924 -> handleMessageDelay(fx, session, msg);
+            // 充值商城：[560, cmd, ...]，cmd=3 购买 [560,3,charge_id,nums]，2/4/5 忽略
+            case 560 -> handleChargeShop(fx, session, msg);
+            // 御风蓄力完成确认（参考服在蓄力窗口内等待 249，无移动则超时取消）
+            case 249 -> handleYufengChargeConfirm(fx, session);
+            // 副本结算确认（参考服推 col result 后 awaiting C2S 144）
+            case 144 -> handleColResultConfirm(fx, session);
+            // 卡片（sub_command 路由，USE/USESKILL/SAVE 的子编号未钉死）
+            case 180 -> handleCard(fx, session, msg);
+            // 任务面板（无活跃任务时参考服直接忽略）
+            case 209 -> handleTaskPanel(fx, session, msg);
+            // 暮色道具技能（无活跃暮色场景拒绝）
+            case 270 -> handleTwilightItemSkill(fx, session, msg);
+            // 关闭掉落箱（Java 无 DropBox 实体，先对齐日志）
+            case 382 -> handleCloseDrop(fx, session);
+            // 兵录修改：[943, sub(int), name(str), num(int)]
+            case 943 -> handleBingluModify(fx, session, msg);
+            // 乱斗：[784, sub(int), ...]，sub=10 OPEN_LIMITE index/origin_id
+            case 784 -> handleLuanDou(fx, session, msg);
+            // 踢馆：sub 6=确认切换 / 7=离场（线序见 artifacts/audit/tiguan 文档）
+            case 865 -> handleTiguan(fx, session, msg);
+            // 踢馆轮盘：[868, action(str)]
+            case 868 -> handleTiguanRoulette(fx, session, msg);
+            // GM 探针默认 msgId：[517, subType]
+            case 517 -> handleGmProbe(fx, session, msg);
             default -> {
                 // 监控：未识别 custom 消息按会话首现打 INFO（含解析后的参数），
                 // 用于发现"同意用户协议"等稀疏客户端事件的 msgId；重复出现降为 DEBUG 防刷屏
@@ -517,6 +554,269 @@ public final class SceneFlow {
         }
         session.showEquipType = type;
         log.info("showequip_type set to {}", type);
+    }
+
+    // ---- 2026-10-30 custom 轮：参数布局/行为已从 exe 钉死的消息 ----
+
+    /**
+     * 924 消息延迟探测（参考服：`message delay 924: expected [int32:924, int64:tick]`）。
+     * 响应回显 tick（`message delay 924 response`）；回显载体按 custom 0x1E 同 msgId
+     * 假设实现——精确响应格式待实机抓包钉死。
+     */
+    private void handleMessageDelay(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val tick = msg.val(1);
+        if (msg.size() != 2 || tick == null || tick.type != CustomMsg.TYPE_I64) {
+            log.info("message delay 924: expected [int32:924, int64:tick], got {}", summarizeVals(msg));
+            return;
+        }
+        fx.send(CustomPackets.intMessage(924, tick.asLong()));
+        log.info("message delay 924 response");
+    }
+
+    /**
+     * 560 充值商城（cmd=3 购买 [560,3,charge_id,nums]；2 礼物/4 收藏/5 取消收藏忽略）。
+     * 计价货币按金币（CapitalType0=415）建模，capital 映射待实机抓包；
+     * 发放路由：game_items 可解析的货品入背包，时装/坐骑/礼包走专用 store（未实装，不扣币）。
+     */
+    private void handleChargeShop(FxSession fx, LoginSession session, CustomMsg msg) {
+        // "未选角"按会话是否已选/建角色判定（roleId 是存储产物：JSON 后端恒 0，
+        // MySQL 建角当次会话也尚未回读，不能作为选角依据）
+        if (!session.hasRole) {
+            log.info("charge shop 560 arrived before role selection");
+            return;
+        }
+        CustomMsg.Val cmdVal = msg.val(1);
+        if (cmdVal == null || !cmdVal.asExactInt()) {
+            log.info("charge shop 560 command is not an integer: {}",
+                    cmdVal != null ? cmdVal : "<missing>");
+            return;
+        }
+        int cmd = cmdVal.intOrZero();
+        switch (cmd) {
+            case 2 -> {
+                log.info("ignored charge shop present (cmd 2)");
+                return;
+            }
+            case 4 -> {
+                log.info("ignored charge shop favorite (cmd 4)");
+                return;
+            }
+            case 5 -> {
+                log.info("ignored charge shop favorite remove (cmd 5)");
+                return;
+            }
+            case 3 -> {
+                // buy
+            }
+            default -> {
+                log.info("ignored charge shop command {}", cmd);
+                return;
+            }
+        }
+        if (msg.size() != 4) {
+            log.info("charge shop buy expects [560,3,charge_id,nums], got {} values", msg.size());
+            return;
+        }
+        CustomMsg.Val idVal = msg.val(2);
+        CustomMsg.Val numsVal = msg.val(3);
+        if (!idVal.asExactInt()) {
+            log.info("charge shop buy charge_id is not an integer: {}", idVal);
+            return;
+        }
+        if (!numsVal.asExactInt()) {
+            log.info("charge shop buy nums is not an integer: {}", numsVal);
+            return;
+        }
+        int chargeId = idVal.intOrZero();
+        int nums = numsVal.intOrZero();
+        if (nums < 1 || nums > ChargeShopCatalog.MAX_NUMS) {
+            log.info("charge shop buy nums={} outside 1..{}", nums, ChargeShopCatalog.MAX_NUMS);
+            return;
+        }
+        ChargeShopCatalog.Goods goods = chargeShop.byChargeId(chargeId);
+        if (goods == null) {
+            log.info("charge shop has no goods charge_id={}", chargeId);
+            return;
+        }
+        if (goods.priceType() != 0) {
+            log.info("charge shop goods {} price_type={} not supported", chargeId, goods.priceType());
+            return;
+        }
+        PlayerActor actor = session.actor;
+        if (actor == null || inventory == null || session.liveBagged == null) {
+            log.info("charge shop buy has no bag");
+            return;
+        }
+        long cost = goods.price() * nums;
+        if (actor.gold < cost) {
+            log.info("charge shop goods {} needs gold={}, have {}", chargeId, cost, actor.gold);
+            return;
+        }
+        var add = inventory.addBagItem(session.roleId, goods.configId(), nums);
+        if (add.fail() != null) {
+            if ("full".equals(add.fail())) {
+                log.info("charge shop goods {} ({}): bag full", chargeId, goods.configId());
+            } else {
+                log.info("charge shop goods {} ({}): grant route pending "
+                        + "(fashion/mount/box store not implemented)", chargeId, goods.configId());
+            }
+            return;
+        }
+        // 背包帧：清格 + 落位（页与镜像成对，节奏对齐 handleMoveItem 的入包路径）
+        int view = InventoryPackets.bagViewOf(add.view());
+        var item = new com.nineyin.db.RoleInventoryStore.Bagged(
+                add.slot(), goods.configId(), 0, nums, add.view(), "");
+        List<byte[]> out = new ArrayList<>();
+        out.add(InventoryPackets.viewRemove(view, add.slot()));
+        out.add(InventoryPackets.bagViewAdd(
+                item, InventoryPackets.uniqueId(session.roleId, "bag", add.slot()), view));
+        int mirror = InventoryPackets.mirrorOf(view);
+        if (mirror != 0) {
+            out.add(InventoryPackets.viewRemove(mirror, add.slot()));
+        }
+        actor.gold -= cost;
+        out.add(S2CPackets.playerBatch()
+                .i64(PropertyId.CAPITAL_TYPE0, actor.gold).build());
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.liveBagged.add(item);
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                session.roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+        log.info("charge shop bought {} x{} (charge_id={}) for {} gold, left={}",
+                goods.configId(), nums, chargeId, cost, actor.gold);
+    }
+
+    /** 249 御风蓄力完成确认（参考服在蓄力窗口内等 249；Java 无蓄力窗口，收下即记日志）。 */
+    private void handleYufengChargeConfirm(FxSession fx, LoginSession session) {
+        log.info("yufeng charge confirm 249 ignored (no charge window active)");
+    }
+
+    /** 144 副本结算确认（参考服推 col result 后等待 144；Java 无待确认结算）。 */
+    private void handleColResultConfirm(FxSession fx, LoginSession session) {
+        log.info("clone col result confirm 144 ignored (no pending col result)");
+    }
+
+    /**
+     * 180 卡片（参考服按 sub_command 路由 USE/USESKILL/SAVE；子编号未从字符串钉死，
+     * 未钉死前一律走参考服的未知子命令分支，日志同构便于实机对照）。
+     */
+    private void handleCard(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null || !sub.asExactInt()) {
+            log.info("card C2S: malformed sub values={}", summarizeVals(msg));
+            return;
+        }
+        log.info("card C2S: unknown sub_command={} args=[{}] (sub routing pending capture)",
+                sub.intOrZero(), summarizeVals(msg));
+    }
+
+    /** 209 任务面板（参考服：无活跃任务直接忽略；Java 无活跃任务状态）。 */
+    private void handleTaskPanel(FxSession fx, LoginSession session, CustomMsg msg) {
+        log.info("task 209 ignored: no active task (vals={})", summarizeVals(msg));
+    }
+
+    /** 270 暮色道具技能（参考服：`twilight item skill %s has no active scene`）。 */
+    private void handleTwilightItemSkill(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val id = msg.val(1);
+        String skillId = id != null && id.str != null ? id.str : "";
+        if (skillId.isEmpty()) {
+            log.info("twilight item skill malformed values={}", summarizeVals(msg));
+            return;
+        }
+        log.info("twilight item skill {} has no active scene", skillId);
+    }
+
+    /** 382 关闭掉落箱（参考服：`closed DropBox via 382`；Java 无 DropBox 实体）。 */
+    private void handleCloseDrop(FxSession fx, LoginSession session) {
+        log.info("close drop 382 ignored (no open DropBox)");
+    }
+
+    /**
+     * 943 兵录修改（参考服：`binglu modify: missing sub message` / `sub message is not an
+     * integer` / `binglu modify unhandled sub=%d name=%q num=%d`；binglu 数据表未接入，
+     * 全部子命令走 unhandled 分支）。
+     */
+    private void handleBingluModify(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null) {
+            log.info("binglu modify: missing sub message");
+            return;
+        }
+        if (!sub.asExactInt()) {
+            log.info("binglu modify: sub message is not an integer");
+            return;
+        }
+        CustomMsg.Val name = msg.val(2);
+        CustomMsg.Val num = msg.val(3);
+        log.info("binglu modify unhandled sub={} name={} num={}",
+                sub.intOrZero(),
+                name != null && name.str != null ? "\"" + name.str + "\"" : "\"\"",
+                num != null ? num.intOrZero() : 0);
+    }
+
+    /**
+     * 784 乱斗（参考服：`luandou 784: missing sub_msg args=%d` / `bad sub_msg type %s` /
+     * `sub=10 OPEN_LIMITE index=%d origin_id=%d` / `sub=%d ignored (not PlayerIsInCross)`；
+     * 回复帧 `luandou 784: encode reply` 的格式未钉死）。
+     */
+    private void handleLuanDou(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (msg.size() < 2) {
+            log.info("luandou 784: missing sub_msg args={}", msg.size());
+            return;
+        }
+        CustomMsg.Val sub = msg.val(1);
+        if (!sub.asExactInt()) {
+            log.info("luandou 784: bad sub_msg type {}", sub);
+            return;
+        }
+        int subId = sub.intOrZero();
+        if (subId == 10) {
+            int index = intArg(msg, 2);
+            int originId = intArg(msg, 3);
+            log.info("luandou 784 sub=10 OPEN_LIMITE index={} origin_id={} (reply pending capture)",
+                    index, originId);
+            return;
+        }
+        log.info("luandou 784 sub={} ignored (not PlayerIsInCross)", subId);
+    }
+
+    /**
+     * 865 踢馆（sub 6=确认切换 / 7=离场，其余 `tiguan 865 bad sub_msg %s`）。
+     * 完整线序见 artifacts/audit/tiguan-group-scene-lifecycle-20260808.md：
+     * 6 → ID24/87 淡入淡出 → CurGuanID → 0x0C → 750ms → 0x0B（同地图保持坐标）→
+     * PlayerAddObject → SubSceneNo → 0x11 target=2 Time_Limit_Form_Rec → 等 ClientReady；
+     * 7 → 删计时行 → ID24/87 → CurGuanID=0 → 0x0C → 0x0B（公共场景 TransOut）。
+     * 场景分组生命周期未实装，先对齐子命令校验与日志。
+     */
+    private void handleTiguan(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null || !sub.asExactInt() || (sub.intOrZero() != 6 && sub.intOrZero() != 7)) {
+            log.info("tiguan 865 bad sub_msg {}", sub != null ? sub : "<missing>");
+            return;
+        }
+        log.info("tiguan 865 sub={} (grouped scene lifecycle pending; see audit/tiguan)",
+                sub.intOrZero());
+    }
+
+    /** 868 踢馆轮盘（参考服：`tiguan roulette 868 missing action` / `bad action %s`；
+     *  合法 action 词表未钉死，Java 无踢馆会话，先记日志）。 */
+    private void handleTiguanRoulette(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val action = msg.val(1);
+        if (action == null || action.str == null || action.str.isEmpty()) {
+            log.info("tiguan roulette 868 missing action");
+            return;
+        }
+        log.info("tiguan roulette 868 action={} (no tiguan session; whitelist pending capture)",
+                action.str);
+    }
+
+    /** 517 GM 探针默认 msgId（参考服：`GM custom probe msgID=%d subType=%d`）。 */
+    private void handleGmProbe(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val sub = msg.val(1);
+        log.info("GM custom probe msgID={} subType={}", msg.msgId(),
+                sub != null ? sub.intOrZero() : 0);
     }
 
     /** 参数摘要（单值 48 字符、总长 160 截断）：统一走 TVarList.describe，与校验错误文本同格式。 */

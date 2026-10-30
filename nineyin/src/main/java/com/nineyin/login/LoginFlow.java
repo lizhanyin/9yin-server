@@ -176,6 +176,12 @@ public final class LoginFlow {
             role.setZ(sp.z());
             role.setOrient(sp.orient());
             roleStore.put(s.accountKey, role);
+            // 建角当次会话即回填 roleId（MySQL 自增 id；保证 560/30 等按 roleId 记账的
+            // 消息不必断线重登才可用。JSON 后端无 id，保持 0）
+            StoredRole saved = roleStore.get(s.accountKey);
+            if (saved != null) {
+                s.roleId = saved.getRoleId();
+            }
             log.info("role saved account={} name={} book={} scene={}",
                     s.accountKey, name, book, sp.resource());
         }

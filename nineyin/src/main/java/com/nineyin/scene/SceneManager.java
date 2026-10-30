@@ -32,6 +32,11 @@ public final class SceneManager {
         this.shareRoot = shareRoot;
     }
 
+    /** 资源根（share/；上级即 resources/modern，ini 根在其 ini/ 下）。 */
+    public Path shareRoot() {
+        return shareRoot;
+    }
+
     /** 环境变量优先，其次从 cwd 向上找 resources/modern/share。 */
     public static Path locateShareRoot() {
         String env = System.getenv("NINEYIN_SERVER_ROOT");

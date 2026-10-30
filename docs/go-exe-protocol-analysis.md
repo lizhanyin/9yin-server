@@ -74,29 +74,29 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
 | 64/70/71 | 商店 打开/购买/关闭 | — | 完整商店系统（view/stock/capital），`shop %s item %s stock=%d < requested=%d`、`operate_type_swap_goods` | 🟨 仅日志（S2C 响应格式待钉死） |
-| 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | ⬜ |
-| 180 | 卡片（activity card） | — | `handle activity card 180` | ⬜ |
+| 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | 🟨 第三轮：确认收下记日志（Java 无待确认 col result） |
+| 180 | 卡片（activity card） | — | `handle activity card 180` | 🟨 第三轮：sub_command 路由桩（USE/USESKILL/SAVE 子编号待钉死） |
 | 200/201 | 快捷键 设置/删除 | `[idx, kind(str), id(str)]` / `[idx]` | `shortcut expects int index and two strings`；同 index 先 0x12 删旧行 | ✅ |
-| 209 | 任务 | — | `handle task 209: %v` | ⬜ |
+| 209 | 任务 | — | `handle task 209: %v`、`task 209 ignored: no active task` | 🟨 第三轮：无活跃任务忽略（日志对齐） |
 | 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
 | 216/217 | 轻功 基本/主动 | — | `reject basic qinggong hold cost=%d point=%d/%d`；ActiveQGSkillRec 行 | ✅ |
 | 218 | 主动招架 | — | `manual parry before scene player exists`、`publish manual parry state` | ✅ |
 | 223 / 5223 | 操作模式切换 | `[mode:int]` | `set operate mode=%d (0=3D 1=2.5D), shortcutKey updated` | 🟨（见 §3 疑似偏差） |
 | 240 | 打坐 | `[start_or_stop:int]` | `sitcross native state %d -> %d via normal 0x10`（1=坐下 0/2=起身） | ✅ |
-| 270 | 暮色道具技能 | — | `handle twilight item skill 270` | ⬜ |
+| 270 | 暮色道具技能 | `[skillId(str)]` | `twilight item skill %s has no active scene` | 🟨 第三轮：无活跃暮色场景拒绝（日志对齐） |
 | 291 | PK 模式切换 | `[mode:int]` | `change pk mode expects TVarList(291, mode)`；`change pk mode invalid mode %s`；GM 面板 `set_pk_mode` 同源 | 🟨 本轮实现 |
 | 292 | 警告开关 | 无参 | `warning expects TVarList(292) with no extra values`；`change warning %d -> %d via normal 0x10`（toggle 后 0x10 推送，属性 ID 未钉死） | 🟨 本轮实现（存储+日志） |
 | 293 | PK 保护开关 | `[type:int, onoff:int]` | `toggle expects TVarList(293, type, onoff)`；`client pk protect toggle type=%d on=%d` | 🟨 本轮实现 |
-| 382 | 关闭掉落 | — | `handle close drop 382` | ⬜（Java 无掉落实体） |
-| 560 | 充值商店购买 | `[560,3,charge_id,nums]` | `buy expects [560,3,charge_id,nums]`；`charge shop 560 arrived before role selection` | ⬜ |
-| 249 | 充值确认 | — | `C2S 249 (player never charged: no movement); cancelled, NOT complete` | ⬜ |
-| 784 | 乱斗 | `[sub=10 OPEN_LIMITE ...]` | `luandou 784: encode reply` | ⬜ |
-| 865 | 踢馆 | sub 6=确认切换 / 7=离场 | `CUSTOM_MSG_TG_SWITCH`（见 audit/tiguan 文档完整线序） | ⬜ |
-| 868 | 踢馆轮盘 | `[action]` | `tiguan roulette 868 bad action %s` | ⬜ |
-| 924 | 消息延迟 | — | `message delay 924 response` | ⬜ |
-| 943 | 兵录修改 | — | `handle binglu modify 943` | ⬜ |
+| 382 | 关闭掉落 | — | `handle close drop 382`、`closed DropBox via 382` | 🟨 第三轮：日志对齐（Java 无 DropBox 实体） |
+| 560 | 充值商店购买 | `[560, cmd, ...]`（buy=`[560,3,charge_id,nums]`） | `buy expects [560,3,charge_id,nums]`、`nums=%d outside 1..%d`、`no goods charge_id=%d`、`price_type=%d not supported`、`needs gold=%d, have %d`、`(%s): bag full`、`bought %s x%d (charge_id=%d) for %d gold, left=%d`；cmd 2/4/5 忽略 | 🟨 第三轮：货品表+完整校验链+金币扣减+入包 grant（页面 S2C 与 capital 映射待钉死） |
+| 249 | 充值确认 | — | `Yufeng charge window expired … without C2S 249 (player never charged: no movement); cancelled, NOT complete` | 🟨 第三轮：御风蓄力确认收下记日志（Java 无蓄力窗口） |
+| 784 | 乱斗 | `[sub(int)=10 OPEN_LIMITE index, origin_id]` | `luandou 784: encode reply`、`missing sub_msg args=%d`、`bad sub_msg type %s`、`sub=10 OPEN_LIMITE index=%d origin_id=%d` | 🟨 第三轮：sub 路由（reply 格式待钉死） |
+| 865 | 踢馆 | sub 6=确认切换 / 7=离场 | `CUSTOM_MSG_TG_SWITCH`（见 audit/tiguan 文档完整线序）、`tiguan 865 bad sub_msg %s` | 🟨 第三轮：sub 6/7 校验+日志（分组场景生命周期待实装） |
+| 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action` | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
+| 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick（响应载体假设 0x1E 同 msgId，待抓包） |
+| 943 | 兵录修改 | `[943, sub(int), name(str), num(int)]` | `binglu modify: missing sub message`、`sub message is not an integer`、`unhandled sub=%d name=%q num=%d` | 🟨 第三轮：sub 三分支校验日志（binglu 数据表未接） |
 | 819 | 用户须知签署 | — | （Java 侧实测闭环） | ✅ |
-| 517 | GM 探针默认 msgId | `[subType]` | `GM custom probe msgID=%d subType=%d` | ⬜（GM 面板未接） |
+| 517 | GM 探针默认 msgId | `[subType]` | `GM custom probe msgID=%d subType=%d` | 🟨 第三轮：日志（GM 面板直驱未接） |
 
 ### 2.2 exe 的 75 个 custom handler 按功能分组
 
@@ -188,6 +188,41 @@ Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 
   （拆分公式未钉死，现单跳 split=1）、[skill-save] 学习进度持久化、
   `learned skill count %d exceeds u16 view capacity` 的全量 View 推送。
 
+### 3.5 custom 子协议轮（2026-10-30 第三轮）
+
+把 §2.1 表中全部 ⬜ 消息推进到 🟨/布局钉死：13 个新 case 进入 `SceneFlow.dispatchCustom`
+（924/560/249/144/180/209/270/382/943/784/865/868/517），每个 handler 的校验分支与
+日志文本逐条对齐 exe 证据串（本轮新钉死的关键串见 §5 下半段）。
+
+- **924 消息延迟**：布局钉死 `[int32:924, int64:tick]`（`expected [int32:924, int64:tick]`），
+  合法即回显 tick（`message delay 924 response`）。回显载体按 0x1E 同 msgId 假设实现，
+  精确格式待实机抓包。
+- **560 充值商城**：`ChargeShopCatalog` 装载 ini/charge_shop_goods.ini（GBK 9 字段，与
+  Go resources 同源；`catalog ready items=%d file=%s`）。校验链完整落地：before role
+  selection / cmd 非整数 / cmd 2(present)、4(favorite)、5(favorite remove) 忽略 /
+  buy 参数个数 / charge_id、nums 非整数 / nums 越界(1..99，上界待钉死) / no goods /
+  price_type≠0 / 金币不足 → 拒绝路径日志全部同构。成功路径：game_items 可解析的货品
+  入背包（`RoleInventoryStore.addBagItem`：item_type/落页由统一表驱动，首空格 1..90，
+  ViewAdd+镜像帧，`inventoryFrames` 缓存重建）→ 扣金币 → 0x10 推 CapitalType0(415) →
+  `charge shop bought %s x%d (charge_id=%d) for %d gold, left=%d`。
+  **待钉死项**：页面 S2C（`encode charge shop page`）格式、capital 与金币的精确映射
+  （现按 CapitalType0 建模，`PlayerActor.gold` 初始 99999 与 silver 同为私服娱乐值）、
+  时装/坐骑/礼包的专用 store grant（未实装，不扣币记 pending）。
+- **943/784/865/868/180/209/270/382/144/249/517**：C2S 校验层+日志对齐桩
+  （各分支文本与 exe 同构，见 §2.1）；涉及的数据/场景系统（binglu 表、乱斗 reply、
+  踢馆分组场景生命周期、卡片子命令编号、任务面板状态机、DropBox、col result、
+  御风蓄力窗口）留待后续轮。
+- **GM**：`set_gold` 补齐（GM 面板 console.html 已有调用，服务端原本缺动作），
+  镜像 set_silver 推 0x10 CapitalType0。
+- **建角会话 roleId 回填**（本轮发现的存量缺陷）：`onCreateRole` 存档后原不回填
+  `session.roleId`（只有二次登录 onLogin 才有；JSON 后端恒 0），导致按 roleId 记账的
+  消息（30/560 等）建角当次会话全部失效。现建角后回读 `roleStore.get()` 回填（MySQL
+  自增 id）；560 的"未选角"判定同步改用 `session.hasRole`（对齐 Go 语义，roleId 是
+  存储产物不能当选角依据）。
+- **本轮新钉死编号（后续轮候补）**：688 tersure、301 VIP、864 生活职业、jingmai
+  （`jingmai msg=%d`）、770 C-面板 BodyScale、19 时装套装、692 面料混合(692 缺参校验串)、
+  origin 700/701/702/705/706、145 副本奖励 View80 拾取、380 掉落拾取(vpos)。
+
 ## 4. 后续继续挖掘的方法
 
 exe 未剥符号，`strings + grep` 即可继续钉死协议细节（在 Git Bash 下）：
@@ -232,4 +267,53 @@ accepted skill id=%s mp=%d sp=%d qg=%d damage=%d target=%d targets=%d personal_c
 loaded skill_init.ini skills=%d path=%s                     ← 学习表装载（17,855）
 settled compiled area skill id=%s mode=%d ... hits=%d split=%d cadence=%s damage_total=%d
 skill defeated NPCs targets=%d silver_drop=%d               ← 击杀掉碎银（MaxHP/100 夹 [1,99]）
+```
+
+### 5.1 第三轮新增摘录（custom 子协议，2026-10-30）
+
+```
+message delay 924: expected [int32:924, int64:tick]         ← 924 布局钉死
+message delay 924 response: %w                              ← 924 有 S2C 响应
+charge shop 560 arrived before role selection               ← 560 早到
+charge shop 560 command is not an integer: %s               ← 560 cmd 校验
+charge shop buy charge_id is not an integer: %s
+charge shop buy nums is not an integer: %s
+charge shop buy nums=%d outside 1..%d                       ← 上界待钉死
+charge shop has no goods charge_id=%d
+charge shop goods %d price_type=%d not supported
+charge shop goods %d needs gold=%d, have %d
+charge shop goods %d (%s): bag full
+charge shop bought %s x%d (charge_id=%d) for %d gold, left=%d
+ignored charge shop present (cmd 2) / favorite (cmd 4) / favorite remove (cmd 5) / command %d
+charge shop buy has no bag
+binglu modify: missing sub message                          ← 943 布局：sub(int)+name(str)+num(int)
+binglu modify: sub message is not an integer
+binglu modify unhandled sub=%d name=%q num=%d
+binglu level up row=%d(%s) level=%d need=%d                 ← 943 升级行为（数据表未接）
+luandou 784: missing sub_msg args=%d                        ← 784 布局：sub(int)
+luandou 784: bad sub_msg type %s
+luandou 784 sub=10 OPEN_LIMITE index=%d origin_id=%d
+luandou 784 sub=%d ignored (not PlayerIsInCross)
+%s: tiguan 865 bad sub_msg %s                               ← 865 子命令校验
+tiguan roulette 868 missing action                          ← 868 布局：action(str)
+tiguan roulette 868 bad action %s                           ← 合法词表待反汇编/抓包
+%s: task 209 ignored: no active task                        ← 209 无活跃任务
+%s: task 209 ignored: no argument matches active tasks %v
+twilight item skill %s has no active scene                  ← 270 无暮色场景
+%s: closed DropBox via 382                                  ← 382 关闭掉落箱
+%s: S2C clone col result route=%d level=%d score=%d use=%ds try_left=%d; awaiting C2S 144
+Yufeng charge window expired after %s without C2S 249 (player never charged: no movement); cancelled, NOT completed player=%d-%d
+card C2S: unknown sub_command=%d args=[%s]                  ← 180 子命令路由
+card C2S: equipped card_id=%d / unequipped all cards / invalid card_id=%q sub=USE
+card USESKILL empty skill id values=%v
+%s: GM custom probe msgID=%d subType=%d                     ← 517 GM 探针
+%s: handle tersure 688: %v                                  ← 新钉死编号（后续轮候补）
+VIP message 301 command is not an exact integer: %s         ← 301 VIP
+%s: handle life job 864: %v                                 ← 864 生活职业
+jingmai custom requires an int subcommand                   ← jingmai 子命令
+%s: handle C-panel BodyScale 770: %v                        ← 770 体型
+%s: attire blend 692 missing args args=[%s]                 ← 692 面料混合
+origin 700: missing origin id args=%d                       ← origin 700~706 家族
+%s: reject 145 no clone awards view / reject 145 bad index %d   ← 145 副本奖励拾取
+%s: reject 380 pickup without vpos                          ← 380 掉落拾取
 ```

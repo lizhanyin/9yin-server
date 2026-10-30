@@ -56,6 +56,14 @@ class SceneFlowTest {
         skillCatalog.load(tempDir);
         SkillInitTable skillInit = new SkillInitTable();
         skillInit.load(share.resolve("skill").resolve("skill_init.ini"));
+        // 充值商城货品 fixture（share 根上级的 ini/ 目录，对齐 resources/modern 布局）
+        Path iniRoot = tempDir.resolve("ini");
+        Files.createDirectories(iniRoot);
+        Files.writeString(iniRoot.resolve("charge_shop_goods.ini"), """
+                [Goods]
+                1=fashion_qg_test,0202,2,0,880,1,0,0,0
+                2=box_test_001,0400,2,0,15,1,0,0,0
+                """, GBK);
         SceneFlow sceneFlow = new SceneFlow(new SceneManager(share), roleStore, new QinggongCatalog(),
                 null, null, skillCatalog, skillInit);
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
@@ -502,6 +510,105 @@ class SceneFlowTest {
         assertTrue(noTarget.stream().noneMatch(f -> op(f) == 0x11 || op(f) == 0x10),
                 "no selected target must reject without skill frames");
         assertEquals(489, login.actor.mp);
+    }
+
+    /**
+     * 2026-10-30 custom 轮：exe 钉死布局的消息（924/560）+ 日志对齐桩
+     * （144/180/209/249/270/382/517/784/865/868/943）——全部走 C2S 校验层，
+     * 除 924 回显外无 S2C 帧，金币/状态不被错误修改。
+     */
+    @Test
+    void customRoundNailedMsgIdsValidateAndEcho() throws Exception {
+        // 登录后未选角：560 早到只记日志（charge shop 560 arrived before role selection）
+        send(loginPacket());
+        drainOutbound();
+        send(custom().u16(4).u8(2).i32(560).u8(2).i32(3).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        assertTrue(drainOutbound().isEmpty(), "before role selection: no reply");
+
+        // 完成登录链
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // 924 消息延迟：合法 [924, i64 tick] → 回显 0x1E custom（msgId 924 + 同 tick）
+        send(custom().u16(2).u8(2).i32(924).u8(3).i64(0x1122334455L).toByteArray());
+        List<byte[]> delay = drainOutbound().stream().filter(f -> op(f) == 0x1E).toList();
+        assertEquals(1, delay.size(), "924 must echo one custom frame");
+        byte[] echo = delay.get(0);
+        assertEquals(2, (echo[1] & 0xFF) | ((echo[2] & 0xFF) << 8), "echo value count = 2");
+        assertEquals(2, echo[3] & 0xFF, "msgId encoded as i32");
+        assertEquals(924, leU32(echo, 4));
+        assertEquals(3, echo[8] & 0xFF, "tick encoded as i64");
+        assertEquals(0x1122334455L, leU64(echo, 9));
+
+        // 924 错误布局（f64 tick）：拒绝，无回显
+        send(custom().u16(2).u8(2).i32(924).u8(5).f64(1.0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E),
+                "malformed 924 must not echo");
+
+        // 560 cmd=2（展示领取）：忽略
+        send(custom().u16(2).u8(2).i32(560).u8(2).i32(2).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10));
+
+        // 560 购买参数个数错误（expects [560,3,charge_id,nums]）：无响应
+        send(custom().u16(3).u8(2).i32(560).u8(2).i32(3).u8(2).i32(1).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10));
+
+        // 560 未知 charge_id：no goods 拒绝
+        send(custom().u16(4).u8(2).i32(560).u8(2).i32(3).u8(2).i32(99).u8(2).i32(1).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10));
+
+        // 560 合法购买（charge_id=1, nums=1）：JSON 存档无库存后端 → has no bag，金币不动
+        send(custom().u16(4).u8(2).i32(560).u8(2).i32(3).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10));
+        assertEquals(99999, login.actor.gold, "no-bag reject must not charge");
+
+        // 943 兵录：缺 sub / 非 int sub / unhandled sub（含 name/num 摘要）
+        send(custom().u16(1).u8(2).i32(943).toByteArray());
+        send(custom().u16(2).u8(2).i32(943).u8(6).u32(4).raw("abc".getBytes()).u8(0).toByteArray());
+        byte[] nm = "dao".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(4).u8(2).i32(943).u8(2).i32(1)
+                .u8(6).u32(nm.length + 1).raw(nm).u8(0).u8(2).i32(5).toByteArray());
+        assertTrue(drainOutbound().isEmpty(), "943 branches emit no frames");
+
+        // 784 乱斗：缺 sub / 非 int sub / sub=10 OPEN_LIMITE / 非 10 忽略
+        send(custom().u16(1).u8(2).i32(784).toByteArray());
+        byte[] bad = "x".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(784).u8(6).u32(bad.length + 1).raw(bad).u8(0).toByteArray());
+        send(custom().u16(4).u8(2).i32(784).u8(2).i32(10).u8(2).i32(2).u8(2).i32(3001).toByteArray());
+        send(custom().u16(2).u8(2).i32(784).u8(2).i32(3).toByteArray());
+        assertTrue(drainOutbound().isEmpty(), "784 branches emit no frames");
+
+        // 865 踢馆：坏 sub / 合法 6、7（分组场景生命周期未实装，日志对齐）
+        send(custom().u16(2).u8(2).i32(865).u8(2).i32(9).toByteArray());
+        send(custom().u16(2).u8(2).i32(865).u8(2).i32(6).toByteArray());
+        send(custom().u16(2).u8(2).i32(865).u8(2).i32(7).toByteArray());
+        // 868 轮盘：缺 action / action=start
+        send(custom().u16(1).u8(2).i32(868).toByteArray());
+        byte[] act = "start".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(868).u8(6).u32(act.length + 1).raw(act).u8(0).toByteArray());
+        // 180 卡片 / 209 任务 / 270 暮色道具技 / 382 关闭掉落 / 144 副本结算 / 249 御风确认 / 517 GM 探针
+        send(custom().u16(2).u8(2).i32(180).u8(2).i32(1).toByteArray());
+        send(custom().u16(2).u8(2).i32(209).u8(2).i32(1).toByteArray());
+        byte[] tw = "tw_skill_1".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(270).u8(6).u32(tw.length + 1).raw(tw).u8(0).toByteArray());
+        send(custom().u16(1).u8(2).i32(382).toByteArray());
+        send(custom().u16(1).u8(2).i32(144).toByteArray());
+        send(custom().u16(1).u8(2).i32(249).toByteArray());
+        send(custom().u16(2).u8(2).i32(517).u8(2).i32(7).toByteArray());
+        assertTrue(drainOutbound().isEmpty(),
+                "stub handlers emit no frames (patrol 0x20 excluded by empty scene state)");
+    }
+
+    private static long leU64(byte[] b, int off) {
+        return (b[off] & 0xFFL) | ((b[off + 1] & 0xFFL) << 8)
+                | ((b[off + 2] & 0xFFL) << 16) | ((b[off + 3] & 0xFFL) << 24)
+                | ((b[off + 4] & 0xFFL) << 32) | ((b[off + 5] & 0xFFL) << 40)
+                | ((b[off + 6] & 0xFFL) << 48) | ((b[off + 7] & 0xFFL) << 56);
     }
 
     private static boolean containsUtf8(byte[] frame, String s) {

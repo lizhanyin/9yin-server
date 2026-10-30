@@ -100,6 +100,9 @@ public final class PlayerActor {
     public int maxQinggongPointAdd;
     public int sp;
     public long silver = 99999;
+    // 金币（CapitalType0=415，充值商城 560 计价货币）。初始额与 silver 同为私服娱乐值，
+    // 参考服走 wallet store 持久化；capital 映射与持久化待实机抓包/存档格式钉死后接入。
+    public long gold = 99999;
 
     public float gravity = 9.8f;
     public float moveSpeed = 5.0f;
@@ -447,7 +450,8 @@ public final class PlayerActor {
                 .i32(PropertyId.MP_UP_SPEED, mpUp)
                 .i32(PropertyId.MP_UP_SPEED_ADD, 0)
                 .wide(PropertyId.NAME, name)
-                .i64(PropertyId.CAPITAL_TYPE1, silver);
+                .i64(PropertyId.CAPITAL_TYPE1, silver)
+                .i64(PropertyId.CAPITAL_TYPE0, gold);
         for (int slot = 1; slot <= PropertyId.BUFFER_INFO_COUNT; slot++) {
             b.str(PropertyId.bufferInfoSlot(slot), buffInfo(slot));
         }

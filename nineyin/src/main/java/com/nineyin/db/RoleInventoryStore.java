@@ -277,6 +277,84 @@ public final class RoleInventoryStore {
         }
     }
 
+    /**
+     * 发放物品入包（商城购买/奖励发放）：item_type 与落页由 game_items 统一表驱动
+     * （equip_type 非空 → 装备页 2，否则道具页 1），分配目标页第一个空格（1..90）。
+     * 返回 null 且 fail="missing"：game_items 无此 config（专用 store 的货品，调用方走 pending 路由）；
+     * 返回 null 且 fail="full"：目标页无空格。
+     */
+    public record BagAdd(int slot, int view, String fail) {
+
+        static BagAdd missing() {
+            return new BagAdd(0, 0, "missing");
+        }
+
+        static BagAdd full() {
+            return new BagAdd(0, 0, "full");
+        }
+    }
+
+    public BagAdd addBagItem(long roleId, String configId, int amount) {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                int itemType;
+                int view;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT item_type, IF(equip_type IS NULL OR equip_type = '', 1, 2) "
+                                + "FROM game_items WHERE item_id = ?")) {
+                    ps.setString(1, configId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return BagAdd.missing();
+                        }
+                        itemType = rs.getInt(1);
+                        view = rs.getInt(2);
+                    }
+                }
+                int slot = freeBagSlot(conn, roleId, view);
+                if (slot <= 0) {
+                    return BagAdd.full();
+                }
+                insertBagRow(conn, roleId, slot, configId, itemType, amount, view);
+                conn.commit();
+                return new BagAdd(slot, view, null);
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            log.warn("addBagItem failed role={} config={}: {}", roleId, configId, e.getMessage());
+            return BagAdd.missing();
+        }
+    }
+
+    /** 目标页第一个空格（1..90；无空位返回 0）。 */
+    private static int freeBagSlot(Connection conn, long roleId, int view) throws SQLException {
+        boolean[] used = new boolean[91];
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT slot FROM role_bag_items WHERE role_id = ? AND view_id = ?")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, view);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    int s = rs.getInt(1);
+                    if (s > 0 && s < used.length) {
+                        used[s] = true;
+                    }
+                }
+            }
+        }
+        for (int i = 1; i < used.length; i++) {
+            if (!used[i]) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
     /** 交换装备栏两件（换装时旧装备让位）。 */
     public boolean swapEquipSlot(long roleId, int equipSlot, int bagSlotForOld) {
         try (Connection conn = dataSource.getConnection()) {

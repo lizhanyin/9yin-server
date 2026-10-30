@@ -1041,3 +1041,14 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
 - **留待后续**：邀请/接受/踢人跨会话流（双会话探针 + Invite/AcceptInvite/Kick
   op 编号）；TeamCaptain(275) 推送（编码待钉）；311/314-319/326/388/442-444
   逐个行为；companion 伙伴队（313/316/445 名字 op）。
+- **邀请流补充（同日追加探测）**：反汇编钉死 **443/444 = Invite**——块内
+  `team.Manager.TeamOf` 前置（须已在队）→ **尾值反向扫描 type 6/7 字符串** +
+  `strings.TrimSpace` → `team.Manager.Invite`（挂起 offer，teamOffers 表）。
+  双会话探针（A 建队→A `[443/444, 名字]` 窄/宽串两轮→B 轮询 11 个 op）实测：
+  **invite 不向 B 推送任何帧、B 无 op 可入队**（A 每次操作都收到自身视图
+  resync `0x15+0x18×成员+0x10`——即 nativeTeamDataInit，拒绝路径也触发）。
+  判断：offer 送达依赖真实客户端会话的 team.Manager Sender 注册/
+  nativeTeamDataChange 通道，探针形态无法触发；接受/入队 op 待真机连客户端
+  抓包钉死（候选 314/316/317/318/319/326/388/442 + AcceptInvite/JoinTeam
+  两条调用路径）。Java 侧 443/444 已按"尾值扫描+TrimSpace→挂起日志"对齐，
+  全量 180 绿不变。

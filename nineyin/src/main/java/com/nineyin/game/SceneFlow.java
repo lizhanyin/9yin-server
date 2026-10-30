@@ -1367,7 +1367,25 @@ public final class SceneFlow {
                 log.info("team op {} name={} pending (companion team ops unpinned)",
                         op, msg.val(1).str);
             }
-            // 其余 op（311/314/315/317/318/319/326/388/442/443/444）：校验层 + 待钉死
+            // 443/444 = Invite（§3.24 反汇编：TeamOf 前置 + 尾值扫描 type6/7 + TrimSpace
+            // → team.Manager.Invite 挂起 offer；offer 送达与接受 op 待真实客户端钉死）
+            case 443, 444 -> {
+                String invitee = null;
+                for (int i = msg.size() - 1; i >= 1; i--) {
+                    CustomMsg.Val v = msg.val(i);
+                    if (v != null && (v.type == CustomMsg.TYPE_STRING
+                            || v.type == CustomMsg.TYPE_WIDE_STRING)) {
+                        invitee = v.str == null ? "" : v.str.trim();
+                        break;
+                    }
+                }
+                if (invitee == null || invitee.isEmpty()) {
+                    log.info("team invite requires a name value vals={}", summarizeVals(msg));
+                    return;
+                }
+                log.info("team invite name={} offer pending (delivery/accept unpinned)", invitee);
+            }
+            // 其余 op（311/314/315/317/318/319/326/388/442）：校验层 + 待钉死
             default -> log.info("team op {} vals={} (per-op behavior pending pinning)",
                     op, summarizeVals(msg));
         }

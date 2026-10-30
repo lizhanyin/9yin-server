@@ -840,8 +840,10 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
 - **购买成功响应（§3.13 待办闭环：库存刷新帧不存在）**：无商店视图刷新（静态库存
   线上二次确认）、无扣款 0x10；仅 **0x19+0x18 ×2 对**（背包页 view=2 + 镜像页
   view=174，同槽移除重加）+ **`0x1E-05` 获得物品提示 `[377, 2, 图标id, 物品名
-  (GBK 串), 数量]`**（实测 `[377, 2, 9645, "阎王币", 1]`）。首购含授予的道具会追加
-  副作用帧（View 43 内功行 ng_wd_001 + 1240B/174 属性全量 0x10 批）。
+  (GBK 串), 数量]`**（实测 `[377, 2, 9645, "阎王币", 1]`）。（~~首购追加 View 43
+  内功行副作用帧~~——**第二十轮更正**：该帧实为 ready 引导的迟到帧
+  `granted View=43 inner-power and View=40 花无缺七 after explicit ClientReady`
+  恰好落进购买窗口，与购买无关；购买响应即上述两类帧。）
 - **Java 修复（真机购买此前必被拒）**：`handleShopBuy` 双布局——真机 5 值优先
   （shopId 消息内权威解析：repository 命中用之，未命中且与会话快照不符则拒绝）、
   旧 4 值容错；`SceneFlow.setShopRepository` 由 NineyinServer 装配。
@@ -867,3 +869,21 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   改为 **6 属性全量三槽**（ConfigID/Amount/107/108/109/MaxAmount，此前 capital2
   路由到 108 差一）。SelectFlowTest +1（`shopOpenReferenceFrameSequence`：
   0x16→0x15 顺序、行 6 属性、双 capital 价格槽位断言），全量 161 绿。
+
+### 3.21 仓库线关闭与使用链布局轮（2026-10-30 第二十一轮）
+
+- **仓库（View 4）线关闭**：参考 exe 全字符串**零处"仓库"**、真实 npcconfig（city_commonnpc/
+  battlenpc 均查）**无 DepotID 列**（`DepotID` 串只是客户端 schema 反射字段名）——
+  参考服没有仓库服务，func=807000000 无处触发，无可探针。Java 的 `openDepot`/
+  FUNC_TALK_DEPOT 在真实数据下为不可达超集代码，保留不动。
+- **msgId 31 使用链布局钉死**：**恰好 4 值 `[31, view(int), slot(int), count(int≥1)]`**——
+  3 值/5 值均 `reject malformed native item use values=…`，第 4 值 0 同拒（计数语义）。
+  Java §3.12 的"至少 4 值"与实测吻合（Java 宽容 ≥5，保留无害）。
+- **阎王币（item_khd_001，ToolItem ItemType=60/LogicPack=2）使用行为**：合法 4 值
+  使用被**静默接受**——无响应帧、无服务端日志、无背包扣减帧；下会话背包 view=2
+  已无该物品（疑似静默消耗）。货币型道具在参考服的使用即空操作。
+- **§3.19 更正**（View 43/1240B 帧归属）：所谓"首购副作用帧"实为 **ready 引导的
+  迟到帧**（`granted View=43 inner-power and View=40 花无缺七 after explicit
+  ClientReady`，含 0x1E-04 reset×N、1240B/1314B 全量属性批、BufferListStr 内功
+  buff 行）——quiet 退出机制下 ready 尾部帧会落入后续窗口，分析窗口帧时需按时间
+  归属核对服务端日志。

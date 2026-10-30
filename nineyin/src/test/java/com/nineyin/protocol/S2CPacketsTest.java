@@ -136,15 +136,42 @@ class S2CPacketsTest {
     @Test
     void recordTableEmptyLayout() {
         byte[] msg = S2CPackets.recordTableEmpty();
-        assertEquals(116, msg.length); // 1 + 2 + Σ(name+1+2+ncols)：15+20+23+18+18+19+3
         assertEquals(0x0A, msg[0]);
-        assertEquals(6, msg[1]); // 表数 u16 LE
+        assertEquals(40, msg[1]); // 参考服 0x0A 声明 40 张记录表（§3.22）
         // 第一个表名 QingGongRec
         assertArrayEquals("QingGongRec".getBytes(StandardCharsets.US_ASCII),
                 java.util.Arrays.copyOfRange(msg, 3, 14));
         assertEquals(0, msg[14]); // NUL
         assertEquals(1, msg[15]); // 列数 u16 LE
         assertEquals(RecordId.COLUMN_STRING, msg[17]);
+        // 通用回读：逐表解析须与 SCHEMAS 完全一致并恰好消费到帧尾
+        int count = leU16(msg, 1);
+        int pos = 3;
+        for (int i = 0; i < count; i++) {
+            int end = pos;
+            while (msg[end] != 0) {
+                end++;
+            }
+            assertEquals(RecordId.SCHEMAS[i].name(),
+                    new String(msg, pos, end - pos, StandardCharsets.US_ASCII));
+            pos = end + 1;
+            int ncols = leU16(msg, pos);
+            assertEquals(RecordId.SCHEMAS[i].columnTypes().length, ncols);
+            pos += 2;
+            for (int c = 0; c < ncols; c++) {
+                assertEquals(RecordId.SCHEMAS[i].columnTypes()[c], msg[pos + c]);
+            }
+            pos += ncols;
+        }
+        assertEquals(msg.length, pos);
+        // 抽查参考服关键表：team_rec(34) 首列 oid、Time_Limit_Form_Rec(8) 8 列
+        assertEquals("team_rec", RecordId.SCHEMAS[34].name());
+        assertEquals(RecordId.COLUMN_OID, RecordId.SCHEMAS[34].columnTypes()[0]);
+        assertEquals(8, RecordId.SCHEMAS[8].columnTypes().length);
+    }
+
+    private static int leU16(byte[] msg, int off) {
+        return (msg[off] & 0xFF) | ((msg[off + 1] & 0xFF) << 8);
     }
 
     private static int leU32(byte[] msg, int off) {

@@ -290,7 +290,8 @@ public final class LoginFlow {
         fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, s.actor != null ? s.actor.logicState : 0));
         // 轻功：QingGongRec 记录行 + View 46（18 分类 + 52 技能实例）
         CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
-        // 九阴志当前阶段（与全服广播同帧，登录补发保证晚接入一致）
+        // 九阴志 gamestep 通告 + 当前阶段（参考 ready 首两帧 [414,'gamestep',stage,1] → [419,stage]）
+        fx.send(CustomPackets.ninJiuZhiGameStep(ninjiuzhi.stage()));
         fx.send(CustomPackets.ninJiuZhiStage(ninjiuzhi.stage()));
         // 主界面/内功面板前置任务（Task_Accepted + Task_Completed 位图，九阴志 tasks 门控）
         CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames(ninjiuzhi::taskOpen));
@@ -307,9 +308,13 @@ public final class LoginFlow {
         } else {
             CustomPackets.sendAll(fx, skillFrames);
         }
+        // 首登出生特效（参考 ready 尾 [140,'1-1','born']，位于快捷键记录行之前）
+        fx.send(CustomPackets.firstLoginBornEffect(BootstrapPackets.BORN_EFFECT_TARGET));
         // 快捷栏：库里有角色存档的用真实栏位（同步进权威行），否则起始集
         sendRoleShortcuts(fx, s);
-        fx.send(CustomPackets.skillActionSwitch());
+        // 内置默认快捷键方案 ×2 + VIP/系统开关 reset ×11（参考 ready 尾帧序；开关表含技能动作开关 1223）
+        CustomPackets.sendAll(fx, BootstrapPackets.shortcutSchemeFrames());
+        CustomPackets.sendAll(fx, CustomPackets.enableVipSwitchFrames());
         fx.send(S2CPackets.timeSync(0, 0));
         // 权威状态全量同步（血蓝/轻功点/怒气/碎银/重力速度/内功面板字段）
         if (s.actor != null) {

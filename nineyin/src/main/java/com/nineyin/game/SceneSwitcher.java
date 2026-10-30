@@ -118,7 +118,8 @@ public final class SceneSwitcher {
                 fx.send(S2CPackets.shortcutAdd(sc.index(), sc.kind(), sc.id()));
             }
         }
-        fx.send(CustomPackets.skillActionSwitch());
+        CustomPackets.sendAll(fx, CustomPackets.enableVipSwitchFrames());
+        fx.send(CustomPackets.ninJiuZhiGameStep(ninjiuzhi.stage()));
         fx.send(CustomPackets.ninJiuZhiStage(ninjiuzhi.stage()));
         st.qinggongGranted = true;
         st.progressGranted = true;

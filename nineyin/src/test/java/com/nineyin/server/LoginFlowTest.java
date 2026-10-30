@@ -156,7 +156,7 @@ class LoginFlowTest {
         assertEquals(2424, (enter.get(0)[1] & 0xFF) | ((enter.get(0)[2] & 0xFF) << 8),
                 "official property table entry count");
         assertEquals(0x0A, op(enter.get(1)));
-        assertEquals(116, enter.get(1).length);
+        assertEquals(819, enter.get(1).length, "40-table record schema (§3.22)");
         assertEquals(0x0B, op(enter.get(23)));
         byte[] entryScene = enter.get(23);
         // 属性 1439 ConfigID 从头 15 字节之后：u16 索引 + u32 长度 + 串
@@ -190,10 +190,11 @@ class LoginFlowTest {
         assertEquals(2, timeSync);
         assertTrue(recordRows >= 1600, "expected 1600+ record rows, got " + recordRows);
         // 视图：轻功 View46 + 内功 View43 + 技能 View40（0x18 = 70 轻功 + 6 内功 + 23 技能）
-        // + 开关(0x1E) = 414 技能开关 + 419 九阴志阶段
         assertEquals(3, ready.stream().filter(f -> op(f) == 0x15).count());
         assertEquals(99, ready.stream().filter(f -> op(f) == 0x18).count());
-        assertEquals(2, ready.stream().filter(f -> op(f) == 0x1E).count());
+        // + 0x1E = 16 帧：gamestep(414) + 419 阶段 + 140 出生特效
+        //   + 195 默认方案 ×2 + 414 开关 reset ×11（§3.22 ready 尾帧族）
+        assertEquals(16, ready.stream().filter(f -> op(f) == 0x1E).count());
     }
 
     @Test

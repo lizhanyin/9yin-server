@@ -57,7 +57,7 @@
 | 0x11~0x14 | ServerRecord*（增删行/网格/清空） | `serverRecordAddCellRows/DelRow/Clear/CooldownRow/...` 十余变体；踢馆计时 `0x11 target=2 Time_Limit_Form_Rec` | ✅ 0x11/0x12；🟨 0x13/0x14 暂无使用场景 |
 | 0x15~0x19 | ServerView*（AOI 视图） | `serverAllDest`、`encodePresenceWaypointSelf`、`scene viewport delta adds=%d removes=%d` | ✅ 0x18 ViewAdd / 0x19 ViewRemove（`InventoryPackets`） |
 | 0x1F/0x20 | ServerLocation/Moving | `serverLocation`（`replayed ServerLocation for %d scene objects`）、`serverMoving` | ✅ |
-| 0x1E/0x27（S2C 方向） | 定向 custom 帧 | `write qinggong 0x1E-02 idx=%d`、`0x1E-04 idx=205`、`0x1E-06 idx=20`、`0x1E-07 idx=337`（轻功槽位走 0x1E 子命令） | ✅ `CustomPackets`/轻功槽位 |
+| 0x1E/0x27（S2C 方向） | 定向 custom 帧 | `write qinggong 0x1E-02 idx=%d`、`0x1E-04 idx=205`、`0x1E-06 idx=20`、`0x1E-07 idx=337`（轻功走 0x1E 子命令；**第二十二轮勘误：此处 "0x1E-04" 指 S2C msgId=4 的轻功/UI 帧，与 ready 尾 msgId 414 的 'reset' 子命令是两回事，完整 S2C msgId 语义见 §3.22**） | ✅ `CustomPackets`/轻功槽位 |
 | custom 通用 | `serverCustomIntMessage/StringMessage` + Modern/WithOpcode 变体 | `encodeServerCustomValuesWithOpcode` | ✅ `CustomPackets` |
 
 ## 2. CustomSend msgId 子协议（0x0A/0x1E/0x27 载荷）
@@ -83,7 +83,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 145 | 副本奖励 View80 拾取 | — | `reject 145 no clone awards view` / `reject 145 bad index %s`、`pickup clone award slot=%d` | 🟨 第四轮：无 View80 奖励视图拒绝 |
 | 150/161 | 经脉 JingMai | `[subcommand(int), ...]` | 反汇编：150/161 → handleJingMaiCustom；`jingmai custom requires an int subcommand`、`jingmai toggle active=%v name=%q role=%d` | 🟨 第六轮：subcommand 校验（经脉表未接） |
 | 180 | 卡片（activity card） | — | `handle activity card 180` | 🟨 第三轮：sub_command 路由桩（USE/USESKILL/SAVE 子编号待钉死） |
-| 195 | 快捷键方案保存 | `[sub(int)]` | 反汇编：195 → handleSaveShortcutScheme；`save shortcut scheme sub=%d len=%d` / `unknown sub=%d` | 🟨 第六轮：sub 校验（方案存储未接） |
+| 195 | 快捷键方案保存 | `[sub(int)]` | 反汇编：195 → handleSaveShortcutScheme；`save shortcut scheme sub=%d len=%d` / `unknown sub=%d` | 🟨 第六轮：sub 校验（方案存储未接）；**第二十二轮：ready 尾 S2C 默认方案 ×2 已对齐（§3.22）** |
 | 200/201 | 快捷键 设置/删除 | `[idx, kind(str), id(str)]` / `[idx]` | `shortcut expects int index and two strings`；同 index 先 0x12 删旧行 | ✅ |
 | 209 | 任务放弃 | — | `handle task 209: %v`、`task 209 ignored: no active task`；**反汇编互证：209 → handleTaskGiveUpCustom（`task panel gave up task=%d`）** | 🟨 第三轮：无活跃任务忽略（日志对齐） |
 | 211 | 技能释放 | `[skillId(str)]` | `reject skill before player spawn id=%s`、`reject unlearned installed skill id=%s` | ✅（学习表+编译目录+计费/CD/动作/区域结算，见 §3.4） |
@@ -883,7 +883,76 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   使用被**静默接受**——无响应帧、无服务端日志、无背包扣减帧；下会话背包 view=2
   已无该物品（疑似静默消耗）。货币型道具在参考服的使用即空操作。
 - **§3.19 更正**（View 43/1240B 帧归属）：所谓"首购副作用帧"实为 **ready 引导的
-  迟到帧**（`granted View=43 inner-power and View=40 花无缺七 after explicit
-  ClientReady`，含 0x1E-04 reset×N、1240B/1314B 全量属性批、BufferListStr 内功
+  迟到帧**（`granted View=43 inner-power and View=40 花无缺七 after explicit ClientReady`，
+  含 ~~0x1E-04 reset×N~~（**第二十二轮勘误：实为 msgId 414 的 'reset' 开关帧**）、1240B/1314B 全量属性批、BufferListStr 内功
   buff 行）——quiet 退出机制下 ready 尾部帧会落入后续窗口，分析窗口帧时需按时间
-  归属核对服务端日志。
+  归属核对服务端日志。完整清单见 §3.22。
+
+### 3.22 ready 迟到帧家族与 S2C 0x1E msgId 语义轮（2026-10-30 第二十二轮）
+
+对商弘/新号两份 38k 帧抓包的 ready 阶段（#21388-40788）逐帧解码 + exe 字符串/
+反汇编/二进制常量三路互证，迟到帧家族全部钉死，"reset 族"语义闭环。
+
+- **勘误**：§1.2/§3.21 旧记 "0x1E-04 reset" 混淆了两件事——exe 串
+  `write qinggong 0x1E-04 idx=205` 的 "0x1E-04" 是 **S2C custom msgId=4**（轻功/UI 族，
+  与 msg 5/6/7/8 同族：click 阶段实测 `[4]`=关菜单、`[5,'task_khd_146']`=任务菜单、
+  `[6,int,'ui_buykhd_146']`=UI 表单、`[8]`=开店关菜单，即 Java 已有的 cinematic 系）；
+  而 ready 尾的 reset 帧真身是 **msgId 414 的字符串子命令** `[414,'reset',开关id,1]`。
+- **414 家族语义**：`'gamestep'`（九阴志阶段通告，`encode gamestep` +
+  `main.ninJiuZhiGameStepFrames`，值=阶段 0..9 与 419 同源，ready 首帧
+  `[414,'gamestep',6,1]`→`[419,6]` 成对出现）与 `'reset'`（**VIP/系统开关置位**，
+  writer=`main.enableVipSwitches`——反汇编 0x9a8e55 起的 movabs 打包立即数
+  `0x46_0000002a`(42,70)、`0xb2d_00000034`(52,2861)、`0xb4c_000000e6`(230,2892)、
+  `0x3fd_00000b3e`(1021,2878) 与抓包 11 帧完全对应；`restore vip/tersure switches`、
+  重铸 `414 switch-reset` 同族互证）。开关表（两账号恒定）：
+  **41/42/52/53/70/230/1021/1223/2861/2878/2892**，值恒 1；发送顺序为 Go map 序
+  （1223,53,41,42,70,52,2861,230,2892,2878,1021），客户端无序敏感。
+  **1223 即 Java 既有 `skillActionSwitch` 单点发现的"技能动作开关"**，本轮归位。
+- **ready 尾部完整帧序**（#40486-40788，两账号结构一致）：
+
+  | 帧 | 语义 | 证据 |
+  |---|---|---|
+  | 0x18 View40 尾行（…obj=17687） | 技能目录 ready 重推尾部 | §3.16 |
+  | 0x1E `[435,8,1]/[435,8,2]/[435,6,0,…]/[435,4,1,…]/[435,4,2,201,203…]/[435,5,3,0,0,1…]` | **faculty/修炼进度恢复批**（215 PlayerProgress 同源 `encodeFacultyMessage`；sub6 含哈希类大数） | 反汇编调用链 |
+  | 0x14 清 + 0x11×11 记录 26/27（SecondWearWuJiRec/WuJiActivateRec） | 无极二次穿戴/激活行 | 40 表 schema |
+  | 0x10 1315B（174 属性）×2 | 全量属性批（首尾各一次） | `encode player ready vital sync` |
+  | 0x15 View45 cap35 + 35 行 | **经脉视图**（jm_shoushaoyin/shoujueyin/shoutaiyin… 35 条，5 属性/行） | 行内容实测 |
+  | 0x11 记录 12/13（active_jingmai/PepareJingMai）28 对交错 | 经脉激活/预备行 | 40 表 schema |
+  | 0x1E `[140,'1-1','born']` | **首登出生特效** | `sent first-login born effect route=140 target=%s effect=born` + `main.firstLoginBornEffectFrame` |
+  | 0x11 记录 4（shortcut_rec）×117 | 快捷键行 | `grantShortcutRows`/`rebuild add shortcut index` |
+  | 0x10 677B×3（属性 326/327/328）+ 0x1E `[195,1,scheme]/[195,2,scheme]` | **快捷键方案双通道推送**：串内容 = exe 内嵌默认方案（658 字符，两套仅 3-6 槽顺序不同，Java 常量已逐字节核对）；195 为 C2S 保存方案的 S2C 回推 | exe 字符串常量 + 抓包逐字节一致 |
+  | 0x1E `[414,'reset',id,1]`×11 | VIP/系统开关置位 | 见上 |
+  | 0x1E `[52,0,0]` | **未钉死**（无日志串；出现 2 次：ready 首部任务追踪行前 + 尾部开关帧后） | — |
+  | 0x15 View80 cap16 + 1 行 + 0x1E `[238,1]` | **掉落箱**：行=掉落物品（ConfigID=yaopin_00100×3 + uid 串），238=开启通告（`main.encodeDropOpenFrames` 反汇编 `mov $0xee` + `serverCustomIntMessageWithOpcode(0x1e,0xee)`） | 实测 |
+
+  ready 首部另有：`[414,'gamestep',6,1]`→`[419,6]`（#21388-89，早于一切视图洪泛）、
+  `[52,0,0]`、`[209,9,taskId]`×16（**任务追踪窗行**，`initialized native task-trace
+  form via custom message=209` + `main.sceneTaskTraceBootstrapFrame`；taskId 为
+  227/770/786/789/790/1525/1537/7009/51135/55586/61019/74422/74449/74451/78317/82467）。
+  choose 阶段仅存档角色有 `[107,捏脸二进制串]`（`pushCustomizingRaw` /
+  `sent customizing restore role=%d raw_len=%d mode=%d`）。探针响应另有
+  `[24,'obj(1,1)',17,13/14]`（坐下）与 `[24,'obj(1,1)',7,0]`（起身）——
+  打坐动作通告（`encode sitcross state`），与 0x10 LogicState 并发。
+- **0x0A 记录表 schema 完整解析**（841B 帧恰好消费完毕）：Go 声明 **40 张表**
+  （索引即 0x11 帧的表索引），0-5 与 Java 同名，6=ForceRec、7=TaskTimeLimitRec、
+  8=Time_Limit_Form_Rec、9/10=Card/UseCard、11=title、12/13=active_jingmai/PepareJingMai、
+  14=NewRide、15=vip_info、16=Weather、17=RecvLetter（15 列）、18/19=rec_box_event(+prize)、
+  20=Task_Record（15 列）、21=job、22=CardSkill、23=binglu_rank、24=FashionSuit、
+  25=blend_collect、26/27=SecondWearWuJi/WuJiActivate、28/29=Prop/SkillModifyPack、
+  30/31=RandomProp/RandomSkill（含 f64 列）、32=TempTersure、33=clone_rec_save、
+  **34=team_rec（13 列，首列 oid）**、35-38=Origin 四表、39=Repute_Record。
+  列型差异（Go vs Java 0-5）：ActiveQGSkillRec Go=[7,1]、Task_Accepted Go=**28 列**、
+  cooldown_rec Go 末列=2（i16）——Java 行推送按自家简化 schema 保持自洽，6-39 按 Go 原始列型接入。
+- **Java 落地**：①`CustomPackets` 新增 `ninJiuZhiGameStep`/`firstLoginBornEffect`/
+  `shortcutScheme`/`enableVipSwitchFrames`（11 开关表常量）；②`BootstrapPackets`
+  内置默认方案 ×2（658 字符逐字节对齐 exe）+ `BORN_EFFECT_TARGET="1-1"`；
+  ③`RecordId` 扩展至 40 表（6-39 Go 列型，含 u8/i16/f64/oid 新列型常量）；
+  ④`LoginFlow.sendUiBootstrap`：gamestep→419 成对、born 特效（快捷键行前）、
+  方案 ×2 + 开关 ×11（替代原单 1223 帧）；`SceneSwitcher` 重进链同步；
+  ⑤测试 +4（BootstrapTailFramesTest）+ recordTableEmpty/LoginFlowTest 断言更新
+  （0x0A 819B/40 表、ready 0x1E 计数 16），全量 **165 绿**。
+- **留待后续**：`[52,0,0]` writer 未钉死；209 任务追踪行（Java 无任务系统）；
+  435 faculty 恢复批格式；View45 经脉 35 行 + 记录 12/13（经脉系统未接）；
+  View80/[238] 掉落箱（Java 无 DropBox 实体）；1315B 174 属性全量批（Java 0x0D
+  已覆盖主体）；0x10 属性 326/327/328 方案串（Go 表专用编号，Java 官服表体系
+  不同，需先在 Java 表定位同名属性再推）。

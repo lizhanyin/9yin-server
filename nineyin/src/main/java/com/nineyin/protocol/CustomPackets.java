@@ -1,5 +1,6 @@
 package com.nineyin.protocol;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -59,9 +60,41 @@ public final class CustomPackets {
         w.u8(2).i32(v);
     }
 
-    /** 服务器→客户端技能动作开关（msg 414：reset / switch 1223 / 1）。 */
+    /** 服务器→客户端技能动作开关（msg 414：reset / switch 1223 / 1）。1223 是下方开关表的成员之一。 */
     public static byte[] skillActionSwitch() {
         return intMessage(414, "reset", 1223, 1);
+    }
+
+    /**
+     * ready 尾 VIP/系统开关 reset 帧（msg 414 "reset"）。开关表为参考服
+     * enableVipSwitches 的硬编码清单（实机两账号 ready 尾各 11 帧、值恒 1），
+     * 与 "restore vip/tersure switches" / "414 switch-reset"（重铸开关）同族。
+     */
+    public static final int[] ENABLE_VIP_SWITCHES = {
+            41, 42, 52, 53, 70, 230, 1021, 1223, 2861, 2878, 2892
+    };
+
+    public static List<byte[]> enableVipSwitchFrames() {
+        List<byte[]> frames = new ArrayList<>(ENABLE_VIP_SWITCHES.length);
+        for (int id : ENABLE_VIP_SWITCHES) {
+            frames.add(intMessage(414, "reset", id, 1));
+        }
+        return frames;
+    }
+
+    /** 九阴志 gamestep 通告（msg 414 'gamestep'：阶段 0..9 + 1；紧邻 419 阶段帧之前下发）。 */
+    public static byte[] ninJiuZhiGameStep(int stage) {
+        return intMessage(414, "gamestep", stage, 1);
+    }
+
+    /** 首登出生特效（msg 140：target="oid-owner" + "born"，见 firstLoginBornEffectFrame）。 */
+    public static byte[] firstLoginBornEffect(String target) {
+        return intMessage(140, target, "born");
+    }
+
+    /** 快捷键方案推送（msg 195：方案号 + "槽,项;…" 串；ready 尾推内置默认方案 1/2）。 */
+    public static byte[] shortcutScheme(int sub, String scheme) {
+        return intMessage(195, sub, scheme);
     }
 
     /**

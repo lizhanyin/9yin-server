@@ -513,7 +513,8 @@ public final class SceneFlow {
             // 骑乘技能（反汇编：961 → handleRideSkillUse）
             case 961 -> handleRideSkillUse(fx, session, msg);
             // ---- 2026-10-30 custom 第四轮：§3.5 候补清单编号钉死批 ----
-            // 时装套装（子消息按类型分流：str→invalid sub-message / int→unhandled sub）
+            // 时装套装（第八轮链追踪：19 = 使用物品广义链 FashionSuit→Yufeng→GiftBox→
+            // EquipItemUse（右键穿）→WuJiBook，bool 链式认领，见 handleFashionSuit）
             case 19 -> handleFashionSuit(fx, session, msg);
             // VIP（头部校验：无命令/命令非整数；价格与购买的 cmd 编号待钉死）
             case 301 -> handleVip(fx, session, msg);
@@ -1069,8 +1070,10 @@ public final class SceneFlow {
     }
 
     /**
-     * 19 时装套装（参考服：`fashion_suit has no sub-message` / `invalid sub-message %s` /
-     * `unhandled sub=%d args=[%s]`；wear/unwear/buy 的子编号与 FashionSuitRec 推送待钉死）。
+     * 19 使用物品广义链（第八轮反汇编链追踪钉死）：FashionSuit → YufengItemUse →
+     * GiftBoxItemUse → EquipItemUseCustom（右键穿）→ WuJiBookUse 链式认领——
+     * 各 handler 返回 bool，未认领落到下一个（无独立 msgId，`case 19` 一个块全包）。
+     * Java 无各物品 store：头部校验对齐后按链序记日志。
      */
     private void handleFashionSuit(FxSession fx, LoginSession session, CustomMsg msg) {
         CustomMsg.Val sub = msg.val(1);
@@ -1084,6 +1087,10 @@ public final class SceneFlow {
             return;
         }
         log.info("fashion_suit invalid sub-message {}", sub);
+        // 链后续段（御风道具/礼盒/右键穿/无极书）均未实装；右键穿的拒绝文本对齐：
+        // `%s: right-click equip %s reject: %v`（无装备上下文时按 reject 分支记录）
+        log.info("use-item chain (19) remainder unclaimed: yufeng/giftbox/right-click-equip/wuji "
+                + "(stores not implemented; vals={})", summarizeVals(msg));
     }
 
     /**

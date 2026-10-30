@@ -74,7 +74,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 |---|---|---|---|---|
 | 1 | 聊天 | `[channel, ...]` | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)` | 🟨 第六轮：出生校验+日志（聊天广播未接） |
 | 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志 |
-| 19 | 时装套装 fashion_suit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` / `invalid sub-message %s` / `unhandled sub=%d args=[%s]`；wear/unwear/buy 与 FashionSuitRec 推送 | 🟨 第四轮：子消息类型分流 |
+| 19 | 使用物品广义链（FashionSuit 打头） | sub（str→invalid / int→unhandled） | **第八轮链追踪：`case 19` 一个块内 FashionSuit→YufengItemUse→GiftBoxItemUse→EquipItemUse（右键穿）→WuJiBookUse 链式认领（各 handler 返回 bool，未认领落下一个）**；`fashion_suit has no sub-message` 等三分支 | 🟨 第八轮：链头校验+链尾 pending 日志 |
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
@@ -169,7 +169,8 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 
 装备系统仍缺（对照 exe）：~~装备属性加成（equipStrAdd/equipPhyDef 等未接
 CombatStats）~~（**第五轮已闭合**，见 §3.7）、
-右键使用穿戴（EquipItemUse，编号仍未定位）/一键穿（~~编号未钉死~~ **第七轮钉死
+~~右键使用穿戴（EquipItemUse，编号仍未定位）~~（**第八轮定位：无独立编号，是
+msgId 19 使用物品链的成员**，见 §3.10）/一键穿（~~编号未钉死~~ **第七轮钉死
 886~889**，见 §3.9）、时装外观刷新（FashionCoat=1352 系）、重铸 WeaponRecast
 全套（~~编号未钉死~~ **第七轮钉死总入口 938**，Preview/Lock/Unlock/Sure 为其子命令）。
 
@@ -386,6 +387,27 @@ Java 侧：`dispatchCustom` 新增 2/15/31/54/70/84/112/107/145/187/243/266/295/
 Clone 族保留精确拒绝文本；70 升级带 stock 校验串引用）；517/868/819 的注释
 按"非 Go case"事实修正（case 保留，客户端实测会发）。
 
+### 3.10 handler 链追踪：msgId 19 = 使用物品广义链（2026-10-30 第八轮）
+
+第七轮"仍未定位"的谜底：**EquipItemUse 等没有独立 case**。反汇编链追踪发现
+Go 把一批"使用类" handler 链在同一个 case 块里，每个返回 bool，未认领落到
+下一个（编译形态：`call X; test %al,%al; jne <下一 call 之后>`）：
+
+```
+case 19: FashionSuitCustom → YufengItemUse → GiftBoxItemUse
+              → EquipItemUseCustom（右键穿）→ WuJiBookUse → …（链尾）
+```
+
+- 提取方法：对区域内每对相邻 handler 调用 (X, Y)，若 X 与 Y 之间存在
+  `jne T` 且 `T == Y 的 call 指令的下一条地址`，则 X→Y 是链边；并查集取链头。
+- **意义**：右键使用穿戴（EquipItemUse，§3.3 装备缺口项）没有自己的 msgId——
+  客户端发 19（广义"使用"），服务器按物品类型链式认领。Java 侧 19 的 handler
+  已重写为链形（头部 FashionSuit 三分支校验 + 链尾 unclaimed 日志）。
+- **仍未定位**（链外孤岛，守卫在更深处的装配段）：UseItemCustom、CardSkillCast、
+  BasicQingGong 三段/BigQingGongRelease/GJLandingDetect（疑挂 216 子命令）、
+  WeaponRecast 四子命令（疑 938 内部）、MountSummon、NinJiuZhi、ItemBuffUse、
+  FightwordDebug、64（商店打开）。
+
 ## 4. 后续继续挖掘的方法
 
 exe 未剥符号，`strings + grep` 即可继续钉死协议细节（在 Git Bash 下）：
@@ -560,4 +582,15 @@ player progress request before scene player exists      ← 215 修炼进度（�
 set operate mode: invalid mode %d                       ← 99/223 操作模式（Go case=99）
 %s: task panel gave up task=%d                          ← 209 = TaskGiveUp（反汇编互证）
 %s: unhandled custom msg_id=%d args=[%s] @ rdata 0xb84dcf   ← custom 树定位锚点
+```
+
+### 5.4 第八轮新增摘录（handler 链追踪，2026-10-30）
+
+```
+call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领的编译形态
+%s: right-click equip %s reject: %v                        ← 19 链 EquipItemUse 段
+%s: right-click equip %s bound (first wear)                ← 右键穿首次绑定
+%s: wuji book used config=%s wuji=%d new=%v role=%d        ← 19 链 WuJiBook 段
+%s: gift box %s claimed prizes=%d                          ← 19 链 GiftBox 段
+%s: yufeng item use blocked while mounted                  ← 19 链 Yufeng 段
 ```

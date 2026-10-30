@@ -236,6 +236,8 @@ public final class SelectFlow {
             }
             items.add(item);
         }
+        // 0x16 视图清除 → 0x15 四头属性（101=ShopID/102=页大小/103=页数/104=类型）——§3.19 实机帧序
+        fx.send(SkillPackets.viewClear(SkillPackets.VIEW_SHOP));
         com.nineyin.protocol.PacketWriter create = SkillPackets.createViewHeader(SkillPackets.VIEW_SHOP,
                         100, 4)
                 .u16(PropertyId.SHOP_ID).string(shopId)
@@ -252,19 +254,18 @@ public final class SelectFlow {
             int capital = colInt(item, 2, 2);
             int price = colInt(item, 3, 0);
             int objectIndex = (page - 1) * SHOP_PAGE_SIZE + position + 1;
-            // 官服属性表无 PriceGold/Silver/Card 名——Go 用自协商表索引 107-109 下发价格，
-            // 按挂单 capital 选对应货币位（2=碎银→PriceSilver；3=兑换→PriceCard；其余→Gold 位）
-            int priceProp = switch (capital) {
-                case 2 -> PRICE_SILVER;
-                case 3 -> PRICE_CARD;
-                default -> PRICE_GOLD;
-            };
+            // §3.19 实机钉死：三价格槽全量下发（107/108/109=SellPrice0/1/2 零填充），
+            // 价格落 107+capital（capital1→108、capital2→109；capital≥2 夹 2，与购买侧
+            // "3=兑换同走碎银"一致）；110=MaxAmount 恒 99（单次购买上限）
+            int slot = Math.min(Math.max(capital, 0), 2);
             com.nineyin.protocol.PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_SHOP,
-                            objectIndex, 4)
+                            objectIndex, 6)
                     .u16(PropertyId.CONFIG_ID).string(colStr(item, 0))
                     .u16(PropertyId.AMOUNT).i32(amount)
-                    .u16(PropertyId.MAX_AMOUNT).i32(99)
-                    .u16(priceProp).i32(price);
+                    .u16(PRICE_GOLD).i32(slot == 0 ? price : 0)
+                    .u16(PRICE_SILVER).i32(slot == 1 ? price : 0)
+                    .u16(PRICE_CARD).i32(slot == 2 ? price : 0)
+                    .u16(PropertyId.MAX_AMOUNT).i32(99);
             fx.send(w.toByteArray());
             if (index >= 100) {
                 break;
@@ -274,7 +275,7 @@ public final class SelectFlow {
                 shopId, Math.min(items.size(), 100), pageCount, shop.type());
     }
 
-    /** 商店视图价格属性（Go 自协商索引：107=Gold / 108=Silver / 109=Card）。 */
+    /** 商店视图价格槽（Go 表段：107=SellPrice0 / 108=SellPrice1 / 109=SellPrice2，按 capital 直映射）。 */
     static final int PRICE_GOLD = 107;
     static final int PRICE_SILVER = 108;
     static final int PRICE_CARD = 109;

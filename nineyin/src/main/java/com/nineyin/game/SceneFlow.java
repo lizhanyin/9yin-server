@@ -88,6 +88,8 @@ public final class SceneFlow {
     private final PropPackCatalog propPacks;
     /** 装备特效目录（equip_special_effect_pack + buff 三表，§3.17 链路）。 */
     private final com.nineyin.rule.EquipEffectCatalog equipEffects;
+    /** 商店表（msgId 70 真机 5 值布局按 shopId 解析；null = 仅会话快照）。 */
+    private com.nineyin.shop.ShopRepository shopRepository;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -177,6 +179,11 @@ public final class SceneFlow {
     /** 九阴志全局门控（GM / 广播接线用）。 */
     public NinJiuZhi ninjiuzhi() {
         return ninjiuzhi;
+    }
+
+    /** 注入商店表（NineyinServer 装配；启用 msgId 70 按消息内 shopId 解析）。 */
+    public void setShopRepository(com.nineyin.shop.ShopRepository shopRepository) {
+        this.shopRepository = shopRepository;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -797,15 +804,43 @@ public final class SceneFlow {
      * 购得物品经 game_items 入包（解析失败不扣款）；碎银走 CapitalType1。
      */
     private void handleShopBuy(FxSession fx, LoginSession session, CustomMsg msg) {
-        var shop = session.openShop;
-        if (msg.size() < 4 || !msg.val(1).asExactInt() || !msg.val(2).asExactInt()
-                || !msg.val(3).asExactInt()) {
-            log.info("shop buy malformed vals={}", summarizeVals(msg));
-            return;
+        // 布局两形态（§3.19 实机钉死）：真机 5 值 [70, shopId(str), page(0 基), pos(1 基), amount]
+        // （Go 拒绝串 "shop buy needs 5 values (msg, shopid, page, pos, amount)"）；
+        // 旧 4 值 [70, page(1 基), pos, amount] 保留容错。
+        int page;
+        int pos;
+        int nums;
+        String shopArg = null;
+        boolean fiveValue = msg.size() >= 5
+                && (msg.val(1).type == CustomMsg.TYPE_STRING || msg.val(1).type == CustomMsg.TYPE_WIDE_STRING)
+                && msg.val(2).asExactInt() && msg.val(3).asExactInt() && msg.val(4).asExactInt();
+        if (fiveValue) {
+            shopArg = msg.val(1).asString();
+            page = msg.val(2).intOrZero() + 1;
+            pos = msg.val(3).intOrZero();
+            nums = msg.val(4).intOrZero();
+        } else {
+            if (msg.size() < 4 || !msg.val(1).asExactInt() || !msg.val(2).asExactInt()
+                    || !msg.val(3).asExactInt()) {
+                log.info("shop buy malformed (want [70, shopid, page, pos, amount]) vals={}",
+                        summarizeVals(msg));
+                return;
+            }
+            page = msg.val(1).intOrZero();
+            pos = msg.val(2).intOrZero();
+            nums = msg.val(3).intOrZero();
         }
-        int page = msg.val(1).intOrZero();
-        int pos = msg.val(2).intOrZero();
-        int nums = msg.val(3).intOrZero();
+        var shop = session.openShop;
+        if (shopArg != null && !shopArg.isEmpty()) {
+            var resolved = shopRepository != null ? shopRepository.get(shopArg) : null;
+            if (resolved != null) {
+                shop = resolved;
+            } else if (shop == null || !shopArg.equals(shop.id())) {
+                log.info("shop {} buy reject: unknown shop id (open={})",
+                        shopArg, shop != null ? shop.id() : "<none>");
+                return;
+            }
+        }
         String shopId = shop != null ? shop.id() : "<none>";
         if (page <= 0 || pos <= 0) {
             log.info("shop {} buy page={} pos={} must be positive", shopId, page, pos);

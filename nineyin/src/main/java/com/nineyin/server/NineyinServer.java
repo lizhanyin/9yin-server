@@ -108,6 +108,7 @@ public final class NineyinServer implements SummerApp {
         AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates(), buffCatalog);
         sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi,
                 skillCatalog, skillInitTable);
+        sceneFlow.setShopRepository(shopRepository);
         worldBossManager = new WorldBossManager(sceneManager);
         worldBossManager.load(shareRoot);
         worldBossManager.setListener(new WorldBossManager.Listener() {

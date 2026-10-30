@@ -78,7 +78,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
-| 64/70 | 商店 打开/购买 | buy=`[70, page, pos, amount]` | 完整商店系统；`buy page=%d pos=%d must be positive` → `amount=%d outside 1..%d` → `has no listing` → `stock=%d < requested=%d` → `unsupported capital type %d` → `needs silver=%d, have %d` → `bought %s x%d for %d (capital %d)`（71 经反汇编证实是 ItemAction 非商店关闭） | ✅ 第十一轮：70 购买全链（挂单=会话打开的商店快照，列语义与 game_shop_items 互证 0=config/1=库存/2=capital(2=碎银)/3=price/5=page/6=pos；扣碎银+game_items 入包+0x10 CapitalType1）；64 打开走 NPC 菜单链 |
+| 64/70 | 商店 打开/购买 | buy=**`[70, shopId(str), page(0基), pos(1基), amount]`（5 值，第十九轮实机钉死）** | 完整商店系统；`shop buy needs 5 values (msg, shopid, page, pos, amount)` → `buy page=%d pos=%d must be positive` → `amount=%d outside 1..%d` → `has no listing` → `stock=%d < requested=%d` → `unsupported capital type %d` → `needs silver=%d, have %d` → `bought %s x%d for %d (capital %d)`（成功购买无日志；71 经反汇编证实是 ItemAction 非商店关闭） | ✅ 第十一轮：70 购买全链；**第十九轮：5 值布局+开店/购买响应帧序（见 §3.19）**；64 打开走 NPC 菜单链 |
 | 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | 🟨 第三轮：确认收下记日志（Java 无待确认 col result） |
 | 145 | 副本奖励 View80 拾取 | — | `reject 145 no clone awards view` / `reject 145 bad index %s`、`pickup clone award slot=%d` | 🟨 第四轮：无 View80 奖励视图拒绝 |
 | 150/161 | 经脉 JingMai | `[subcommand(int), ...]` | 反汇编：150/161 → handleJingMaiCustom；`jingmai custom requires an int subcommand`、`jingmai toggle active=%v name=%q role=%d` | 🟨 第六轮：subcommand 校验（经脉表未接） |
@@ -654,10 +654,13 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
 - **测试**：fixture 商店覆盖全拒绝分支（参数/非正/越界/无挂单/库存/capital/
   无库存后端），断言零帧且碎银分文不动；合法购买在 JSON 后端停在 `no bag store`。
 - **第十二轮补齐**：openShop 视图 ViewAdd 补第 4 属性——价格按 Go 自协商索引
-  **107=PriceGold / 108=PriceSilver / 109=PriceCard** 下发（挂单 capital 2→Silver、
-  3→Card、其余→Gold）；**库存语义确认为静态挂单 amount**（Go 串层无 per-role
+  ~~**107=PriceGold / 108=PriceSilver / 109=PriceCard** 下发（挂单 capital 2→Silver、
+  3→Card、其余→Gold）~~（**第二十轮勘误：价格槽 = 107+capital 直映射**，capital1→108、
+  capital2→109，且三槽恒全量下发，见 §3.20）；
+  **库存语义确认为静态挂单 amount**（Go 串层无 per-role
   消耗表/扣减落库痕迹，`stock=%d < requested=%d` 比对的就是挂单限量）。
-- **待办**：购买成功后的 S2C 库存刷新帧（格式待抓包）。
+- **待办**：~~购买成功后的 S2C 库存刷新帧（格式待抓包）~~——**第十九轮闭环：不存在该帧**
+  （Go 购买成功只推背包行对 + 0x1E-05 物品提示，无商店视图刷新、无扣款 0x10，见 §3.19）。
 
 ### 3.14 模拟登录实机抓包轮（2026-10-30 第十三轮）
 
@@ -818,3 +821,49 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   （控制效果系统接入后）、buff 的客户端帧（buff_static Visible=0 隐形，无需推送）。
 - **测试**：+4（链路解析/等级 floor 回退/actor 叠加+免疫收集/真实表冒烟
   NINEYIN_SERVER_ROOT 下 518 包+实测值抽查），全量 160 绿。
+
+### 3.19 商店购买实机链轮（2026-10-30 第十九轮）
+
+`tools/smoke/shop_probe.py` 对 Go 服实跑全链（khd_146 oid=3580 → shop_khd_ywb →
+购买 item_khd_001"阎王币"10000 碎银），三次迭代钉死：
+
+- **购买参数布局勘误（§2.1/§3.13 原记 4 值有误）**：真机 **5 值
+  `[70, shopId(str), page(0 基), pos(1 基), amount]`**——Go 拒绝串
+  `shop buy needs 5 values (msg, shopid, page, pos, amount)`；发 page=1 被解析为
+  第 2 页（`has no listing at page=2`，即线上 0 基），pos=0 被拒（`must be positive`，
+  即 1 基）。**成功购买无服务端日志**（Go 只记拒绝分支）。
+- **开店帧序**：`0x1E-01(int 8)` 关菜单 → **`0x16`（3 字节：op + u16 view=61）——
+  未收录的视图清除 opcode**（0x15 建/0x18 增/0x19 删之外的第四个视图家族成员）
+  → `0x15` view=61 带 4 个头属性（GO 表 101=ShopID 串 / 102=页大小 10 / 103=页数 /
+  104=?）→ `0x18`×10 商品行（105=ConfigID / 106=数量 / 107 / 108 / **109=价格**，
+  实测 `1027`→0x2710=10000 ✓）。
+- **购买成功响应（§3.13 待办闭环：库存刷新帧不存在）**：无商店视图刷新（静态库存
+  线上二次确认）、无扣款 0x10；仅 **0x19+0x18 ×2 对**（背包页 view=2 + 镜像页
+  view=174，同槽移除重加）+ **`0x1E-05` 获得物品提示 `[377, 2, 图标id, 物品名
+  (GBK 串), 数量]`**（实测 `[377, 2, 9645, "阎王币", 1]`）。首购含授予的道具会追加
+  副作用帧（View 43 内功行 ng_wd_001 + 1240B/174 属性全量 0x10 批）。
+- **Java 修复（真机购买此前必被拒）**：`handleShopBuy` 双布局——真机 5 值优先
+  （shopId 消息内权威解析：repository 命中用之，未命中且与会话快照不符则拒绝）、
+  旧 4 值容错；`SceneFlow.setShopRepository` 由 NineyinServer 装配。
+  SceneFlowTest +3 组断言，全量 160 绿。
+- **Java 超集保留**：Java 购买成功后仍推 0x10 CapitalType1 扣款帧（Go 不推、客户端
+  下次全量同步才见余额）——保留 Java 行为（真机 HUD 即时反馈更好）。
+
+### 3.20 商店打开帧序对齐轮（2026-10-30 第二十轮）
+
+用一店双 capital 的判别探针（JobChengD010→Shop_ds_05001：27 件 capital1 金币品 +
+2 件 capital2 碎银品）钉死商店视图行布局并完成 Java 对齐。
+
+- **价格槽映射钉死（§3.12 勘误）**：**价格落 107+capital 直映射**——capital1 的
+  27 行价格全部在 108（SellPrice1）、capital2 的 2 行全部在 109（SellPrice2）；
+  **三价格槽 107/108/109 恒全量下发**（未用槽零填充，非单槽）；**110=MaxAmount
+  恒 99**（单次购买上限，与 560 充值商城的 nums 1..99 上界同源）。capital≥2 夹 2
+  （与购买侧"3=兑换同走碎银"一致）。
+- **GO 表 101-110 商店视图段语义**：101=ShopID(str)/102=PageNum(页大小 10)/
+  103=PageCount/104=ShopType/105=ConfigID/106=Amount/107-109=SellPrice0-2/
+  110=MaxAmount。
+- **Java 对齐**（SelectFlow.openShop）：补 **0x16 视图清除帧**（`SkillPackets.viewClear`
+  3 字节，重开前清 View 61）→ 0x15 四头属性（原有，已一致）→ 行从 4 属性单价格槽
+  改为 **6 属性全量三槽**（ConfigID/Amount/107/108/109/MaxAmount，此前 capital2
+  路由到 108 差一）。SelectFlowTest +1（`shopOpenReferenceFrameSequence`：
+  0x16→0x15 顺序、行 6 属性、双 capital 价格槽位断言），全量 161 绿。

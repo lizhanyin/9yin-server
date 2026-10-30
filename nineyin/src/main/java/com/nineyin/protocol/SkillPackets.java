@@ -103,6 +103,11 @@ public final class SkillPackets {
                 .u16(propCount);
     }
 
+    /** 0x16 视图清除（3 字节：op + u16 view）——商店重开前清 View 61，§3.19 实机帧序。 */
+    public static byte[] viewClear(int viewId) {
+        return new PacketWriter().u8(0x16).u16(viewId).toByteArray();
+    }
+
     /** 通用 0x18 ViewAdd 头：op + u16 view + u16 index + u16 属性数。 */
     public static PacketWriter viewAddHeader(int viewId, int index, int propCount) {
         return new PacketWriter()

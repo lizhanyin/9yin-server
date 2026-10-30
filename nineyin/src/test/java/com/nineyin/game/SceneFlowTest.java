@@ -838,6 +838,15 @@ class SceneFlowTest {
         send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(3).u8(2).i32(1).toByteArray());
         // 合法购买（page1 pos1 碎银 100×1）：JSON 存档无库存后端 → no bag store 拒绝，碎银不动
         send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        // 真机 5 值布局（§3.19）：[70, shopId(str), page(0 基), pos(1 基), amount]
+        // 正确形态（shop_test page0 pos1 = 内部 page1 pos1）同样停在 no bag store
+        send(custom().u16(5).u8(2).i32(70).u8(6).u32(10).raw("shop_test".getBytes()).u8(0)
+                .u8(2).i32(0).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        // 线上 page=1（=内部第 2 页，无挂单）与未知 shopId：拒绝
+        send(custom().u16(5).u8(2).i32(70).u8(6).u32(10).raw("shop_test".getBytes()).u8(0)
+                .u8(2).i32(1).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        send(custom().u16(5).u8(2).i32(70).u8(6).u32(10).raw("shop_none".getBytes()).u8(0)
+                .u8(2).i32(0).u8(2).i32(1).u8(2).i32(1).toByteArray());
         assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
                 "shop buy validation rejects emit no frames");
         assertEquals(silverBefore, login.actor.silver, "all rejects must not charge");

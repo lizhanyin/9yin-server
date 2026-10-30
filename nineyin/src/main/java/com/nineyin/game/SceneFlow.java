@@ -162,6 +162,8 @@ public final class SceneFlow {
                 sceneManager.shareRoot().resolve("modifypack").resolve("proppack.ini"));
         this.equipEffects = new com.nineyin.rule.EquipEffectCatalog();
         this.equipEffects.load(sceneManager.shareRoot());
+        this.controlCatalog = new com.nineyin.rule.ControlCatalog();
+        this.controlCatalog.load(sceneManager.shareRoot().resolve("skill"));
     }
 
     /** 每件已穿装备的特效包号（equipment.ini 配置解析；0=无特效；供 applyEquipEffects）。 */
@@ -200,6 +202,13 @@ public final class SceneFlow {
 
     public void setTeamManager(TeamManager teamManager) {
         this.teamManager = teamManager;
+    }
+
+    /** 控制效果目录（buff_static.StateType；构造器装载，失败容缺为空目录）。 */
+    private com.nineyin.rule.ControlCatalog controlCatalog = new com.nineyin.rule.ControlCatalog();
+
+    public void setControlCatalog(com.nineyin.rule.ControlCatalog controlCatalog) {
+        this.controlCatalog = controlCatalog;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -2154,6 +2163,7 @@ public final class SceneFlow {
         int damageDealt = 0;
         int targetCount = 0;
         int lootTotal = 0;
+        SettleSummary lastSettle = new SettleSummary(0, 0, 0, List.of());
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() != SkillCatalog.EffectKind.DAMAGE || effect.amount() <= 0) {
                 continue;
@@ -2161,17 +2171,16 @@ public final class SceneFlow {
             if (def.targetMode() == SkillCatalog.TargetMode.SELF) {
                 continue;   // 自身技无目标结算（对齐参考实现的 damage switch 无 SELF 分支）
             }
-            SettleSummary settle = def.targetMode() == SkillCatalog.TargetMode.SELECTED
+            lastSettle = def.targetMode() == SkillCatalog.TargetMode.SELECTED
                     ? settleSelected(fx, session, st, def, selected, now)
                     : settleArea(fx, session, st, def, selected, msg, now);
-            damageDealt += settle.damage();
-            targetCount += settle.targets();
-            lootTotal += settle.loot();
+            damageDealt += lastSettle.damage();
+            targetCount += lastSettle.targets();
+            lootTotal += lastSettle.loot();
         }
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() == SkillCatalog.EffectKind.TARGET_CONTROL) {
-                log.info("settled compiled target control skill={} buff={} targets={} lifetime={}ms",
-                        def.id(), effect.buff().configId(), targetCount, effect.buff().lifetimeMs());
+                applyTargetControl(session, def, effect.buff(), lastSettle, now);
             }
         }
         if (lootTotal > 0) {
@@ -2191,6 +2200,10 @@ public final class SceneFlow {
                                  int targetOid, int targetOwner, long now) {
         if (now < actor.skillLockUntilMs) {
             return "skill locked remaining=" + (actor.skillLockUntilMs - now) + "ms";
+        }
+        if (actor.controlled(now)) {
+            return "player is controlled (stateType=" + actor.controlStateType
+                    + " remaining=" + (actor.controlledUntilMs - now) + "ms)";
         }
         Long ready = actor.skillCooldowns.get(def.id());
         if (ready != null && ready > now) {
@@ -2227,6 +2240,49 @@ public final class SceneFlow {
         actor.curSkillTargetOwner = targetOwner;
         actor.logicState = PlayerActor.LOGIC_STATE_FIGHTING;
         return null;
+    }
+
+    /**
+     * 目标控制结算（§3.25）：技能 TARGET_CONTROL 效果按 buff_static.StateType 落账。
+     * NPC 目标：受控至 lifetime（AI 出招跳过）；玩家目标：先消费装备免疫位
+     * （StateType=1 眩晕族 ↔ 位 33..38，eqp_ImmStun 六级实测位段），命中才受控
+     * （受控期间技能施放被拒）。非控制 buff 只记日志。
+     */
+    private void applyTargetControl(LoginSession session, SkillCatalog.Definition def,
+                                    SkillCatalog.BuffDef buff, SettleSummary settle, long now) {
+        int stateType = controlCatalog.stateTypeOf(buff.staticData());
+        if (stateType == 0) {
+            log.info("settled compiled target control skill={} buff={} targets={} lifetime={}ms (no StateType)",
+                    def.id(), buff.configId(), settle.targets(), buff.lifetimeMs());
+            return;
+        }
+        int applied = 0;
+        for (NpcInstance npc : settle.npcs()) {
+            if (npc.dead || npc.hp <= 0) {
+                continue;
+            }
+            npc.controlledUntilMs = now + Math.max(500, buff.lifetimeMs());
+            npc.controlStateType = stateType;
+            applied++;
+        }
+        log.info("settled compiled target control skill={} buff={} stateType={} targets={} applied={} lifetime={}ms",
+                def.id(), buff.configId(), stateType, settle.targets(), applied, buff.lifetimeMs());
+    }
+
+    /**
+     * 玩家侧控制落账（供 NPC AI / PvP 控制源调用）：先消费装备免疫位
+     * （§3.18 收集的 equipImmunities 在此闭环），被免疫返回 false 不落账。
+     */
+    public boolean applyControlToPlayer(PlayerActor actor, int stateType, long durationMs, long now) {
+        if (controlCatalog.blocks(stateType, actor.equipImmunities())) {
+            log.info("control blocked by immunity stateType={} bits={}",
+                    stateType, actor.equipImmunities());
+            return false;
+        }
+        actor.controlledUntilMs = now + durationMs;
+        actor.controlStateType = stateType;
+        log.info("player controlled stateType={} duration={}ms", stateType, durationMs);
+        return true;
     }
 
     /** 技能 Buff 暂驻（自身 Buff / 架势轮换 / 红霸体），日志与参考服同构。 */
@@ -2293,18 +2349,19 @@ public final class SceneFlow {
         return npc != null && !npc.dead && npc.hp > 0 ? npc : null;
     }
 
-    /** 效果结算汇总：实际伤害 / 命中目标数 / 击杀掉落（碎银）。 */
-    private record SettleSummary(int damage, int targets, int loot) {
+    /** 效果结算汇总：实际伤害 / 命中目标数 / 击杀掉落（碎银）/ 被击中的 NPC（控制结算用）。 */
+    private record SettleSummary(int damage, int targets, int loot, List<NpcInstance> npcs) {
     }
 
     /** 单体伤害效果结算（SELECTED）。 */
     private SettleSummary settleSelected(FxSession fx, LoginSession session, SceneState st,
                                          SkillCatalog.Definition def, NpcInstance selected, long now) {
         if (selected == null) {
-            return new SettleSummary(0, 0, 0);
+            return new SettleSummary(0, 0, 0, List.of());
         }
         HitResult hit = settleSkillHit(fx, session, st, selected, def, now);
-        return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, hit.loot());
+        return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, hit.loot(),
+                hit.landed() ? List.of(selected) : List.of());
     }
 
     /** 区域伤害效果结算（圆/扇/矩形/目标区域；日志与参考服同构，split/cadence 待钉死）。 */
@@ -2314,7 +2371,7 @@ public final class SceneFlow {
         CastCenter center = castCenter(st, selected, msg, session);
         if (center == null) {
             log.info("compiled area skill id={} has no center; no targets settled", def.id());
-            return new SettleSummary(0, 0, 0);
+            return new SettleSummary(0, 0, 0, List.of());
         }
         List<NpcInstance> hits = areaTargets(st, center, def);
         int damage = 0;
@@ -2335,7 +2392,7 @@ public final class SceneFlow {
                 String.format(Locale.ROOT, "%.1f", def.sectorAngle()),
                 String.format(Locale.ROOT, "%.1f", def.areaWidth()),
                 hits.size(), 1, 0, damage);
-        return new SettleSummary(damage, targets, loot);
+        return new SettleSummary(damage, targets, loot, hits);
     }
 
     /** 区域技能中心：SELECTED_AREA 取目标位置，其余取施法者报点（msg 2/3/4=xyz，5=朝向）。 */

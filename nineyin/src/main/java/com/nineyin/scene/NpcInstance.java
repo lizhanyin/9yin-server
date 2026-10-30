@@ -40,6 +40,14 @@ public final class NpcInstance {
     public long respawnAtMs;
     public long lastCombatMs;   // 最近一次受击（AI 事件 EventType=6 战斗窗口判据）
 
+    // 控制效果（§3.25：技能 TARGET_CONTROL 结算落账；受控期间 AI 出招跳过）
+    public long controlledUntilMs;
+    public int controlStateType;   // buff_static.StateType 1..10（0=未受控）
+
+    public boolean controlled(long now) {
+        return now < controlledUntilMs;
+    }
+
     // AI 事件引擎（buff 仅记录 ID；属性加成/视觉帧后续接入）
     public final java.util.Set<String> buffs =
             java.util.concurrent.ConcurrentHashMap.newKeySet();

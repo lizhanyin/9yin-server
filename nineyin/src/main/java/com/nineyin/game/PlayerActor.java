@@ -136,6 +136,15 @@ public final class PlayerActor {
     /** 通用技能锁（起手互斥窗口）。 */
     public volatile long skillLockUntilMs;
 
+    // 控制效果（§3.25）：受控期间技能施放被拒；免疫位（equipImmunities）在
+    // 控制落账前消费（StateType=1 眩晕族 ↔ 位 33..38）。
+    public volatile long controlledUntilMs;
+    public volatile int controlStateType;   // buff_static.StateType 1..10（0=未受控）
+
+    public boolean controlled(long now) {
+        return now < controlledUntilMs;
+    }
+
     public PlayerActor() {
         for (com.nineyin.protocol.SkillPackets.StarterSkill sk
                 : com.nineyin.protocol.SkillPackets.STARTER_SKILLS) {

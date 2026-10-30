@@ -817,8 +817,9 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   EquipmentModels.itemStatic 取 equipment.ini 配置值；**实例级覆盖未接**——实测
   商弘的 sword_60702 抓包为 1647 而配置为 1648，重铸会换特效包，存档链待接）。
 - **留待后续**：EventProcess 脚本类效果（302 处，需脚本系统）、
-  @SkillModifyPackRec 技能修改（32 处）、Immunity 位在 CombatFormulas 的消费
-  （控制效果系统接入后）、buff 的客户端帧（buff_static Visible=0 隐形，无需推送）。
+  @SkillModifyPackRec 技能修改（32 处）、~~Immunity 位在 CombatFormulas 的消费
+  （控制效果系统接入后）~~（**第二十五轮闭环**：眩晕族位 33-38 已消费，见 §3.25）、
+  buff 的客户端帧（buff_static Visible=0 隐形，无需推送）。
 - **测试**：+4（链路解析/等级 floor 回退/actor 叠加+免疫收集/真实表冒烟
   NINEYIN_SERVER_ROOT 下 518 包+实测值抽查），全量 160 绿。
 
@@ -1052,3 +1053,34 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   抓包钉死（候选 314/316/317/318/319/326/388/442 + AcceptInvite/JoinTeam
   两条调用路径）。Java 侧 443/444 已按"尾值扫描+TrimSpace→挂起日志"对齐，
   全量 180 绿不变。
+
+### 3.25 控制效果系统轮（2026-10-30 第二十五轮）
+
+数据考古 + Java 落地，§3.18 遗留的"Immunity 位消费"闭环。
+
+- **数据模型钉死（buff_static.ini 列名表 `[-1]` 节）**：该表自带列名→索引映射
+  （StateType=27、Immunity=13、CCHPType=16/CCHPTargetType=15、CCMPType=18/17、
+  CCQGPType=20/19、Visible=1、CantCustomRemove=24、EndFightClear=25 等 50 列）。
+  **StateType 1..10 = 十类控制效果**，实测 **187 个控制 buff**
+  （34/13/20/28/37/17/25/3/8/2 分布；wx_* 武学 debuff 与 clone 场景 buff 为主体）。
+- **免疫位段互证**：buff_varprop 的 Immunity 属性共 533 行设位；eqp_ImmStun
+  （唯一 eqp_Imm* 装备免疫 buff）的 varprop 行 **110221-110226 六级逐级设位
+  33-38**——即 StateType=1（眩晕族）↔ 免疫位段 **33..38**。其余九类的位段映射
+  待后续（位 30/44/54/58/70/91/92/157 等高频值候选）。
+- **Java 落地**：
+  - `rule/ControlCatalog`：buff_static StateType 目录（真实表 187 控制 buff 实测）
+    + 免疫位段判定（StateType=1 ↔ 位 33-38；未映射类不误伤返回 false）。
+  - `NpcInstance`/`PlayerActor`：`controlledUntilMs/controlStateType` 受控态。
+  - SceneFlow：技能 TARGET_CONTROL 效果从"只记日志"升级为**落账**——结算目标
+    NPC 进入受控态（lifetime 取编译 BuffDef）；`applyControlToPlayer`（玩家侧
+    控制入口：先消费 `equipImmunities()` 免疫位，命中才落账——§3.18 遗留闭环）；
+    `beginSkillUse` 受控拒绝（`player is controlled (stateType=N remaining=Xms)`）。
+  - `AiEventEngine.castSkill`：受控 BOSS 出招跳过（日志 `boss X cast Y skipped
+    (controlled stateType=N remaining=Xms)`）。
+  - 测试 +4（ControlCatalogTest 3 含真实表 env-gated 冒烟 +
+    SceneFlowTest.controlEffectSettlesAndBlocksCasting：fixture 控制技 test_ctrl
+    命中 NPC 落受控 → 玩家受控施放被拒不扣费 → 过期恢复），全量 **184 绿**。
+- **留待后续**：九类控制的免疫位段映射（位 30/44/... 候选族）；NPC→玩家控制源
+  （BOSS 技能控制玩家，applyControlToPlayer 已就绪待接线）；受控 LogicState
+  客户端推送（值域未钉死，现仅服务端拦截）；CCHP/CCMP/CCQGP（控制期 HP/MP/
+  轻功点 持续效果）与 EventProcess 脚本类控制（302 处）。

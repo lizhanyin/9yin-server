@@ -6,6 +6,7 @@ import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.PacketWriter;
+import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
 import com.nineyin.server.FxOpcodeRouter;
 import com.nineyin.server.FxServerHandler;
@@ -133,6 +134,11 @@ class SceneFlowTest {
                 StaticData=900002
                 script=SkillNormal
                 ItemType=1000
+
+                [test_ctrl]
+                StaticData=900003
+                script=SkillNormal
+                ItemType=1000
                 """, GBK);
         Files.writeString(skill.resolve("skill_static.ini"), """
                 [900001]
@@ -150,6 +156,14 @@ class SceneFlowTest {
                 CoolDownTeam=50267
                 IsDamage=1
                 TaoLu=test
+
+                [900003]
+                MinVarPropNo=800021
+                MaxVarPropNo=800025
+                CoolDownCategory=12448
+                CoolDownTeam=50268
+                IsDamage=1
+                TaoLu=test
                 """, GBK);
         Files.writeString(skill.resolve("skill_normal_varprop.ini"), """
                 [800001]
@@ -159,6 +173,13 @@ class SceneFlowTest {
                 CoolDownTime=15000
 
                 [800011]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                CoolDownTime=15000
+                DamageCalculate=23033
+
+                [800021]
                 Level=1
                 Consume=15608
                 HitShapePkg=1
@@ -185,17 +206,31 @@ class SceneFlowTest {
                 [buf_test_self]
                 StaticData=15105
                 LifeTime=5000
+
+                [buf_test_ctrl]
+                StaticData=15106
+                LifeTime=3000
                 """, GBK);
         Files.writeString(skill.resolve("buff_static.ini"), """
                 [15105]
                 IsDamage=0
                 MinVarPropNo=296913
                 MaxVarPropNo=296913
+
+                [15106]
+                IsDamage=1
+                StateType=1
+                MinVarPropNo=296923
+                MaxVarPropNo=296923
                 """, GBK);
         Files.writeString(skill.resolve("buff_varprop.ini"), """
                 [296913]
                 Level=1
                 LifeTime=5000
+
+                [296923]
+                Level=1
+                LifeTime=3000
                 """, GBK);
         Files.writeString(skill.resolve("skill_init.ini"), """
                 [test_self]
@@ -211,6 +246,13 @@ class SceneFlowTest {
                 level=1
                 maxlevel=1
                 coolDown=0
+
+                [test_ctrl]
+                staticData=900003
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
                 """, GBK);
         Path action = tempDir.resolve("ini/action");
         Files.createDirectories(action);
@@ -221,6 +263,9 @@ class SceneFlowTest {
 
                 [test_atk]
                 1=atk_act;0;43;-1;-1;1
+
+                [test_ctrl]
+                1=ctrl_act;0;43;-1;-1;1
                 """, GBK);
     }
 
@@ -569,6 +614,62 @@ class SceneFlowTest {
         send(custom().u16(2).u8(2).i32(61).u8(2).i32(-1).toByteArray());
         drainOutbound();
         assertEquals(1, login.showEquipType, "负值不得覆盖");
+    }
+
+    /**
+     * 控制效果全链（§3.25）：test_ctrl（TARGET_CONTROL + StateType=1）命中 NPC 落受控态；
+     * 玩家侧 applyControlToPlayer 落账后技能施放被拒，控制过期恢复。
+     */
+    @Test
+    void controlEffectSettlesAndBlocksCasting() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        SceneFlow.SceneState st = sceneFlow.stateOf(login.fx);
+
+        // 选中 fixture 战斗怪 mon_test_001
+        NpcInstance target = null;
+        synchronized (st.world) {
+            for (NpcInstance n : st.world.npcs) {
+                if ("mon_test_001".equals(n.configId) && !n.dead) {
+                    target = n;
+                    break;
+                }
+            }
+        }
+        org.junit.jupiter.api.Assertions.assertNotNull(target, "fixture 战斗怪必须存在");
+        st.selectedOid = target.objectId;
+
+        // 控制技命中：NPC 进入受控态（StateType=1，3s）
+        long before = System.currentTimeMillis();
+        send(useSkill("test_ctrl"));
+        drainOutbound();
+        assertTrue(target.controlled(before + 500), "NPC 受控至 lifetime");
+        assertEquals(1, target.controlStateType, "眩晕族 StateType=1");
+
+        // 玩家侧受控：清技能锁使控制成为唯一拒绝原因 → 施放被拒（无技能帧、不扣 MP）
+        long mpBefore = login.actor.mp;
+        login.actor.skillLockUntilMs = 0;
+        assertTrue(sceneFlow.applyControlToPlayer(login.actor, 1, 2000,
+                System.currentTimeMillis()));
+        send(useSkill("test_self"));
+        List<byte[]> blocked = drainOutbound();
+        assertTrue(blocked.stream().noneMatch(f -> op(f) == 0x11),
+                "受控期间技能施放被拒");
+        assertEquals(mpBefore, login.actor.mp, "受控拒绝不扣费");
+
+        // 控制过期（并清锁）后恢复施放
+        login.actor.controlledUntilMs = 0;
+        login.actor.skillLockUntilMs = 0;
+        send(useSkill("test_self"));
+        List<byte[]> resumed = drainOutbound();
+        assertTrue(resumed.stream().anyMatch(f -> op(f) == 0x11), "控制过期后可施放");
     }
 
     private static byte[] useSkill(String id) {

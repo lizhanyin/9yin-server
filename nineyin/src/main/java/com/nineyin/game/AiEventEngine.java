@@ -393,6 +393,12 @@ public final class AiEventEngine {
     /** 对仇恨目标释放技能：动作帧广播 + CombatFormulas 结算（未命中/招架/防御减免/暴击）
      *  + 招架耐力消耗（按攻击力）+ 嗜血回血 + 死亡缓复活。 */
     private void castSkill(SceneWorld world, NpcInstance boss, NpcState ns, String skillId) {
+        if (boss.controlled(System.currentTimeMillis())) {
+            log.info("boss {} cast {} skipped (controlled stateType={} remaining={}ms)",
+                    boss.configId, skillId, boss.controlStateType,
+                    boss.controlledUntilMs - System.currentTimeMillis());
+            return;
+        }
         FxSession target = ns.lastAttacker;
         if (target == null) {
             return;

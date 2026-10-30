@@ -13,6 +13,7 @@ import com.nineyin.game.SelectFlow;
 import com.nineyin.game.SkillCatalog;
 import com.nineyin.game.SkillInitTable;
 import com.nineyin.game.WorldBossManager;
+import com.nineyin.game.WuxueLevelInfo;
 import com.nineyin.gm.GmCatalog;
 import com.nineyin.gm.GmCommand;
 import com.nineyin.gm.GmHttpServer;
@@ -79,6 +80,7 @@ public final class NineyinServer implements SummerApp {
     private TickScheduler clockScheduler;
     private TickScheduler actorScheduler;
     private TickScheduler bossScheduler;
+    private TickScheduler bagpackScheduler;
 
     public NineyinServer() {
         this.roleStore = openRoleStore();
@@ -98,9 +100,13 @@ public final class NineyinServer implements SummerApp {
         skillInitTable.load(shareRoot.resolve("skill").resolve("skill_init.ini"));
         SkillCatalog skillCatalog = new SkillCatalog();
         skillCatalog.load(shareRoot.getParent());
+        // 修炼等级曲线（升级修炼度查表；缺失时 FacultyState 走旧公式回退）
+        WuxueLevelInfo levelCurves = new WuxueLevelInfo();
+        levelCurves.load(shareRoot.resolve("faculty").resolve("wuxuelevelinfo.ini"));
 
         LoginFlow loginFlow = new LoginFlow(roleStore, ninjiuzhi);
         loginFlow.setSkillInitTable(skillInitTable);
+        loginFlow.setWuxueLevelInfo(levelCurves);
         AiRuleData aiRules = new AiRuleData();
         aiRules.load(shareRoot);
         BuffCatalog buffCatalog = new BuffCatalog();
@@ -109,6 +115,7 @@ public final class NineyinServer implements SummerApp {
         sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi,
                 skillCatalog, skillInitTable);
         sceneFlow.setShopRepository(shopRepository);
+        sceneFlow.setWuxueLevelInfo(levelCurves);
         // 邮箱（data/mail.json，与参考服 Go mailStore 同构共享）
         sceneFlow.setMailStore(com.nineyin.game.MailStore.load(Path.of("data")));
         // 组队（data/teams.json，与参考服 Go teamStore 同构共享）
@@ -356,6 +363,23 @@ public final class NineyinServer implements SummerApp {
             }
         });
         bossScheduler.start();
+
+        // 扩容包到期扫描（60s 足够小时级到期；过期锚点删行+清帧，物品原地保留）
+        bagpackScheduler = new TickScheduler("nineyin-bagpack", 60_000);
+        bagpackScheduler.addTask((tick, now) -> {
+            for (FxSession fx : sessions) {
+                LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+                if (login == null) {
+                    continue;
+                }
+                try {
+                    sceneFlow.bagpackTick(fx, login);
+                } catch (Exception e) {
+                    log.error("bagpack tick error session={}", fx.remoteAddress(), e);
+                }
+            }
+        });
+        bagpackScheduler.start();
         log.info("nineyin server started (share root: {}, gm: {})",
                 status.serverRoot, gmServer.url());
     }

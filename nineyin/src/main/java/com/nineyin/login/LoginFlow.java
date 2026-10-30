@@ -61,6 +61,10 @@ public final class LoginFlow {
     private final List<Consumer<LoginSession>> readyHooks = new ArrayList<>();
     /** 库存查询（MySQL 后端；null = JSON 后端回退 starter 集合）。 */
     private final RoleInventoryStore inventory;
+    /** 修炼/内功快照（role_faculty；null = JSON 后端回退 starter 内功种子）。 */
+    private final com.nineyin.db.RoleFacultyStore facultyStore;
+    /** 修炼等级曲线（升级 total 查表；null = 走旧公式回退）。 */
+    private com.nineyin.game.WuxueLevelInfo levelCurves;
     /** 0x0C 重进场景后的 Ready 处理（SceneSwitcher.finishReentry）。 */
     private Consumer<FxSession> reentryHandler;
     /** 技能学习表（choose 阶段全技能目录整推；null = 不推，ready 走 starter 集）。 */
@@ -76,6 +80,7 @@ public final class LoginFlow {
         this.roleStore = roleStore;
         this.ninjiuzhi = ninjiuzhi;
         this.inventory = RoleInventoryStore.from(roleStore);
+        this.facultyStore = com.nineyin.db.RoleFacultyStore.from(roleStore);
     }
 
     /** ClientReady 后回调（场景阶段用来下发 NPC）。 */
@@ -90,6 +95,11 @@ public final class LoginFlow {
     /** 注入技能学习表（NineyinServer 装配；启用 choose 阶段技能目录整推）。 */
     public void setSkillInitTable(com.nineyin.game.SkillInitTable skillInit) {
         this.skillInit = skillInit;
+    }
+
+    /** 注入修炼等级曲线（NineyinServer 装配；升级 total 查 wuxuelevelinfo 曲线）。 */
+    public void setWuxueLevelInfo(com.nineyin.game.WuxueLevelInfo levelCurves) {
+        this.levelCurves = levelCurves;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -224,14 +234,26 @@ public final class LoginFlow {
         actor.name = s.roleName.isEmpty() ? "LocalHero" : s.roleName;
         actor.faction = Appearance.faction(s.appearance);
         actor.silver = STARTER_SILVER;
+        // 修炼/内功状态：role_faculty 有快照则恢复（面板/View 43 全部转 DB 数据），
+        // 无行保持 starter 种子路径（对齐 role skills from db 的回退语义）
+        if (facultyStore != null && s.roleId != 0) {
+            com.nineyin.game.FacultyState restored = facultyStore.load(s.roleId, levelCurves);
+            if (restored != null) {
+                actor.faculty = restored;
+            }
+        }
         s.actor = actor;
 
         fx.send(S2CPackets.propertyTable());
         fx.send(S2CPackets.recordTableEmpty());
-        // 17 个视图：8 主页(BaseCap) + 8 扩展页(+扩展包对象) + 装备纸娃娃 View 1
+        // 扩容包锚点（数据驱动：无锚点不发对象，容量 = 18 + Σboost）
+        s.liveBagpacks = inventory != null && s.roleId != 0
+                ? inventory.bagpacks(s.roleId)
+                : java.util.List.of();
+        // 17 个视图：8 主页(BaseCap) + 8 扩展页(+活跃锚点对象) + 装备纸娃娃 View 1
         // （参考 exe 抓包：容器在 0x0B 前创建，物品对象在 0x0B 后下发）
         CustomPackets.sendAll(fx, InventoryPackets.bagViewCreateFrames());
-        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames());
+        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames(s.liveBagpacks));
         sendSkillCatalog(fx);
         fx.send(S2CPackets.entryScene(cfg, res));
         fx.send(S2CPackets.playerAddObject(
@@ -295,9 +317,16 @@ public final class LoginFlow {
         fx.send(CustomPackets.ninJiuZhiStage(ninjiuzhi.stage()));
         // 主界面/内功面板前置任务（Task_Accepted + Task_Completed 位图，九阴志 tasks 门控）
         CustomPackets.sendAll(fx, BootstrapPackets.functionUnlockFrames(ninjiuzhi::taskOpen));
-        // 内功容器 View 43（九阴志 inner_books 门控）
-        CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
-                id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
+        // 内功容器 View 43（九阴志 inner_books 门控）：role_faculty 恢复的角色用
+        // DB 书本列表，否则 starter 种子（历史行为）
+        if (s.actor != null && s.actor.faculty != null) {
+            CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
+                    s.actor.faculty.viewBooks(),
+                    id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
+        } else {
+            CustomPackets.sendAll(fx, BootstrapPackets.neigongViewFrames(
+                    id -> ninjiuzhi.isOpen(NinJiuZhi.Category.INNER_BOOKS, id)));
+        }
         // 技能容器 View 40（库里有修炼进度的角色用真实技能，否则起始集）+ 技能开关 + 立即 0x38。
         // choose 已整推目录时 View 40 容器已建，仅重推行（对齐参考 ready 批不含 0x15）
         List<byte[]> skillFrames = roleSkillFramesOf(s);
@@ -329,7 +358,9 @@ public final class LoginFlow {
                 s.operateMode, s.roleSkillFrames != null
                         ? s.roleSkillFrames.size() - 1 : SkillPackets.STARTER_SKILLS.size(),
                 BootstrapPackets.STARTER_QINGGONG_IDS.size(),
-                BootstrapPackets.STARTER_BOOKS.size(), clockMinutes());
+                s.actor != null && s.actor.faculty != null
+                        ? s.actor.faculty.books.size() : BootstrapPackets.STARTER_BOOKS.size(),
+                clockMinutes());
     }
 
     /** 库存物品下发（0x0B 进场景之后；帧缓存到会话，0x0C 重进场景重发）。无库存时静默跳过。 */

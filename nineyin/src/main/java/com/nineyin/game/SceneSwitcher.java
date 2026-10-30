@@ -102,7 +102,8 @@ public final class SceneSwitcher {
     public void restorePlayerAttachments(FxSession fx, LoginSession login, SceneFlow.SceneState st) {
         // 参考实现：重进场景后重建 16 背包视图 + 装备纸娃娃 View 1 并重发物品
         CustomPackets.sendAll(fx, InventoryPackets.bagViewCreateFrames());
-        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames());
+        CustomPackets.sendAll(fx, InventoryPackets.itemBagFrames(
+                login.liveBagpacks != null ? login.liveBagpacks : java.util.List.of()));
         if (login.inventoryFrames != null) {
             CustomPackets.sendAll(fx, login.inventoryFrames);
         }

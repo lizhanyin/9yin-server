@@ -219,10 +219,19 @@ public final class BootstrapPackets {
 
     /** View 43 容器 + 初始内功（九阴志 inner_books 门控版，键为内功 configId）。 */
     public static List<byte[]> neigongViewFrames(java.util.function.Predicate<String> bookOpen) {
-        List<byte[]> frames = new ArrayList<>(STARTER_BOOKS.size() + 1);
-        frames.add(SkillPackets.createView(SkillPackets.VIEW_NEIGONG, STARTER_BOOKS.size()));
+        return neigongViewFrames(STARTER_BOOKS, bookOpen);
+    }
+
+    /**
+     * View 43 容器 + 指定内功书列表（DB role_faculty 恢复路径；门控键为内功 configId）。
+     * 容器容量按实际书本数，槽位顺序 = 列表序。
+     */
+    public static List<byte[]> neigongViewFrames(List<NeiGongBook> books,
+                                                 java.util.function.Predicate<String> bookOpen) {
+        List<byte[]> frames = new ArrayList<>(books.size() + 1);
+        frames.add(SkillPackets.createView(SkillPackets.VIEW_NEIGONG, books.size()));
         int slot = 0;
-        for (BootstrapPackets.NeiGongBook book : STARTER_BOOKS) {
+        for (NeiGongBook book : books) {
             if (!bookOpen.test(book.configId())) {
                 continue;
             }

@@ -98,6 +98,15 @@ public final class CustomPackets {
     }
 
     /**
+     * 修炼面板服务端通知（msg 191：sub + arg，对齐 Go encodeFacultyMessage /
+     * S2CFacultyMessage=191）。布局槽 = 2*191+15 = 397 解析到 custom_faculty_msg，
+     * faculty.on_msg(sub, arg) 消费：14=升级、23=演武结束、24=选卡动画。
+     */
+    public static byte[] facultyMessage(int sub, int arg) {
+        return intMessage(191, sub, arg);
+    }
+
+    /**
      * 九阴志阶段帧（msg 419）：阶段生效即向全服在线连接广播；
      * 登录 UI bootstrap 亦补发当前阶段。值为全服阶段刻度 1..9。
      */

@@ -66,6 +66,9 @@ public final class PlayerActor {
     public String name = "";
     public String faction = "";
 
+    /** 修炼/内功状态（role_faculty DB 恢复；null = 无库回退走 BootstrapCurNeigong 常量）。 */
+    public FacultyState faculty;
+
     public int baseMaxHp = 1000;
     public int baseMaxMp = 500;
     public int hp = 1000;
@@ -108,7 +111,10 @@ public final class PlayerActor {
     public int qinggongPoint = 150;
     public int maxQinggongPoint = 150;
     public int maxQinggongPointAdd;
-    public int sp;
+    /** 怒气（SP=466，大招消耗 AConsumeSP；普通招式走 MP）。初始满值对齐 Go 参考服
+     *  player_progress.go attributes sp:100 / maxPlayerSP=100；出招扣减、无自动回复
+     *  （参考服 addSP 亦为预留入口，怒气奖励待战斗事件接入）。 */
+    public int sp = MAX_SP;
     public long silver = 99999;
     // 金币（CapitalType0=415，充值商城 560 计价货币）。初始额与 silver 同为私服娱乐值，
     // 参考服走 wallet store 持久化；capital 映射与持久化待实机抓包/存档格式钉死后接入。
@@ -598,6 +604,20 @@ public final class PlayerActor {
             b.str(PropertyId.bufferInfoSlot(slot), buffInfo(slot));
         }
         S2CPackets.appendFaction(b, faction);
+        FacultyState.Book target = null;
+        if (faculty != null) {
+            target = faculty.targetBook();
+        }
+        String curNeigong = faculty != null ? faculty.curNeigong : BootstrapCurNeigong.CUR;
+        int facultyPoint = faculty != null ? faculty.faculty : BootstrapCurNeigong.FACULTY;
+        int facultyState = faculty != null ? faculty.facultyState : BootstrapCurNeigong.STATE;
+        int facultyStyle = faculty != null ? faculty.facultyStyle : BootstrapCurNeigong.STYLE;
+        String facultyName = faculty != null ? faculty.facultyName : BootstrapCurNeigong.NAME;
+        int curFill = target != null ? target.fill : 0;
+        int totalFill = target != null ? target.total : BootstrapCurNeigong.TOTAL;
+        int fillSpeed = faculty != null ? faculty.fillSpeed : BootstrapCurNeigong.FILL_SPEED;
+        int power = target != null ? target.power : BootstrapCurNeigong.POWER;
+        int maxPower = target != null ? target.maxPower : BootstrapCurNeigong.MAX_POWER;
         b.f32(PropertyId.GRAVITY, gravity)
                 .f32(PropertyId.GRAVITY_ADD, 0f)
                 .f32(PropertyId.DROP_HEIGHT_PUB, 100000f)
@@ -605,17 +625,17 @@ public final class PlayerActor {
                 .f32(PropertyId.WALK_SPEED, walkSpeed)
                 .f32(PropertyId.RUN_SPEED, runSpeed)
                 .f32(PropertyId.JUMP_SPEED, jumpSpeed)
-                .str(PropertyId.CUR_NEIGONG, BootstrapCurNeigong.CUR)
-                .i32(PropertyId.FACULTY, BootstrapCurNeigong.FACULTY)
-                .i32(PropertyId.FACULTY_STATE, BootstrapCurNeigong.STATE)
-                .i32(PropertyId.FACULTY_STYLE, BootstrapCurNeigong.STYLE)
-                .str(PropertyId.FACULTY_NAME, BootstrapCurNeigong.NAME)
-                .i32(PropertyId.CUR_FILL_VALUE, 0)
-                .i32(PropertyId.TOTAL_FILL_VALUE, BootstrapCurNeigong.TOTAL)
-                .i32(PropertyId.FILL_SPEED, BootstrapCurNeigong.FILL_SPEED)
+                .str(PropertyId.CUR_NEIGONG, curNeigong)
+                .i32(PropertyId.FACULTY, facultyPoint)
+                .i32(PropertyId.FACULTY_STATE, facultyState)
+                .i32(PropertyId.FACULTY_STYLE, facultyStyle)
+                .str(PropertyId.FACULTY_NAME, facultyName)
+                .i32(PropertyId.CUR_FILL_VALUE, curFill)
+                .i32(PropertyId.TOTAL_FILL_VALUE, totalFill)
+                .i32(PropertyId.FILL_SPEED, fillSpeed)
                 .i32(PropertyId.SP, sp)
-                .i32(PropertyId.POWER_VALUE, BootstrapCurNeigong.POWER)
-                .i32(PropertyId.MAX_POWER_VALUE, BootstrapCurNeigong.MAX_POWER);
+                .i32(PropertyId.POWER_VALUE, power)
+                .i32(PropertyId.MAX_POWER_VALUE, maxPower);
         return b.build();
     }
 

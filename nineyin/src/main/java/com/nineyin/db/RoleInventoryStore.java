@@ -446,14 +446,14 @@ public final class RoleInventoryStore {
      * 返回 null 且 fail="missing"：game_items 无此 config（专用 store 的货品，调用方走 pending 路由）；
      * 返回 null 且 fail="full"：目标页无空格。
      */
-    public record BagAdd(int slot, int view, String fail) {
+    public record BagAdd(int slot, int view, int itemType, String fail) {
 
         static BagAdd missing() {
-            return new BagAdd(0, 0, "missing");
+            return new BagAdd(0, 0, 0, "missing");
         }
 
         static BagAdd full() {
-            return new BagAdd(0, 0, "full");
+            return new BagAdd(0, 0, 0, "full");
         }
     }
 
@@ -481,7 +481,7 @@ public final class RoleInventoryStore {
                 }
                 insertBagRow(conn, roleId, slot, configId, itemType, amount, view);
                 conn.commit();
-                return new BagAdd(slot, view, null);
+                return new BagAdd(slot, view, itemType, null);
             } catch (SQLException e) {
                 conn.rollback();
                 throw e;
@@ -494,9 +494,10 @@ public final class RoleInventoryStore {
         }
     }
 
-    /** 目标页第一个空格（1..90；无空位返回 0）。 */
+    /** 目标页第一个空格（1..页容量=18+Σ活跃锚点boost；无空位返回 0）。 */
     private static int freeBagSlot(Connection conn, long roleId, int view) throws SQLException {
-        boolean[] used = new boolean[91];
+        int capacity = PAGE_BASE_CAP_SLOTS + bagpackBoost(conn, roleId, view);
+        boolean[] used = new boolean[capacity + 1];
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT slot FROM role_bag_items WHERE role_id = ? AND view_id = ?")) {
             ps.setLong(1, roleId);
@@ -516,6 +517,29 @@ public final class RoleInventoryStore {
             }
         }
         return 0;
+    }
+
+    /** 基础格数（与 InventoryPackets.PAGE_BASE_CAP 同值，避免 protocol 依赖）。 */
+    private static final int PAGE_BASE_CAP_SLOTS = 18;
+
+    /** 该页活跃锚点 Σboost（role_bagpacks；表缺/无锚点为 0，过期行不计）。 */
+    private static int bagpackBoost(Connection conn, long roleId, int page) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT boost FROM role_bagpacks WHERE role_id = ? AND page = ? "
+                        + "AND expires_at > UTC_TIMESTAMP(6)")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, page);
+            int sum = 0;
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    sum += Math.max(0, rs.getInt(1));
+                }
+            }
+            return sum;
+        } catch (SQLException e) {
+            // 表可能尚未建（tools 0004 未跑）：按无锚点处理，不阻断入包
+            return 0;
+        }
     }
 
     /** 交换装备栏两件（换装时旧装备让位）。 */

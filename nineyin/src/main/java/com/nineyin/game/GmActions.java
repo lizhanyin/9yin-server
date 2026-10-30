@@ -203,6 +203,18 @@ public final class GmActions {
                 sceneFlow.sendTestMail(fx, session, config, amount <= 0 ? 1 : amount);
                 return null;
             }
+            case "give_item" -> {
+                // GM 发物品入包（扩容包/道具测试用；走 SceneFlow.giveItem 容量感知路径）
+                String config = cmd.params().getString("itemConfig");
+                int amount = cmd.intParam("amount", 1);
+                if (config == null || config.isBlank()) {
+                    return "itemConfig 不能为空";
+                }
+                if (sceneFlow == null) {
+                    return "库存系统未接线";
+                }
+                return sceneFlow.giveItem(fx, session, config, amount <= 0 ? 1 : amount);
+            }
             case "set_sp" -> {
                 actor.sp = clamp(cmd.intParam("sp", 0), 0, PlayerActor.MAX_SP);
                 fx.send(actor.vitalUpdate());

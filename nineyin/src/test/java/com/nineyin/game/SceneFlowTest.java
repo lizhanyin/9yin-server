@@ -1152,4 +1152,71 @@ class SceneFlowTest {
         return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8)
                 | ((b[off + 2] & 0xFF) << 16) | ((b[off + 3] & 0xFF) << 24);
     }
+
+    /**
+     * 修炼内功 DB 链路（actor 带 role_faculty 恢复态）：215 运功切换、
+     * 1006 面板子命令（1 选定 / 11 内修 / 12 退出 / 23 过期 PAY 吞）。
+     * 无 faculty 的 actor 走历史拒绝路径（round-4/6 已锁），此处只测有态分支。
+     */
+    @Test
+    void facultyDbFlow215EquipAnd1006Panel() {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        FacultyState faculty = FacultyState.bootstrap();
+        login.actor.faculty = faculty;
+
+        // 215 未学习：仅日志，无帧
+        byte[] missing = "ng_missing".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(215).u8(6).u32(missing.length + 1)
+                .raw(missing).u8(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "unlearned 215 emits nothing");
+
+        // 215 已学习：切换 → 一帧 0x10 面板同步
+        byte[] book = "ng_jh_001".getBytes(StandardCharsets.UTF_8);
+        send(custom().u16(2).u8(2).i32(215).u8(6).u32(book.length + 1)
+                .raw(book).u8(0).toByteArray());
+        List<byte[]> equip = drainOutbound().stream().filter(f -> op(f) != 0x20).toList();
+        assertEquals(1, equip.size(), "equip pushes exactly one frame");
+        assertEquals(0x10, op(equip.get(0)));
+        assertEquals("ng_jh_001", faculty.curNeigong);
+
+        // 1006 sub=1 选定：先 0x18 View43 行（槽 5）再 0x10 面板
+        send(custom().u16(3).u8(2).i32(1006).u8(2).i32(1).u8(6).u32(book.length + 1)
+                .raw(book).u8(0).toByteArray());
+        List<byte[]> ready = drainOutbound().stream().filter(f -> op(f) != 0x20).toList();
+        assertEquals(2, ready.size());
+        assertEquals(0x18, op(ready.get(0)), "View 43 row refresh precedes panel");
+        assertEquals(0x10, op(ready.get(1)));
+        assertEquals(FacultyState.STATE_NONE, faculty.facultyState);
+        assertEquals("ng_jh_001", faculty.facultyName);
+
+        // 1006 sub=11 内修开始：0x10，fillSpeed=200
+        send(custom().u16(2).u8(2).i32(1006).u8(2).i32(11).toByteArray());
+        List<byte[]> begin = drainOutbound().stream().filter(f -> op(f) != 0x20).toList();
+        assertEquals(1, begin.size());
+        assertEquals(0x10, op(begin.get(0)));
+        assertEquals(FacultyState.STATE_CONVERT, faculty.facultyState);
+        assertEquals(FacultyState.NORMAL_FILL_PER_MINUTE, faculty.fillSpeed);
+
+        // 1006 sub=23 过期演武 PAY（当前为内修态）：静默吞
+        send(custom().u16(4).u8(2).i32(1006).u8(2).i32(23).u8(5).f64(0).u8(5).f64(1)
+                .toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "stale ACT_PAY swallowed");
+
+        // 1006 sub=12 内修退出：0x10
+        send(custom().u16(2).u8(2).i32(1006).u8(2).i32(12).toByteArray());
+        List<byte[]> exit = drainOutbound().stream().filter(f -> op(f) != 0x20).toList();
+        assertEquals(1, exit.size());
+        assertEquals(0x10, op(exit.get(0)));
+        assertEquals(FacultyState.STATE_NONE, faculty.facultyState);
+    }
 }

@@ -4,6 +4,7 @@ import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
 import com.nineyin.protocol.Appearance;
+import com.nineyin.protocol.BagCatalog;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.InventoryPackets;
@@ -11,6 +12,7 @@ import com.nineyin.protocol.MailPackets;
 import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
+import com.nineyin.protocol.SkillPackets;
 import com.nineyin.protocol.TeamPackets;
 import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
@@ -81,6 +83,12 @@ public final class SceneFlow {
     private final NinJiuZhi ninjiuzhi;  // 全服阶段门控（缺省 alwaysOpen）
     /** 库存查询（MySQL 后端；JSON 后端为 null，msgId=30 移动回退日志）。 */
     private final com.nineyin.db.RoleInventoryStore inventory;
+    /** 修炼/内功快照存取（role_faculty；JSON 后端为 null，215/1006 走拒绝日志路径）。 */
+    private final com.nineyin.db.RoleFacultyStore facultyStore;
+    /** 修炼等级曲线（wuxuelevelinfo.ini；升级 total 查表，null = 旧公式回退）。 */
+    private WuxueLevelInfo levelCurves;
+    /** 脏快照周期冲刷间隔（纯 fill 累积不必每 tick 落库）。 */
+    private static final long FACULTY_FLUSH_MS = 60_000L;
     /** 技能编译目录与学习表（211；空目录时全部走"未编译"拒绝路径）。 */
     private final SkillCatalog skillCatalog;
     private final SkillInitTable skillInit;
@@ -122,6 +130,8 @@ public final class SceneFlow {
         public long lastPortalMs;
         // 每秒 tick
         public long lastVitalMs;
+        // 修炼快照上次落库（即时/周期冲刷共用）
+        public long lastFacultyFlushMs;
     }
 
     public record PendingArrive(long atMs, float x, float y, float z, float orient) {
@@ -151,6 +161,7 @@ public final class SceneFlow {
         this.switcher = new SceneSwitcher(sceneManager, roleStore, this, this.ninjiuzhi);
         this.ai = ai;
         this.inventory = com.nineyin.db.RoleInventoryStore.from(roleStore);
+        this.facultyStore = com.nineyin.db.RoleFacultyStore.from(roleStore);
         this.skillCatalog = skillCatalog != null ? skillCatalog : new SkillCatalog();
         this.skillInit = skillInit != null ? skillInit : new SkillInitTable();
         // 充值商城货品表（ini/charge_shop_goods.ini，share 根的上级即 resources/modern）
@@ -188,6 +199,11 @@ public final class SceneFlow {
     /** 注入商店表（NineyinServer 装配；启用 msgId 70 按消息内 shopId 解析）。 */
     public void setShopRepository(com.nineyin.shop.ShopRepository shopRepository) {
         this.shopRepository = shopRepository;
+    }
+
+    /** 注入修炼等级曲线（NineyinServer 装配；升级 total 查 wuxuelevelinfo 曲线）。 */
+    public void setWuxueLevelInfo(WuxueLevelInfo levelCurves) {
+        this.levelCurves = levelCurves;
     }
 
     /** 邮箱存储（NineyinServer 装配 data/mail.json；测试默认内存实例）。 */
@@ -581,6 +597,8 @@ public final class SceneFlow {
             case 195 -> handleSaveShortcutScheme(fx, session, msg);
             // 修炼进度（反汇编：215 → handlePlayerProgressCustom，内功子命令同属此 handler）
             case 215 -> handlePlayerProgress(fx, session, msg);
+            // 修炼面板子命令（Go 同 handler 内分支：1006 → faculty 1/11/12/21/22/23/24/31/32）
+            case 1006 -> handleFacultyInfo(fx, session, msg);
             // 邮件（反汇编：350/353/355/356/357/359/361/365 → handleMailCustom，§3.23 八编号全链）
             case 350, 353, 355, 356, 357, 359, 361, 365 -> handleMail(fx, session, msg);
             // 骑乘技能（反汇编：961 → handleRideSkillUse）
@@ -815,7 +833,7 @@ public final class SceneFlow {
         // 背包帧：清格 + 落位（页与镜像成对，节奏对齐 handleMoveItem 的入包路径）
         int view = InventoryPackets.bagViewOf(add.view());
         var item = new com.nineyin.db.RoleInventoryStore.Bagged(
-                add.slot(), goods.configId(), 0, nums, add.view(), "");
+                add.slot(), goods.configId(), add.itemType(), nums, add.view(), "");
         List<byte[]> out = new ArrayList<>();
         out.add(InventoryPackets.viewRemove(view, add.slot()));
         out.add(InventoryPackets.bagViewAdd(
@@ -1570,6 +1588,51 @@ public final class SceneFlow {
     }
 
     /** GM send_test_mail（GM 面板动作）：写库并立即推新邮件行（对齐实机 gm-mail 推送）。 */
+    /**
+     * GM 发物品入包（give_item 动作；对齐 F 参考服 GM give item 的测试用途）。
+     * 走 addBagItem（容量感知找格 + game_items 落页），帧节奏对齐商店入包路径。
+     *
+     * @return null 成功；否则给 GM 面板的失败原因
+     */
+    public String giveItem(FxSession fx, LoginSession session, String configId, int amount) {
+        if (inventory == null || session.actor == null || session.liveBagged == null) {
+            return "库存系统未接线";
+        }
+        if (configId == null || configId.isBlank()) {
+            return "itemConfig 不能为空";
+        }
+        if (amount < 1 || amount > 999) {
+            return "amount 需在 1..999";
+        }
+        var add = inventory.addBagItem(session.roleId, configId, amount);
+        if (add.fail() != null) {
+            return "missing".equals(add.fail())
+                    ? "game_items 无此配置: " + configId
+                    : "背包已满（" + add.fail() + "）";
+        }
+        int view = InventoryPackets.bagViewOf(add.view());
+        var item = new com.nineyin.db.RoleInventoryStore.Bagged(
+                add.slot(), configId, add.itemType(), amount, add.view(), "");
+        List<byte[]> out = new ArrayList<>();
+        out.add(InventoryPackets.viewRemove(view, add.slot()));
+        out.add(InventoryPackets.bagViewAdd(
+                item, InventoryPackets.uniqueId(session.roleId, "bag", add.slot()), view));
+        int mirror = InventoryPackets.mirrorOf(view);
+        if (mirror != 0) {
+            out.add(InventoryPackets.viewRemove(mirror, add.slot()));
+        }
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.liveBagged.add(item);
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                session.roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+        log.info("GM give item {} x{} role={} -> view={} slot={}",
+                configId, amount, session.roleId, view, add.slot());
+        return null;
+    }
+
     public void sendTestMail(FxSession fx, LoginSession session, String configId, int amount) {
         MailStore.Mail mail = mailStore.sendTestMail(session.roleId, configId, amount);
         int row = mailStore.count(session.roleId) - 1;
@@ -1719,9 +1782,9 @@ public final class SceneFlow {
     // ---- 2026-10-30 custom 第四轮：编号钉死批（校验层 + 日志对齐） ----
 
     /**
-     * 215 修炼进度（反汇编：handlePlayerProgressCustom；`player progress request before
-     * scene player exists` + inner-power 子命令 `215 requires a learned neigong
-     * ConfigID string` 同属此 handler）。Java 无进度/内功学习表：未出生拒绝 + 内功未学习拒绝。
+     * 215 运功切换（反汇编：handlePlayerProgressCustom 的 USE_NEIGONG 分支）。
+     * 无 DB 修炼状态（actor.faculty==null）维持历史拒绝日志；有则按已学表校验：
+     * 未学习仅记日志（对齐 Go `not learned neigong %q`，不断连），成功切当前内功并同步面板。
      */
     private void handlePlayerProgress(FxSession fx, LoginSession session, CustomMsg msg) {
         if (session.actor == null) {
@@ -1730,9 +1793,185 @@ public final class SceneFlow {
         }
         CustomMsg.Val id = msg.val(1);
         boolean malformed = id == null || id.str == null || id.str.isEmpty();
-        log.info("215 requires a learned neigong ConfigID string ({} vals={})",
-                malformed ? "malformed" : "id=" + id.str + " unlearned; neigong table pending",
-                summarizeVals(msg));
+        if (session.actor.faculty == null) {
+            log.info("215 requires a learned neigong ConfigID string ({} vals={})",
+                    malformed ? "malformed" : "id=" + id.str + " unlearned; neigong table pending",
+                    summarizeVals(msg));
+            return;
+        }
+        if (malformed) {
+            log.info("215 requires a learned neigong ConfigID string (malformed vals={})",
+                    summarizeVals(msg));
+            return;
+        }
+        FacultyState faculty = session.actor.faculty;
+        if (!faculty.equip(id.str)) {
+            log.info("not learned neigong \"{}\" (role={} vals={})", id.str, session.roleId,
+                    summarizeVals(msg));
+            return;
+        }
+        fx.send(session.actor.vitalUpdate());
+        persistFacultyNow(fx, session);
+        log.info("equip neigong \"{}\" role={}", id.str, session.roleId);
+    }
+
+    /**
+     * 1006 修炼面板子命令（Go handlePlayerProgressCustom 同名分支移植）：
+     * 1=选定修炼书 11=内修开始 12=内修退出 21=演武开始 22=演武退出
+     * 23=选卡结算（卡号 0..2 + 支付位 1/2/4） 24=面板刷新 31/32=经脉上报。
+     * faculty==null（无 DB 行）按未实装记日志，不影响连接。
+     */
+    private void handleFacultyInfo(FxSession fx, LoginSession session, CustomMsg msg) {
+        if (session.actor == null) {
+            log.info("player progress request before scene player exists");
+            return;
+        }
+        CustomMsg.Val sub = msg.val(1);
+        if (sub == null || !sub.asExactInt()) {
+            log.info("1006 requires an int subcommand vals={}", summarizeVals(msg));
+            return;
+        }
+        FacultyState faculty = session.actor.faculty;
+        if (faculty == null) {
+            log.info("faculty 1006 sub={} ignored (no db faculty snapshot; vals={})",
+                    sub.intOrZero(), summarizeVals(msg));
+            return;
+        }
+        switch (sub.intOrZero()) {
+            case 1 -> {   // SUB_CLIENT_CONVERT_READY
+                CustomMsg.Val id = msg.val(2);
+                if (id == null || id.str == null || id.str.isEmpty()) {
+                    log.info("1006 sub=1 requires a learned neigong ConfigID string vals={}",
+                            summarizeVals(msg));
+                    return;
+                }
+                int slot = faculty.facultyReady(id.str);
+                if (slot == 0) {
+                    // View43 换面板期可能带来非内功 ConfigID：非断连错误（Go 同款）
+                    log.info("not learned neigong \"{}\" (1006 sub=1 role={})", id.str, session.roleId);
+                    return;
+                }
+                // FacultyName 到客户端前先刷 View43 对象：set_control_state 立即解析等级（Go 同序）
+                fx.send(facultyBookFrame(slot, faculty.book(id.str)));
+                fx.send(session.actor.vitalUpdate());
+                persistFacultyNow(fx, session);
+            }
+            case 11 -> {  // SUB_CLIENT_NORMAL_BEGIN
+                if (faculty.facultyBegin(FacultyState.STYLE_NORMAL, java.time.Instant.now()) == 0) {
+                    log.info("no selected learned neigong (1006 sub=11 role={})", session.roleId);
+                    return;
+                }
+                session.actor.logicState = 0;   // 内修是后台转换，不进 LS_FACULTY（Go 同款）
+                fx.send(session.actor.vitalUpdate());
+                persistFacultyNow(fx, session);
+            }
+            case 21 -> {  // SUB_CLIENT_ACT_BEGIN
+                if (faculty.facultyBegin(FacultyState.STYLE_ACT, java.time.Instant.now()) == 0) {
+                    log.info("no selected learned neigong (1006 sub=21 role={})", session.roleId);
+                    return;
+                }
+                session.actor.logicState = 108; // LS_FACULTY：演武独占的可见动作态
+                fx.send(session.actor.vitalUpdate());
+                persistFacultyNow(fx, session);
+            }
+            case 12, 22 -> {  // NORMAL_EXIT / ACT_EXIT
+                faculty.facultyExit();
+                session.actor.logicState = 0;
+                fx.send(session.actor.vitalUpdate());
+                persistFacultyNow(fx, session);
+            }
+            case 23 -> {  // SUB_CLIENT_ACT_PAY：卡号 + 支付方式（枚举值，double 容错取整）
+                if (msg.size() < 4) {
+                    return;
+                }
+                CustomMsg.Val card = msg.val(2);
+                CustomMsg.Val payment = msg.val(3);
+                if (!card.asExactInt() || !payment.asExactInt()) {
+                    return;
+                }
+                int cardIdx = card.intOrZero();
+                int pay = payment.intOrZero();
+                if (cardIdx < 0 || cardIdx > 2 || (pay != 1 && pay != 2 && pay != 4)) {
+                    return;
+                }
+                FacultyState.ActiveAward award = faculty.awardActiveFaculty(levelCurves);
+                if (award.slot() == 0) {
+                    return;   // 过期残留 PAY（面板已关/已切模式），静默吞
+                }
+                // 面板从 View43 对象读等级/修炼度：先发对象再发面板态（Go 同序）
+                if (award.awarded()) {
+                    fx.send(facultyBookFrame(award.slot(),
+                            faculty.books.get(award.slot() - 1)));
+                }
+                fx.send(session.actor.vitalUpdate());
+                if (award.levelUp()) {
+                    // faculty.lua 的 sub=14 → on_msg_level_up() 读 CurLevel 刷新面板/通知
+                    fx.send(CustomPackets.facultyMessage(14, award.maxLevel() ? 1 : 0));
+                }
+                if (award.levelUp() || award.maxLevel()) {
+                    // 等级已全量同步到客户端后才关闭演武页（exit_flag 抑制残留 1006/22）
+                    fx.send(CustomPackets.facultyMessage(23, 0));   // SUB_SERVER_ACT_EXIT
+                    persistFacultyNow(fx, session);
+                    return;
+                }
+                fx.send(CustomPackets.facultyMessage(24, 0));      // SUB_SERVER_ACT_PLAY
+                persistFacultyNow(fx, session);
+            }
+            case 24 -> {  // 面板重开刷新：先脉冲清 FacultyName 再恢复真值触发 set_control_state
+                if (!faculty.facultyName.isEmpty()) {
+                    fx.send(S2CPackets.objectPropertyString(PropertyId.FACULTY_NAME, ""));
+                }
+                fx.send(session.actor.vitalUpdate());
+            }
+            case 31, 32 ->   // 经脉流上报/打开：深业务不实装，接受保持 1006 总线规整（Go 同款）
+                    fx.send(session.actor.vitalUpdate());
+            default -> log.info("unsupported 1006 subcommand {}", sub.intOrZero());
+        }
+    }
+
+    /** View 43 单本行刷新（0x18，9 属性布局与登录种子一致；槽位从 1 起）。 */
+    private static byte[] facultyBookFrame(int slot, FacultyState.Book book) {
+        return SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 9)
+                .u16(SkillPackets.V_CONFIG_ID).string(book.configId)
+                .u16(PropertyId.STATIC_DATA).i32(book.staticData)
+                .u16(PropertyId.ITEM_TYPE).i32(book.itemType)
+                .u16(PropertyId.LEVEL).u8(book.level)
+                .u16(PropertyId.MAX_LEVEL).i32(book.maxLevel)
+                .u16(PropertyId.CUR_FILL_VALUE).i32(book.fill)
+                .u16(PropertyId.TOTAL_FILL_VALUE).i32(book.total)
+                .u16(PropertyId.POWER_VALUE).i32(book.power)
+                .u16(PropertyId.MAX_POWER_VALUE).i32(book.maxPower)
+                .toByteArray();
+    }
+
+    /** 立即落库（切换/状态变化路径；失败保留脏标记由周期冲刷重试）。 */
+    private void persistFacultyNow(FxSession fx, LoginSession session) {
+        if (facultyStore == null || session.actor == null || session.actor.faculty == null) {
+            return;
+        }
+        if (facultyStore.save(session.roleId, session.actor.faculty)) {
+            SceneState st = fx.channel().attr(STATE).get();
+            if (st != null) {
+                st.lastFacultyFlushMs = System.currentTimeMillis();
+            }
+        }
+    }
+
+    /** 周期冲刷（tick 内调用）：脏快照超过间隔才写，避免纯 fill 累积每秒打库。 */
+    private void flushFacultyDirty(FxSession fx, LoginSession session, long now) {
+        if (facultyStore == null || session.actor == null || session.actor.faculty == null
+                || !session.actor.faculty.persistDirty) {
+            return;
+        }
+        SceneState st = fx.channel().attr(STATE).get();
+        if (st == null || now - st.lastFacultyFlushMs < FACULTY_FLUSH_MS) {
+            return;
+        }
+        if (facultyStore.save(session.roleId, session.actor.faculty)) {
+            st.lastFacultyFlushMs = now;
+            log.info("settled inner cultivation flushed role={} slotBook={}", session.roleId,
+                    session.actor.faculty.facultyName);
+        }
     }
 
     /**
@@ -1983,6 +2222,17 @@ public final class SceneFlow {
             log.info("move 30 bag[{}:{}]->equip[{}] config={}{}",
                     fromView, fromSlot, toSlot, item.configId(),
                     old != null ? " (swapped out " + old.configId() + ")" : "");
+        } else if (InventoryPackets.pageOfExtView(toView) != 0) {
+            // 目标是扩展页（view 3/122/124/126）：扩容包装备/续期，或普通物品入扩展格
+            handleMoveToExtension(out, session, fromView, fromSlot, toView, toSlot, roleId);
+            if (out.isEmpty()) {
+                return; // 拒绝路径：无帧、不动缓存
+            }
+        } else if (InventoryPackets.pageOfExtView(fromView) != 0) {
+            // 拖出扩展页 = 取下锚点：不支持（对齐 F 参考消耗品语义，到期自动失效）
+            log.info("move 30 from ext view={} pos={} rejected (bagpack cannot be unequipped)",
+                    fromView, fromSlot);
+            return;
         } else {
             // 背包页间/页内移动
             int category = bagWireToCategory(fromView);
@@ -2047,6 +2297,201 @@ public final class SceneFlow {
         session.inventoryFrames = InventoryPackets.inventoryFrames(
                 roleId, session.liveEquipped, session.liveBagged,
                 Appearance.resolveVisual(session.appearance).sex());
+    }
+
+    /**
+     * msg30 目标为扩展页（F 参考服 2026-10-31 抓包语义）：
+     * - script=Bag 物品 → BAGPACK 装备（消耗物品、下一空闲锚点、expires=now+目录时长）；
+     *   同页同 config 已装备 → 续期（expires += 时长）；回应 = 锚点帧 + 主页整页重推
+     * - 普通物品 → addtoolbox：无锚点/格位超容量拒绝（对齐 "MOVEITEM addtoolbox anchor not found"）
+     */
+    private void handleMoveToExtension(List<byte[]> out, LoginSession session,
+                                       int fromView, int fromSlot, int toView, int toSlot,
+                                       long roleId) {
+        int page = InventoryPackets.pageOfExtView(toView);
+        int fromCategory = bagWireToCategory(fromView);
+        com.nineyin.db.RoleInventoryStore.Bagged peek = null;
+        for (com.nineyin.db.RoleInventoryStore.Bagged b : session.liveBagged) {
+            if (b.slot() == fromSlot && (fromCategory == 0 || b.viewId() == fromCategory)) {
+                peek = b;
+                break;
+            }
+        }
+        if (peek == null) {
+            log.info("move 30 bag[{}:{}] empty", fromView, fromSlot);
+            return;
+        }
+        List<com.nineyin.db.RoleInventoryStore.Bagpack> packs = new ArrayList<>(
+                session.liveBagpacks != null ? session.liveBagpacks : List.of());
+        BagCatalog.BagItem bag = BagCatalog.bagOf(peek.configId());
+        if (bag != null && bag.page() == page) {
+            equipOrRenewBagpack(out, session, packs, page, peek, bag, fromView, fromSlot, roleId);
+        } else {
+            moveToToolboxSlot(out, session, packs, page, peek, fromView, fromSlot,
+                    fromCategory, toSlot, roleId);
+        }
+    }
+
+    /** 扩容包装备/续期（先 DB 后消耗物品；无空闲锚点拒绝不动状态）。 */
+    private void equipOrRenewBagpack(List<byte[]> out, LoginSession session,
+                                     List<com.nineyin.db.RoleInventoryStore.Bagpack> packs, int page,
+                                     com.nineyin.db.RoleInventoryStore.Bagged item,
+                                     BagCatalog.BagItem bag, int fromView, int fromSlot, long roleId) {
+        com.nineyin.db.RoleInventoryStore.Bagpack same = null;
+        boolean anchor1 = false;
+        boolean anchor2 = false;
+        for (com.nineyin.db.RoleInventoryStore.Bagpack bp : packs) {
+            if (bp.page() != page) {
+                continue;
+            }
+            if (same == null && bp.configId().equalsIgnoreCase(item.configId())) {
+                same = bp;
+            }
+            if (bp.anchor() == 1) {
+                anchor1 = true;
+            } else if (bp.anchor() == 2) {
+                anchor2 = true;
+            }
+        }
+        boolean renew = same != null;
+        int anchor;
+        if (renew) {
+            anchor = same.anchor();
+        } else if (!anchor1) {
+            anchor = 1;
+        } else if (!anchor2) {
+            anchor = 2;
+        } else {
+            log.info("BAGPACK no free anchor config={} page={} (both anchors busy, rejected)",
+                    item.configId(), page);
+            return;
+        }
+        java.time.Instant expires;
+        if (renew) {
+            expires = inventory.renewBagpack(roleId, page, anchor, bag.durationHours());
+            if (expires == null) {
+                log.warn("BAGPACK renew persist failed config={} page={} anchor={}",
+                        item.configId(), page, anchor);
+                return;
+            }
+            packs.remove(same);
+        } else {
+            expires = java.time.Instant.now()
+                    .plus(java.time.Duration.ofHours(bag.durationHours()));
+            if (!inventory.equipBagpack(roleId, page, anchor, item.configId(),
+                    InventoryPackets.boostOf(item.configId()), expires)) {
+                log.warn("BAGPACK equip persist failed config={} page={} anchor={}",
+                        item.configId(), page, anchor);
+                return;
+            }
+        }
+        // 锚点已落库，再消耗物品（consume 失败仅告警：锚点生效、物品留存可人工清理）
+        if (!inventory.consumeBagItem(roleId, fromSlot, item.viewId())) {
+            log.warn("BAGPACK consume failed role={} slot={} view={} (anchor kept)",
+                    roleId, fromSlot, item.viewId());
+        }
+        removeBagged(session, fromSlot, item.viewId());
+        packs.add(new com.nineyin.db.RoleInventoryStore.Bagpack(
+                page, anchor, item.configId(), InventoryPackets.boostOf(item.configId()), expires));
+        session.liveBagpacks = packs;
+        // 帧：源格清空（含镜像）→ 锚点对象重落 → 主页整页重推（对齐 F 抓包回应节奏）
+        out.add(InventoryPackets.viewRemove(fromView, fromSlot));
+        int fromMirror = InventoryPackets.mirrorOf(fromView);
+        if (fromMirror != 0) {
+            out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
+        }
+        out.addAll(InventoryPackets.anchorFramesFor(packs, page));
+        int mainView = InventoryPackets.bagViewOf(page);
+        for (com.nineyin.db.RoleInventoryStore.Bagged b : session.liveBagged) {
+            if (b.viewId() == page) {
+                out.add(InventoryPackets.bagViewAdd(
+                        b, InventoryPackets.uniqueId(roleId, "bag", b.slot()), mainView));
+            }
+        }
+        log.info("BAGPACK {} {} anchor={} boost={} expires={} (page={})",
+                renew ? "renew" : "equip", item.configId(), anchor,
+                InventoryPackets.boostOf(item.configId()), expires, page);
+    }
+
+    /** 普通物品入扩展格（addtoolbox）：容量校验（19..18+Σboost）后走主页对象移动。 */
+    private void moveToToolboxSlot(List<byte[]> out, LoginSession session,
+                                   List<com.nineyin.db.RoleInventoryStore.Bagpack> packs, int page,
+                                   com.nineyin.db.RoleInventoryStore.Bagged peek,
+                                   int fromView, int fromSlot, int fromCategory, int toSlot,
+                                   long roleId) {
+        boolean hasAnchor = false;
+        for (com.nineyin.db.RoleInventoryStore.Bagpack bp : packs) {
+            if (bp.page() == page) {
+                hasAnchor = true;
+                break;
+            }
+        }
+        if (!hasAnchor) {
+            // 对齐 F 参考服拒绝文案（MOVEITEM addtoolbox anchor not found view=124 pos=1）
+            int extView = InventoryPackets.PAGE_EXT_VIEW.get(page);
+            log.info("MOVEITEM addtoolbox anchor not found view={} pos={}", extView, toSlot);
+            return;
+        }
+        int capacity = InventoryPackets.pageCapacity(packs, page);
+        int target = toSlot;
+        if (target <= 0) {
+            for (int s = 19; s <= capacity; s++) {
+                if (slotFree(session.liveBagged, s, page)) {
+                    target = s;
+                    break;
+                }
+            }
+        }
+        if (target < 19 || target > capacity) {
+            int extView = InventoryPackets.PAGE_EXT_VIEW.get(page);
+            log.info("MOVEITEM addtoolbox pos={} beyond capacity {} view={} (rejected)",
+                    target, capacity, extView);
+            return;
+        }
+        if (!slotFree(session.liveBagged, target, page)) {
+            log.info("MOVEITEM addtoolbox pos={} occupied (page={})", target, page);
+            return;
+        }
+        com.nineyin.db.RoleInventoryStore.Bagged item =
+                removeBagged(session, fromSlot, fromCategory);
+        if (item == null) {
+            return;
+        }
+        // 物品对象始终落主页视图（slot 19-90 表示扩展格）；viewId 记页族类别（修 category=0 旧损）
+        int mainView = InventoryPackets.bagViewOf(page);
+        out.add(InventoryPackets.viewRemove(fromView, fromSlot));
+        int fromMirror = InventoryPackets.mirrorOf(fromView);
+        if (fromMirror != 0) {
+            out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
+        }
+        out.add(InventoryPackets.viewRemove(mainView, target));
+        com.nineyin.db.RoleInventoryStore.Bagged moved =
+                new com.nineyin.db.RoleInventoryStore.Bagged(
+                        target, item.configId(), item.itemType(), item.amount(), page, "");
+        out.add(InventoryPackets.bagViewAdd(
+                moved, InventoryPackets.uniqueId(roleId, "bag", target), mainView));
+        int mirror = InventoryPackets.mirrorOf(mainView);
+        if (mirror != 0) {
+            out.add(InventoryPackets.viewRemove(mirror, target));
+        }
+        session.liveBagged.add(moved);
+        if (!inventory.moveBagSlot(roleId, fromSlot, fromCategory, target, page)) {
+            log.warn("move 30 addtoolbox persist failed role={} {}->{}", roleId, fromSlot, target);
+        }
+        log.info("move 30 bag[{}:{}]{}->toolbox[{}:{}] config={} (page={} cap={})",
+                fromView, fromSlot, fromCategory, mainView, target, item.configId(),
+                page, capacity);
+    }
+
+    /** 页内格位是否空闲（同页族类别才算占用）。 */
+    private static boolean slotFree(List<com.nineyin.db.RoleInventoryStore.Bagged> bagged,
+                                    int slot, int page) {
+        for (com.nineyin.db.RoleInventoryStore.Bagged b : bagged) {
+            if (b.slot() == slot && b.viewId() == page) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int intArg(CustomMsg msg, int idx) {
@@ -2675,7 +3120,63 @@ public final class SceneFlow {
 
     // ---------- 每秒 tick（NineyinServer actor 调度器驱动） ----------
 
-    /** actor 恢复 + NPC 重生 + 节流 vital 同步。 */
+    /** actor 恢复 + NPC 重生 + 修炼推进 + 节流 vital 同步。 */
+    /**
+     * 扩容包到期扫描（NineyinServer 60s 调度驱动）：过期锚点 → DB 删行 + 锚点对象
+     * 0x19 清除 + 受影响主页整页重推 + 重建 0x0C 缓存。扩展格物品原地保留
+     * （容量回缩后客户端按容量裁剪显示，重新扩容恢复可见——2026-10-31 决策）。
+     */
+    public void bagpackTick(FxSession fx, LoginSession session) {
+        if (session.roleId == 0 || inventory == null || session.actor == null) {
+            return;
+        }
+        // 每 tick 以 DB 为准刷新（bagpacks() 惰性清理过期行）：快照只作变更检测基线，
+        // 这样长会话跨期、外部改库（GM/脚本）都能被看见
+        List<com.nineyin.db.RoleInventoryStore.Bagpack> fresh =
+                inventory.bagpacks(session.roleId);
+        if (fresh.equals(session.liveBagpacks == null ? List.of() : session.liveBagpacks)) {
+            return;
+        }
+        List<com.nineyin.db.RoleInventoryStore.Bagpack> old =
+                session.liveBagpacks != null ? session.liveBagpacks : List.of();
+        for (com.nineyin.db.RoleInventoryStore.Bagpack bp : old) {
+            if (!fresh.contains(bp)) {
+                log.info("BAGPACK expired config={} page={} anchor={} expires={}",
+                        bp.configId(), bp.page(), bp.anchor(), bp.expires());
+            }
+        }
+        List<com.nineyin.db.RoleInventoryStore.Bagpack> remaining = fresh;
+        List<byte[]> out = new ArrayList<>();
+        java.util.Set<Integer> pages = new java.util.HashSet<>();
+        for (com.nineyin.db.RoleInventoryStore.Bagpack bp : old) {
+            if (!fresh.contains(bp)) {
+                pages.add(bp.page());
+            }
+        }
+        for (com.nineyin.db.RoleInventoryStore.Bagpack bp : fresh) {
+            if (!old.contains(bp)) {
+                pages.add(bp.page());
+            }
+        }
+        for (int page : pages) {
+            out.addAll(InventoryPackets.anchorFramesFor(remaining, page));
+            int mainView = InventoryPackets.bagViewOf(page);
+            for (com.nineyin.db.RoleInventoryStore.Bagged b : session.liveBagged) {
+                if (b.viewId() == page) {
+                    out.add(InventoryPackets.bagViewAdd(b,
+                            InventoryPackets.uniqueId(session.roleId, "bag", b.slot()),
+                            mainView));
+                }
+            }
+        }
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.inventoryFrames = InventoryPackets.inventoryFrames(session.roleId,
+                session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+    }
+
     public void tick(FxSession fx, LoginSession session) {
         SceneState st = fx.channel().attr(STATE).get();
         if (st == null || session.actor == null || !session.uiBootstrapped
@@ -2687,6 +3188,21 @@ public final class SceneFlow {
         respawnDeadNpcs(fx, st, session, now);
         if (st.world != null && ai != null) {
             ai.pump(st.world, now);
+        }
+        // 修炼整分钟结算（1s 驱动、内部按分钟推进；对齐 Go facultyTicker）
+        FacultyState faculty = session.actor.faculty;
+        if (faculty != null) {
+            int slot = faculty.advanceFaculty(java.time.Instant.now(), levelCurves);
+            if (slot > 0) {
+                fx.send(facultyBookFrame(slot, faculty.books.get(slot - 1)));
+                fx.send(session.actor.vitalUpdate());
+                if (facultyStore != null && facultyStore.save(session.roleId, faculty)) {
+                    st.lastFacultyFlushMs = now;
+                }
+                log.info("settled inner cultivation role={} slot={}", session.roleId, slot);
+            } else {
+                flushFacultyDirty(fx, session, now);
+            }
         }
         if (changed && now - st.lastVitalMs >= 1000) {
             st.lastVitalMs = now;

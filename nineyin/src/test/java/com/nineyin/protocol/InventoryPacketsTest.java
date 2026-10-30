@@ -32,13 +32,20 @@ class InventoryPacketsTest {
         assertEquals(48, leU16(doll, 3));
         assertEquals(0, leU16(doll, 5));
 
-        List<byte[]> bags = InventoryPackets.itemBagFrames();
+        // 扩容包对象数据驱动：存量种子（道具+装备页各 2 个 ITEMBAG_006）→ 4 帧
+        java.time.Instant forever = java.time.Instant.parse("9999-12-31T00:00:00Z");
+        List<byte[]> bags = InventoryPackets.itemBagFrames(List.of(
+                new RoleInventoryStore.Bagpack(1, 1, "ITEMBAG_006", 36, forever),
+                new RoleInventoryStore.Bagpack(1, 2, "ITEMBAG_006", 36, forever),
+                new RoleInventoryStore.Bagpack(2, 1, "EQUIPBAG_006", 36, forever),
+                new RoleInventoryStore.Bagpack(2, 2, "EQUIPBAG_006", 36, forever)));
         assertEquals(4, bags.size());
         byte[] ib = bags.get(0);
         assertEquals(0x18, ib[0]);
         assertEquals(3, leU16(ib, 1));                    // 扩展页 view 3
         assertEquals(4, leU16(ib, 5));
         assertTrue(new String(ib, 13, 11, StandardCharsets.US_ASCII).startsWith("ITEMBAG"));
+        assertEquals(122, leU16(bags.get(2), 1));         // 装备扩展页 view 122
     }
 
     @Test
@@ -218,6 +225,73 @@ class InventoryPacketsTest {
         assertTrue(overflowSkipped, "超 cap 90 的历史行不应推送");
     }
 
+    // ---- 扩容包锚点帧（数据驱动，2026-10-31 对齐 F 参考服抓包） ----
+
+    @Test
+    void bagpackAnchorFramesDataDriven() {
+        // 无锚点：0 帧（新角色 18 基础格）
+        assertTrue(InventoryPackets.itemBagFrames(java.util.List.of()).isEmpty());
+        assertTrue(InventoryPackets.itemBagFrames(null).isEmpty());
+        // 存量种子：道具页 2 个 ITEMBAG_006（boost 36）→ 19-54 / 55-90，永久锚点 Hardiness=720
+        java.time.Instant forever = java.time.Instant.parse("9999-12-31T00:00:00Z");
+        List<RoleInventoryStore.Bagpack> seeded = List.of(
+                new RoleInventoryStore.Bagpack(1, 1, "ITEMBAG_006", 36, forever),
+                new RoleInventoryStore.Bagpack(1, 2, "ITEMBAG_006", 36, forever));
+        List<byte[]> frames = InventoryPackets.itemBagFrames(seeded);
+        assertEquals(2, frames.size());
+        assertEquals(3, leU16(frames.get(0), 1));    // 道具扩展页 view 3
+        assertEquals(1, leU16(frames.get(0), 3));    // anchor 1
+        assertEquals(19, propValue(frames.get(0), 2011));
+        assertEquals(54, propValue(frames.get(0), 2012));
+        assertEquals(720, propValue(frames.get(0), 1933));
+        assertEquals(2, leU16(frames.get(1), 3));    // anchor 2
+        assertEquals(55, propValue(frames.get(1), 2011));
+        assertEquals(90, propValue(frames.get(1), 2012));
+    }
+
+    @Test
+    void bagpackCapacityAndBoost() {
+        assertEquals(18, InventoryPackets.pageCapacity(List.of(), 1));
+        assertEquals(18, InventoryPackets.pageCapacity(null, 3));
+        java.time.Instant soon = java.time.Instant.now().plus(java.time.Duration.ofHours(10));
+        List<RoleInventoryStore.Bagpack> packs = List.of(
+                new RoleInventoryStore.Bagpack(2, 1, "ITEMBAG_new_005", 18, soon),
+                new RoleInventoryStore.Bagpack(2, 2, "ITEMBAG_006", 36, soon));
+        assertEquals(72, InventoryPackets.pageCapacity(packs, 2));   // 18+18+36
+        assertEquals(18, InventoryPackets.pageCapacity(packs, 3));   // 其它页无锚点
+        // boostOf：F 抓包钉死值（_006/big36=36，new_005/003_c/未知=18）
+        assertEquals(36, InventoryPackets.boostOf("ITEMBAG_006"));
+        assertEquals(36, InventoryPackets.boostOf("equipbag_big36_720"));
+        assertEquals(18, InventoryPackets.boostOf("ITEMBAG_new_005"));
+        assertEquals(18, InventoryPackets.boostOf("STUFFBAG_003_c"));
+        assertEquals(18, InventoryPackets.boostOf("unknown_bag"));
+    }
+
+    @Test
+    void bagpackAnchorFramesForClearsThenAdds() {
+        // 装备/续期/到期推送：先 0x19 清锚点位 1/2，再按 anchor 序落活跃锚点
+        java.time.Instant soon = java.time.Instant.now().plus(java.time.Duration.ofHours(7));
+        List<RoleInventoryStore.Bagpack> one = List.of(
+                new RoleInventoryStore.Bagpack(3, 2, "STUFFBAG_003_c", 18, soon));
+        List<byte[]> frames = InventoryPackets.anchorFramesFor(one, 3);
+        assertEquals(3, frames.size());
+        assertEquals(0x19, frames.get(0)[0]);
+        assertEquals(124, leU16(frames.get(0), 1));  // 材料扩展页
+        assertEquals(1, leU16(frames.get(0), 3));
+        assertEquals(0x19, frames.get(1)[0]);
+        assertEquals(2, leU16(frames.get(1), 3));
+        assertEquals(0x18, frames.get(2)[0]);
+        assertEquals(2, leU16(frames.get(2), 3));    // anchor 2（anchor 1 已失效）
+        assertEquals(19, propValue(frames.get(2), 2011));
+        assertEquals(36, propValue(frames.get(2), 2012));
+        assertEquals(7, propValue(frames.get(2), 1933));  // 剩余 7 小时（Hardiness=剩余小时）
+        // 全部失效：只剩 2 个 0x19（容量回缩到 18，物品原地保留由客户端裁剪显示）
+        List<byte[]> none = InventoryPackets.anchorFramesFor(List.of(), 3);
+        assertEquals(2, none.size());
+        assertEquals(0x19, none.get(0)[0]);
+        assertEquals(0x19, none.get(1)[0]);
+    }
+
     // ---- 解析辅助：按 u16 索引在属性区线性找值（u8/i32 通吃小值） ----
 
     private static boolean containsProp(byte[] msg, int want) {
@@ -228,8 +302,14 @@ class InventoryPacketsTest {
         int off = propOffset(msg, want);
         int idx = leU16(msg, off);
         int after = off + 2;
-        // 官方表：Level(1464)/RecoverFlag(1969) 为 u8，其余 i32/f32
-        return idx == 1464 || idx == 1969 ? msg[after] : leU32(msg, after);
+        // 官方表：Level(1464)/RecoverFlag(1969) 为 u8；BeginPos/EndPos(2011/2012) 为 u16；其余 i32/f32
+        if (idx == 1464 || idx == 1969) {
+            return msg[after];
+        }
+        if (idx == 2011 || idx == 2012) {
+            return leU16(msg, after);
+        }
+        return leU32(msg, after);
     }
 
     private static int propOffset(byte[] msg, int want) {
@@ -245,6 +325,8 @@ class InventoryPacketsTest {
                 p += 4 + len;
             } else if (idx == 1464 || idx == 1969) {
                 p += 1;
+            } else if (idx == 2011 || idx == 2012) {
+                p += 2;
             } else {
                 p += 4;
             }

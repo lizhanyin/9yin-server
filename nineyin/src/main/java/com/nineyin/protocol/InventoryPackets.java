@@ -7,6 +7,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -95,22 +96,120 @@ public final class InventoryPackets {
         return frames;
     }
 
-    /** 扩展包对象：道具/装备扩展页各一个 ITEMBAG_006（19-54 / 55-90 格）。 */
-    public static List<byte[]> itemBagFrames() {
+    /** 页族（tool_item ViewID 1道具/2装备/3材料/4任务）→ 扩展页视图。 */
+    public static final Map<Integer, Integer> PAGE_EXT_VIEW = Map.of(1, 3, 2, 122, 3, 124, 4, 126);
+
+    /** 基础格数（0x15 主页 BaseCap，抓包恒 18）。 */
+    public static final int PAGE_BASE_CAP = 18;
+
+    /**
+     * 扩容包锚点对象（数据驱动）：每页活跃锚点一帧，BeginPos/EndPos =
+     * 19+前序Σboost .. 18+累计boost（旧抓包 ITEMBAG_006×2 → 19-54/55-90），
+     * Hardiness = 剩余小时（永久种子发 720 对齐旧抓包；客户端按何语义显示待实测校准）。
+     */
+    public static List<byte[]> itemBagFrames(List<RoleInventoryStore.Bagpack> bagpacks) {
         List<byte[]> frames = new ArrayList<>(4);
-        for (int view : new int[]{3, 122}) {
-            frames.add(itemBagAdd(view, 1, 19, 54));
-            frames.add(itemBagAdd(view, 2, 55, 90));
+        if (bagpacks == null) {
+            return frames;
+        }
+        Map<Integer, Integer> boostByPage = new java.util.HashMap<>();
+        for (RoleInventoryStore.Bagpack bp : bagpacks) {
+            int prev = boostByPage.getOrDefault(bp.page(), 0);
+            int cur = prev + bp.boost();
+            boostByPage.put(bp.page(), cur);
+            frames.add(itemBagAdd(PAGE_EXT_VIEW.get(bp.page()), bp.anchor(),
+                    19 + prev, PAGE_BASE_CAP + cur, bp.configId(),
+                    anchorHardiness(bp)));
         }
         return frames;
     }
 
-    private static byte[] itemBagAdd(int view, int obj, int begin, int end) {
+    /** 永久锚点按旧抓包发 720；有期限发剩余小时（向下取整，至少 1）。 */
+    private static int anchorHardiness(RoleInventoryStore.Bagpack bp) {
+        if (bp.permanent()) {
+            return 720;
+        }
+        long ms = java.time.Duration.between(java.time.Instant.now(), bp.expires()).toMillis();
+        // 向上取整：装备当时显示满 N 小时（避免毫秒流逝立刻少 1）
+        long hours = (ms + 3_599_999) / 3_600_000;
+        return (int) Math.max(1, Math.min(720, hours));
+    }
+
+    /** 扩展页视图 → 页族（3→1 122→2 124→3 126→4；非扩展页 0）。 */
+    public static int pageOfExtView(int view) {
+        return switch (view) {
+            case 3 -> 1;
+            case 122 -> 2;
+            case 124 -> 3;
+            case 126 -> 4;
+            default -> 0;
+        };
+    }
+
+    /** 页容量 = 基础 18 + 该页活跃锚点 Σboost。 */
+    public static int pageCapacity(List<RoleInventoryStore.Bagpack> bagpacks, int page) {
+        int cap = PAGE_BASE_CAP;
+        if (bagpacks != null) {
+            for (RoleInventoryStore.Bagpack bp : bagpacks) {
+                if (bp.page() == page) {
+                    cap += bp.boost();
+                }
+            }
+        }
+        return cap;
+    }
+
+    /**
+     * 指定页锚点对象帧：先 0x19 清锚点位 1/2，再按 anchor 序 0x18 落活跃锚点
+     * （装备/续期/到期时推送；锚点只落扩展页本身，不落镜像页——对齐旧抓包）。
+     */
+    public static List<byte[]> anchorFramesFor(List<RoleInventoryStore.Bagpack> bagpacks, int page) {
+        List<byte[]> out = new ArrayList<>(6);
+        int ext = PAGE_EXT_VIEW.get(page);
+        for (int anchor = 1; anchor <= 2; anchor++) {
+            out.add(viewRemove(ext, anchor));
+        }
+        List<RoleInventoryStore.Bagpack> pagePacks = new ArrayList<>();
+        if (bagpacks != null) {
+            for (RoleInventoryStore.Bagpack bp : bagpacks) {
+                if (bp.page() == page) {
+                    pagePacks.add(bp);
+                }
+            }
+            pagePacks.sort(java.util.Comparator.comparingInt(RoleInventoryStore.Bagpack::anchor));
+        }
+        int prev = 0;
+        for (RoleInventoryStore.Bagpack bp : pagePacks) {
+            int cur = prev + bp.boost();
+            out.add(itemBagAdd(ext, bp.anchor(), 19 + prev, PAGE_BASE_CAP + cur,
+                    bp.configId(), anchorHardiness(bp)));
+            prev = cur;
+        }
+        return out;
+    }
+
+    /**
+     * 扩容包每锚点扩容格数（F 抓包钉死值）：*_006 与 big36 族=36，
+     * new_005 / *_003_c=18，其余默认 18（未抓包配置待校准）。
+     */
+    public static int boostOf(String configId) {
+        if (configId == null) {
+            return 18;
+        }
+        String c = configId.toLowerCase(Locale.ROOT);
+        if (c.contains("big36") || c.endsWith("_006")) {
+            return 36;
+        }
+        return 18;
+    }
+
+    private static byte[] itemBagAdd(int view, int obj, int begin, int end,
+                                     String configId, int hardiness) {
         return SkillPackets.viewAddHeader(view, obj, 4)
-                .u16(P_CONFIG_ID).string("ITEMBAG_006")
+                .u16(P_CONFIG_ID).string(configId)
                 .u16(P_BEGIN_POS).u16(begin)
                 .u16(P_END_POS).u16(end)
-                .u16(P_HARDINESS).i32(720)
+                .u16(P_HARDINESS).i32(hardiness)
                 .toByteArray();
     }
 

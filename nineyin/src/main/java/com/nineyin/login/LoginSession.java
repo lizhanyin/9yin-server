@@ -68,6 +68,8 @@ public final class LoginSession {
     /** 库存活跃状态（msgId=30 移动物品时同步维护；null=无库存数据）。 */
     public List<com.nineyin.db.RoleInventoryStore.Equipped> liveEquipped;
     public List<com.nineyin.db.RoleInventoryStore.Bagged> liveBagged;
+    /** 扩容包锚点快照（选角链加载；装备/续期/到期时同步维护）。 */
+    public List<com.nineyin.db.RoleInventoryStore.Bagpack> liveBagpacks;
 
     /**
      * 已绑定物品 uid（首次穿戴时记录，对齐参考服 `bound (first wear)`）。

@@ -99,7 +99,7 @@ public final class PlayerActor {
     public int equipPhyVa, equipMagicVa, equipMeleePowerAdd, equipMinMelee, equipMaxMelee;
 
     // 招架（Wiki Parry Attributes；耐力/恢复默认值为骨架近似，官服基础值未公开）
-    public boolean parrying;              // 218 招架开关
+    public boolean parrying;              // 右键格挡(54)/主动招架(218)共用开关
     public int parryEndurance = 100;      // 招架耐力（当前）
     public int maxParryEndurance = 100;   // 招架耐力上限
     public int parryEnduranceRecovery = 5;// 招架耐力每秒被动恢复

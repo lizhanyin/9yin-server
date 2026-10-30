@@ -8,6 +8,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 库存 view 帧（对齐 F 盘参考 exe 抓包的布局）。 */
@@ -104,15 +105,16 @@ class InventoryPacketsTest {
         assertEquals(0x10, empty[0]);
         assertEquals(1597, leU16(empty, 12));
 
-        // 穿武器（EquipType=Weapon）：模型解析链路缺失时回退 config 原值（与建角外观同策略）
+        // 穿武器（EquipType=Weapon）：有 resources 时解析出模型路径，缺失时回退 config 原值
         List<RoleInventoryStore.Equipped> worn = List.of(
                 new RoleInventoryStore.Equipped(3, "helmet_sell_10101", 140, "Hat", 100, 100, ""),
                 new RoleInventoryStore.Equipped(1, "sword_60701", 130, "Weapon", 100, 100, ""));
         byte[] frame = InventoryPackets.weaponModeFrame(worn, (byte) 0);
         assertEquals(0x10, frame[0]);
         assertEquals(1597, leU16(frame, 12));
-        assertTrue(new String(frame, java.nio.charset.StandardCharsets.US_ASCII).contains("sword_60701"),
-                "武器模型应至少回退 config 原值");
+        String frameText = new String(frame, java.nio.charset.StandardCharsets.US_ASCII);
+        assertTrue(frameText.contains("sword_60701") || frameText.contains("sword_"),
+                "武器模型应为解析路径或回退 config 原值");
 
         // 武器判定：Weapon/ShotWeapon/InnerWeapon 是武器，Hat 不是
         assertTrue(InventoryPackets.isWeaponEquipType("Weapon"));
@@ -156,6 +158,64 @@ class InventoryPacketsTest {
         byte[] row2 = InventoryPackets.skillCatalogRow(2, "x", 5, 0, -3);
         assertEquals(1000, propValue(row2, 1887));
         assertEquals(0, propValue(row2, 764));
+    }
+
+    /** 装备背包对象携带 equipment.ini 的 EquipType（参考帧为 "Weapon" 等，空串装备页不渲染）。 */
+    @Test
+    void bagEquipCarriesIniEquipType() {
+        EquipmentModels.ItemStatic st = EquipmentModels.itemStatic("sthorn_60701");
+        assumeTrue(st != null, "无 resources（设 NINEYIN_SERVER_ROOT 指向部署目录可跑）");
+        assertEquals("Weapon", st.equipType());
+        List<byte[]> frames = InventoryPackets.inventoryFrames(2, List.of(),
+                List.of(new RoleInventoryStore.Bagged(1, "sthorn_60701", 106, 1, 2, null)),
+                (byte) 0);
+        byte[] add = null;
+        for (byte[] f : frames) {
+            if (f[0] == 0x18 && leU16(f, 1) == 121) {
+                add = f;
+                break;
+            }
+        }
+        assertTrue(add != null, "view=121 装备对象应存在");
+        assertTrue(new String(add, StandardCharsets.US_ASCII).contains("Weapon"),
+                "装备背包对象应携带真实 EquipType");
+    }
+
+    /**
+     * 登录整推回归（2026-10-30 wire 重放实锤）：remove 必须与 add 同槽位配对。
+     * 旧实现 remove 用顺序计数器 n，会把前一件刚 add 的行删掉——105 行装备
+     * 登录后只剩 12 行、格子错乱（背包装备不显示）。
+     */
+    @Test
+    void loginBagRowsSurviveRemoveAddPairing() {
+        List<RoleInventoryStore.Bagged> bagged = List.of(
+                new RoleInventoryStore.Bagged(2, "sthorn_leader_em_001", 106, 1, 2, ""),
+                new RoleInventoryStore.Bagged(3, "lstuff_leader_sl_001", 107, 1, 2, ""),
+                new RoleInventoryStore.Bagged(19, "sthorn_60701", 106, 1, 2, ""),
+                new RoleInventoryStore.Bagged(20, "sthorn_60701", 106, 1, 2, ""),
+                new RoleInventoryStore.Bagged(91, "sthorn_overflow", 106, 1, 2, ""));  // 超 cap 90
+        List<byte[]> frames = InventoryPackets.inventoryFrames(2, List.of(), bagged, (byte) 0);
+
+        // 重放模拟客户端 view 121：0x19 删行 / 0x18 加行
+        java.util.Set<Integer> rows = new java.util.HashSet<>();
+        boolean overflowSkipped = true;
+        for (byte[] f : frames) {
+            if (leU16(f, 1) != 121) {
+                continue;
+            }
+            if (f[0] == 0x19) {
+                rows.remove(leU16(f, 3));
+            } else if (f[0] == 0x18) {
+                rows.add(leU16(f, 3));
+            }
+        }
+        assertEquals(java.util.Set.of(2, 3, 19, 20), rows, "配对 remove+add 后所有行必须存活");
+        for (byte[] f : frames) {
+            if (f[0] == 0x18 && leU16(f, 1) == 121 && leU16(f, 3) == 91) {
+                overflowSkipped = false;
+            }
+        }
+        assertTrue(overflowSkipped, "超 cap 90 的历史行不应推送");
     }
 
     // ---- 解析辅助：按 u16 索引在属性区线性找值（u8/i32 通吃小值） ----

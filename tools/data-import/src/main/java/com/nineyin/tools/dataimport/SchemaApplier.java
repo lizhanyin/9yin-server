@@ -18,6 +18,7 @@ public final class SchemaApplier {
             "/schema/0001_init_roles.sql",
             "/schema/0002_data_tables.sql",
             "/schema/0003_server_list_and_terms.sql",
+            "/schema/0004_role_bagpacks.sql",
     };
 
     public int apply(DsnParser.Dsn dsn) throws SQLException {

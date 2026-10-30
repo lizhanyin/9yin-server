@@ -15,6 +15,36 @@ public final class S2CPackets {
     // ---------- 0x10 ServerObjectProperty ----------
     // 头 12 字节：[0]=0x10 [1]=0 u32 oid@2 u32 owner@6 u16 count=1@10，随后 u16 属性索引 + 值
 
+    /** 0x10 多属性帧的单个属性：i32（4 字节）或 GBK 窄串（u32 长度+字节+NUL）。 */
+    public record PropVal(int idx, int i32, String text) {
+        public static PropVal of(int idx, int value) {
+            return new PropVal(idx, value, null);
+        }
+
+        public static PropVal text(int idx, String value) {
+            return new PropVal(idx, 0, value);
+        }
+    }
+
+    /**
+     * 0x10 单帧多属性（对齐参考服 sceneObjectProperties：值不带类型字节，
+     * 线缆类型由 0x09 可见属性表决定——i32 写 4 字节、string 写 u32len+GBK+NUL）。
+     */
+    public static byte[] objectProperties(int objectId, int ownerId, PropVal... props) {
+        PacketWriter w = new PacketWriter()
+                .u8(0x10).u8(0).u32(objectId).u32(ownerId).u16(props.length);
+        for (PropVal p : props) {
+            w.u16(p.idx());
+            if (p.text() != null) {
+                byte[] b = FxText.narrow(p.text());
+                w.u32(b.length + 1).raw(b).u8(0);
+            } else {
+                w.i32(p.i32());
+            }
+        }
+        return w.toByteArray();
+    }
+
     public static byte[] objectPropertyInt(int objectId, int ownerId, int propIdx, int value) {
         return objectPropertyHeader(objectId, ownerId)
                 .u16(propIdx)

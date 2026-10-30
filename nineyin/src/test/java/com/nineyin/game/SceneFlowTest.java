@@ -944,14 +944,33 @@ class SceneFlowTest {
         drainOutbound();
         LoginSession login = channel.attr(LoginFlow.SESSION).get();
 
-        // 54 手动招架：翻转 actor.parrying（日志对齐 publish manual parry state，无帧）
+        // 54 右键格挡：int64 0=按下/1=松开；状态变化回 0x1E msg169 BuffInParry + 0x10 InParry(470)，
+        // 重复包（客户端 500ms 重发等确认/松开连发 2-3 个 1）去重不回帧（2026-10-31 exe 逆向）
         assertFalse(login.actor.parrying);
-        send(custom().u16(1).u8(2).i32(54).toByteArray());
-        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20));
-        assertTrue(login.actor.parrying, "54 should toggle parrying on");
-        send(custom().u16(1).u8(2).i32(54).toByteArray());
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(0).toByteArray());
+        List<byte[]> engageFrames = drainOutbound();
+        assertTrue(login.actor.parrying, "54 arg=0 engages parry");
+        assertTrue(engageFrames.stream().anyMatch(f -> op(f) == 0x1E && f.length > 8
+                        && f[3] == 2 && leU32(f, 4) == 169),
+                "engage pushes 0x1E msg169 BuffInParry event");
+        assertTrue(engageFrames.stream().anyMatch(f -> op(f) == 0x10 && f.length > 17
+                        && leU16(f, 10) >= 1 && leU16(f, 12) == 470 && f[14] == 1),
+                "engage pushes 0x10 InParry(470)=1");
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10),
+                "repeat engage deduped, no parry frames");
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(1).toByteArray());
+        List<byte[]> releaseFrames = drainOutbound();
+        assertFalse(login.actor.parrying, "54 arg=1 releases parry");
+        assertTrue(releaseFrames.stream().anyMatch(f -> op(f) == 0x10 && f.length > 17
+                        && leU16(f, 12) == 470 && f[14] == 0),
+                "release pushes 0x10 InParry(470)=0");
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(1).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10),
+                "client double-sends release; deduped, no parry frames");
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(0).toByteArray());
         drainOutbound();
-        assertFalse(login.actor.parrying, "54 again should toggle off");
+        assertTrue(login.actor.parrying, "re-engage after release works");
 
         // 校验层家族：全部无帧
         for (int mid : new int[]{2, 15, 31, 70, 84, 107, 112, 145, 187, 243, 266,

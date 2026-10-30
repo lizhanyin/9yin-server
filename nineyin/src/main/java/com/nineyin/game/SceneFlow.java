@@ -543,7 +543,8 @@ public final class SceneFlow {
             case 15 -> handleAdvancedQingGongEntry(fx, session, msg);
             // 身体道具使用（反汇编：31 → handleBodyItemUse）
             case 31 -> handleBodyItemUse(fx, session, msg);
-            // 手动招架（反汇编：54 → handleManualParryCustom；218 为主动招架）
+            // 右键格挡（F 参考服 2026-10-30 抓包：int64 0=按下/1=松开，松开连发 2-3 个 1 须幂等；
+            // 218 为主动招架，另路）
             case 54 -> handleManualParry(fx, session, msg);
             // 商店购买（反汇编：70 → handleShopBuyCustom；64 打开未在 custom switch 出现，
             // 开店走 SelectFlow 的 NPC 菜单链）
@@ -1055,15 +1056,64 @@ public final class SceneFlow {
         wearBagItem(fx, session, item, view);
     }
 
-    /** 54 手动招架（反汇编：handleManualParryCustom；`publish manual parry state`，与 218 主动招架同翻状态）。 */
+    /** 右键格挡 BuffInParry：buff 槽 11（本服表 →BufferInfo11=638）、StaticData 4558、持续 24h（参考 setPlayerBlock）。 */
+    private static final int PARRY_BUFF_SLOT = 11;
+    private static final int PARRY_BUFF_STATIC_DATA = 4558;
+    private static final long PARRY_BUFF_DURATION_MS = 24L * 60 * 60 * 1000;
+
+    /**
+     * 54 右键格挡（F 参考服抓包 + exe handleBlockStateCustom 逆向，2026-10-31）：
+     * int64 参数 0=按下、1=松开，按值幂等落态；状态未变（客户端 500ms 重发等不到
+     * 确认、松开连发 2-3 个 1）直接吞掉不回帧，状态变化才回两帧——这正是客户端
+     * 格挡动画的触发条件：
+     * ① 0x1E msg169 BuffInParry buff 事件（end=!parrying、双 ObjRef(玩家)、int64 nowMs）；
+     * ② 0x10 属性帧 InParry(470)/InManualParry(473) + BufferInfo11(638)（索引按本服 0x09 表）。
+     * 施法锁期间按下被忽略（参考 `block engage ignored during cast`）。
+     */
     private void handleManualParry(FxSession fx, LoginSession session, CustomMsg msg) {
         if (session.actor == null) {
             log.info("manual parry before scene player exists");
             return;
         }
-        session.actor.parrying = !session.actor.parrying;
-        log.info("publish manual parry state={} (endurance={})",
-                session.actor.parrying, session.actor.parryEndurance);
+        CustomMsg.Val state = msg.val(1);
+        if (state == null || !state.asExactInt()) {
+            log.info("manual parry arg invalid ({}), keep parrying={}", state, session.actor.parrying);
+            return;
+        }
+        PlayerActor actor = session.actor;
+        boolean engage = state.intOrZero() == 0;
+        long now = System.currentTimeMillis();
+        if (engage && now < actor.skillLockUntilMs) {
+            log.info("block engage ignored during cast lock remaining={}ms", actor.skillLockUntilMs - now);
+            return;
+        }
+        if (actor.parrying == engage) {
+            return;   // 重复包：对齐参考 setPlayerBlock 去重，不回帧
+        }
+        actor.parrying = engage;
+        String buffInfo;
+        if (engage) {
+            buffInfo = actor.activateBuff(PARRY_BUFF_SLOT, PARRY_BUFF_STATIC_DATA,
+                    PARRY_BUFF_DURATION_MS, "BuffInParry", 1);
+        } else {
+            actor.clearBuff(PARRY_BUFF_SLOT, PARRY_BUFF_STATIC_DATA);
+            buffInfo = "";
+        }
+        fx.send(CustomPackets.intMessage(169,
+                engage ? 0 : 1,                     // end 标志 = !parrying
+                "BuffInParry",
+                new CustomPackets.ObjRef(S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID),
+                new CustomPackets.ObjRef(S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID),
+                actor.name, actor.name,
+                now,
+                0));
+        int flag = engage ? 1 : 0;
+        fx.send(S2CPackets.objectProperties(S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID,
+                S2CPackets.PropVal.of(PropertyId.IN_PARRY, flag),
+                S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, flag),
+                S2CPackets.PropVal.text(PropertyId.BUFFER_INFO_FIRST + PARRY_BUFF_SLOT - 1, buffInfo)));
+        log.info("publish manual parry state={} (arg={} endurance={})",
+                actor.parrying, state.intOrZero(), actor.parryEndurance);
     }
 
     /** 107 捏脸保存（参考服：`customizing upload too large: %d`；customizing 存储未接）。 */
@@ -2036,7 +2086,7 @@ public final class SceneFlow {
         return null;
     }
 
-    /** 目标背包页第一个空格（1 起，无空位返回 max+1，上限 90）。 */
+    /** 目标背包页第一个空格（1 起：1-18 基础格 + 19-90 扩展格，无空位返回 91 护栏）。 */
     private static int freeBagSlot(List<com.nineyin.db.RoleInventoryStore.Bagged> bagged, int view) {
         int category = bagWireToCategory(view);
         boolean[] used = new boolean[96];
@@ -2045,7 +2095,7 @@ public final class SceneFlow {
                 used[b.slot()] = true;
             }
         }
-        for (int i = 1; i < used.length; i++) {
+        for (int i = 1; i <= 90; i++) {
             if (!used[i]) {
                 return i;
             }

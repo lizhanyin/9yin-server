@@ -385,12 +385,24 @@ public final class LoginFlow {
     }
 
     /**
+     * 目录整推开关，默认关：目录行按 skill_init 文件序占 1..N，ready 批角色技能行
+     * 按 DB 序占 1..M，两序不一致时 ready 会把 17k+ 槽位整体换成不同技能，实机
+     * 客户端登录冻结 2-3 秒、待机期随周期推送掉帧（2026-10-30 实测）。参考服 ready
+     * 子集天然复用目录行序；对齐行序后再以 -Dnineyin.skillCatalog.push=true 启用。
+     */
+    private static final boolean CATALOG_PUSH_ENABLED =
+            Boolean.getBoolean("nineyin.skillCatalog.push");
+
+    /**
      * choose 阶段全技能目录整推（View 40）：参考 exe 实测 choose 批推全量目录
      * （17,633 行，Level/MaxLevel=12 展示值、fill=0/total=文件值），ready 批再重推
      * 已学子集。skill_init 回退内置集时跳过（保持原 starter 下发链路）。
      * 帧与账号无关，进程级缓存一次。
      */
     private void sendSkillCatalog(FxSession fx) {
+        if (!CATALOG_PUSH_ENABLED) {
+            return;
+        }
         if (skillInit == null || skillInit.usingBuiltInFallback() || skillInit.size() == 0) {
             return;
         }

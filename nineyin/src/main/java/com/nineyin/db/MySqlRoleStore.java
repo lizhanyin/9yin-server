@@ -67,8 +67,35 @@ public final class MySqlRoleStore implements RoleStore {
             }
             ensureRoleExtColumn(conn);
             ensureTermsColumns(conn);
+            ensureBagpacksTable(conn);
         } catch (SQLException e) {
             log.error("role schema init failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 扩容包锚点表（tools 0004 同款）：缺表时建表并给存量角色种子永久锚点，
+     * 幂等（脚本是 CREATE IF NOT EXISTS + NOT EXISTS 种子；affixes 分叉教训：启动自愈）。
+     */
+    private static void ensureBagpacksTable(Connection conn) {
+        try (PreparedStatement ps = conn.prepareStatement("SHOW TABLES LIKE 'role_bagpacks'");
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                return;
+            }
+            String sql = readResource("/nineyin/db/0004_role_bagpacks.sql");
+            try (Statement st = conn.createStatement()) {
+                for (String statement : sql.split(";")) {
+                    String trimmed = statement.trim();
+                    if (trimmed.isEmpty()) {
+                        continue;
+                    }
+                    st.execute(trimmed);
+                }
+            }
+            log.info("role_bagpacks table created (with legacy seed)");
+        } catch (SQLException e) {
+            log.error("role_bagpacks ensure failed: {}", e.getMessage());
         }
     }
 

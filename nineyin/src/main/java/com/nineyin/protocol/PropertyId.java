@@ -111,6 +111,10 @@ public final class PropertyId {
     public static final int COLLIDE = 1839;
     public static final int CANT_BE_SELECT = 265;
     public static final int HPRATIO = 468;
+    /** 以下按本服 0x09 官服表（official_property_table.txt）：470=InParry、473=InManualParry。
+     * 注意新参考 exe 自己的表整体偏移 +1（471/474），帧索引必须与本服下发的表一致。 */
+    public static final int IN_PARRY = 470;         // 格挡中（右键 54/主动 218 同步）
+    public static final int IN_MANUAL_PARRY = 473;  // 手动格挡中
 
     /** BufferInfo 槽位属性索引（1..24）。 */
     public static int bufferInfoSlot(int slot) {

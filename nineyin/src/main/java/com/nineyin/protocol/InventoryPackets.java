@@ -29,6 +29,8 @@ public final class InventoryPackets {
     public static final int VIEW_MATERIAL_PAGE = 123;
     public static final int VIEW_TASK_PAGE = 125;
     public static final int VIEW_EQUIP_BAG = 121;    // 装备背包页（未穿戴装备）
+    /** 背包主页对象槽位上限（createView cap 90：1-18 基础格 + 19-90 ITEMBAG_006 扩展格）。 */
+    public static final int BAG_SLOT_MAX = 90;
 
     /** 主页 → 时装镜像页（0x19 版本帧成对下发）。 */
     private static final Map<Integer, Integer> MIRROR = Map.of(
@@ -131,9 +133,11 @@ public final class InventoryPackets {
     // ---- 物品对象 ----
 
     /**
-     * 全套库存下发帧（0x0B 之后调用）：装备纸娃娃 View 1 + 各背包页物品，
-     * 带参考实现的 0x19 版本帧节奏。同时缓存于 LoginSession 供 0x0C 重发。
-     * 末尾附武器模型属性帧（WeaponMode=1597），重进场景时角色手持武器一并恢复。
+     * 全套库存下发帧（0x0B 之后调用）：装备纸娃娃 View 1 + 各背包页物品。
+     * 背包行按真实槽位成对 remove+add（2026-10-30 wire 重放实锤：remove 用顺序
+     * 计数器会删掉前一件刚 add 的行，105 行装备登录后只剩 12 行）。
+     * 同时缓存于 LoginSession 供 0x0C 重发；末尾附武器模型属性帧
+     * （WeaponMode=1597），重进场景时角色手持武器一并恢复。
      */
     public static List<byte[]> inventoryFrames(long roleId,
                                                List<RoleInventoryStore.Equipped> equipped,
@@ -143,20 +147,22 @@ public final class InventoryPackets {
         for (RoleInventoryStore.Equipped item : equipped) {
             frames.add(equipmentViewAdd(item, uniqueId(roleId, "equip", item.slot())));
         }
-        java.util.Map<Integer, Integer> seq = new java.util.HashMap<>();
         for (RoleInventoryStore.Bagged item : bagged) {
+            if (item.slot() < 1 || item.slot() > BAG_SLOT_MAX) {
+                continue;   // 超 cap 90 的历史行（数据恢复叠加产生的 91-111）不推
+            }
             int view = bagViewOf(item.viewId());
-            int n = seq.merge(view, 1, Integer::sum);
-            frames.add(viewRemove(view, n));
+            frames.add(viewRemove(view, item.slot()));
             frames.add(bagViewAdd(item, uniqueId(roleId, "bag", item.slot()), view));
             int mirror = mirrorOf(view);
             if (mirror != 0) {
-                frames.add(viewRemove(mirror, n));
+                frames.add(viewRemove(mirror, item.slot()));
             }
         }
         frames.add(weaponModeFrame(equipped, sex));
         return frames;
     }
+
 
     /**
      * 武器模型属性帧（0x10 WeaponMode=1597，对齐参考服 pushGearVisual）：
@@ -247,7 +253,8 @@ public final class InventoryPackets {
         w.u16(P_MAX_AMOUNT).i32(1);
         w.u16(P_ITEM_TYPE).i32(item.itemType());
         w.u16(P_BIND_STATUS).i32(0);
-        w.u16(P_EQUIP_TYPE).string("");
+        // equipment.ini 的 EquipType（参考帧为 "Weapon"/"ClothesH" 等真实值，空串装备页不渲染）
+        w.u16(P_EQUIP_TYPE).string(st.equipType());
         w.u16(P_MAX_BUILD).i32(st.maxBuildCount());
         w.u16(P_CUR_BUILD).i32(st.maxBuildCount());
         w.u16(P_RECOVER_FLAG).u8(0);

@@ -57,22 +57,46 @@ public final class RoleInventoryStore {
         return null;
     }
 
+    /** affixes 列是本服迁移加的；DB 被 F 版参考服数据还原后该列不存在，需降级查询。 */
+    private static final String EQUIP_SQL_FULL =
+            "SELECT slot, config_id, item_type, equip_type, hardiness, max_hardiness, affixes "
+                    + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+    private static final String EQUIP_SQL_NO_AFFIXES =
+            "SELECT slot, config_id, item_type, equip_type, hardiness, max_hardiness "
+                    + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+
     public List<Equipped> equipment(long roleId) {
+        try {
+            return queryEquipment(roleId, EQUIP_SQL_FULL, true);
+        } catch (SQLException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Unknown column 'affixes'")) {
+                log.warn("role_equip_items has no affixes column (F-schema db); "
+                        + "retry without affixes role={}", roleId);
+                try {
+                    return queryEquipment(roleId, EQUIP_SQL_NO_AFFIXES, false);
+                } catch (SQLException e2) {
+                    log.warn("equipment query failed role={} : {}", roleId, e2.getMessage());
+                }
+            } else {
+                log.warn("equipment query failed role={} : {}", roleId, e.getMessage());
+            }
+        }
+        return new ArrayList<>();
+    }
+
+    private List<Equipped> queryEquipment(long roleId, String sql, boolean readAffixes)
+            throws SQLException {
         List<Equipped> out = new ArrayList<>();
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT slot, config_id, item_type, equip_type, hardiness, max_hardiness, affixes "
-                             + "FROM role_equip_items WHERE role_id = ? ORDER BY seq")) {
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, roleId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.add(new Equipped(rs.getInt(1), rs.getString(2), rs.getInt(3),
                             rs.getString(4), rs.getInt(5), rs.getInt(6),
-                            propBuiltOf(rs.getString(7))));
+                            propBuiltOf(readAffixes ? rs.getString(7) : null)));
                 }
             }
-        } catch (SQLException e) {
-            log.warn("equipment query failed role={} : {}", roleId, e.getMessage());
         }
         return out;
     }
@@ -118,6 +142,145 @@ public final class RoleInventoryStore {
             log.warn("bag query failed role={} : {}", roleId, e.getMessage());
         }
         return out;
+    }
+
+    // ---- 扩容包锚点（role_bagpacks，schema 0004；F 参考服 2026-10-31 抓包语义） ----
+
+    /** 已装备锚点（expires 恒在未来：读到已过期行顺手删除并剔除）。 */
+    public record Bagpack(int page, int anchor, String configId, int boost,
+                          java.time.Instant expires) {
+        /** 存量种子（9999-12-31）视为永久。 */
+        public boolean permanent() {
+            return expires.isAfter(java.time.Instant.now()
+                    .plus(java.time.Duration.ofDays(365L * 100)));
+        }
+    }
+
+    /** 活跃锚点列表（按 page, anchor 排序）；过期行惰性清理。 */
+    public List<Bagpack> bagpacks(long roleId) {
+        List<Bagpack> out = new ArrayList<>();
+        List<int[]> expired = null;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT page, anchor, config_id, boost, expires_at "
+                             + "FROM role_bagpacks WHERE role_id = ? ORDER BY page, anchor")) {
+            ps.setLong(1, roleId);
+            try (ResultSet rs = ps.executeQuery()) {
+                java.time.Instant now = java.time.Instant.now();
+                while (rs.next()) {
+                    java.time.Instant ex = rs.getTimestamp(5).toInstant();
+                    if (ex.isBefore(now)) {
+                        if (expired == null) {
+                            expired = new ArrayList<>();
+                        }
+                        expired.add(new int[]{rs.getInt(1), rs.getInt(2)});
+                        continue;
+                    }
+                    out.add(new Bagpack(rs.getInt(1), rs.getInt(2), rs.getString(3),
+                            rs.getInt(4), ex));
+                }
+            }
+            if (expired != null) {
+                for (int[] pk : expired) {
+                    try (PreparedStatement del = conn.prepareStatement(
+                            "DELETE FROM role_bagpacks WHERE role_id = ? AND page = ? AND anchor = ?")) {
+                        del.setLong(1, roleId);
+                        del.setInt(2, pk[0]);
+                        del.setInt(3, pk[1]);
+                        del.executeUpdate();
+                        log.info("expired bagpack removed role={} page={} anchor={}",
+                                roleId, pk[0], pk[1]);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("bagpacks query failed role={} : {}", roleId, e.getMessage());
+        }
+        return out;
+    }
+
+    /** 装备锚点（UPSERT；新装备或续期后的整行覆写）。 */
+    public boolean equipBagpack(long roleId, int page, int anchor, String configId,
+                                int boost, java.time.Instant expires) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "INSERT INTO role_bagpacks (role_id, page, anchor, config_id, boost, expires_at) "
+                             + "VALUES (?, ?, ?, ?, ?, ?) "
+                             + "ON DUPLICATE KEY UPDATE config_id = VALUES(config_id), "
+                             + "boost = VALUES(boost), expires_at = VALUES(expires_at)")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, page);
+            ps.setInt(3, anchor);
+            ps.setString(4, configId);
+            ps.setInt(5, boost);
+            ps.setTimestamp(6, java.sql.Timestamp.from(expires));
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("equipBagpack failed role={} page={} anchor={} : {}",
+                    roleId, page, anchor, e.getMessage());
+            return false;
+        }
+    }
+
+    /** 续期：expires += addHours（MySQL DATE_ADD 参数化），返回续期后的到期时刻。 */
+    public java.time.Instant renewBagpack(long roleId, int page, int anchor, int addHours) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE role_bagpacks SET expires_at = DATE_ADD(expires_at, INTERVAL ? HOUR) "
+                             + "WHERE role_id = ? AND page = ? AND anchor = ?")) {
+            ps.setInt(1, addHours);
+            ps.setLong(2, roleId);
+            ps.setInt(3, page);
+            ps.setInt(4, anchor);
+            if (ps.executeUpdate() == 0) {
+                return null;
+            }
+            try (PreparedStatement q = conn.prepareStatement(
+                    "SELECT expires_at FROM role_bagpacks WHERE role_id = ? AND page = ? AND anchor = ?")) {
+                q.setLong(1, roleId);
+                q.setInt(2, page);
+                q.setInt(3, anchor);
+                try (ResultSet rs = q.executeQuery()) {
+                    return rs.next() ? rs.getTimestamp(1).toInstant() : null;
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("renewBagpack failed role={} page={} anchor={} : {}",
+                    roleId, page, anchor, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 删除锚点（到期扫描用）。 */
+    public boolean deleteBagpack(long roleId, int page, int anchor) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "DELETE FROM role_bagpacks WHERE role_id = ? AND page = ? AND anchor = ?")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, page);
+            ps.setInt(3, anchor);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("deleteBagpack failed role={} page={} anchor={} : {}",
+                    roleId, page, anchor, e.getMessage());
+            return false;
+        }
+    }
+
+    /** 使用消耗背包物品（DELETE 行；amount 由调用方先决定是否减量，扩容包不可堆叠=整行删）。 */
+    public boolean consumeBagItem(long roleId, int slot, int viewCategory) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ? AND view_id = ?")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, slot);
+            ps.setInt(3, viewCategory);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            log.warn("consumeBagItem failed role={} slot={} view={} : {}",
+                    roleId, slot, viewCategory, e.getMessage());
+            return false;
+        }
     }
 
     /**

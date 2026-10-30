@@ -45,6 +45,7 @@ class SceneFlowTest {
     private RoleStore roleStore;
     private SceneFlow sceneFlow;
     private MailStore mailStore;
+    private TeamManager teamManager;
     private EmbeddedChannel channel;
 
     @BeforeEach
@@ -70,6 +71,8 @@ class SceneFlowTest {
                 null, null, skillCatalog, skillInit);
         mailStore = MailStore.inMemory();
         sceneFlow.setMailStore(mailStore);
+        teamManager = TeamManager.inMemory();
+        sceneFlow.setTeamManager(teamManager);
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.register(router);
         sceneFlow.register(router);
@@ -339,6 +342,55 @@ class SceneFlowTest {
         assertEquals(0x12, op(delFrames.get(0)));
         assertEquals(17, leU16(delFrames.get(0), 10));
         assertEquals(0, mailStore.count(42));
+    }
+
+    /** 组队 op-first 链（§3.24）：310 建队 → 0x15 view190+成员行+vital；312 离队 → 仅 vital；参数形状拒绝。 */
+    @Test
+    void teamOps310And312() {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        login.roleId = 42;
+        login.roleName = "队探54571";
+
+        // op 即首值：[310] 建队 → 0x15(190) + 0x18 成员行 + 0x10 vital
+        send(custom().u16(1).u8(2).i32(310).toByteArray());
+        List<byte[]> created = drainOutbound();
+        List<byte[]> viewCreates = created.stream()
+                .filter(f -> op(f) == 0x15 && leU16(f, 1) == 190).toList();
+        assertEquals(1, viewCreates.size());
+        assertEquals(1, leU16(viewCreates.get(0), 3), "容量 = 成员数 1");
+        List<byte[]> rows = created.stream()
+                .filter(f -> op(f) == 0x18 && leU16(f, 1) == 190).toList();
+        assertEquals(1, rows.size());
+        assertEquals(7, leU16(rows.get(0), 5), "成员行 7 列");
+        String rowText = new String(rows.get(0), StandardCharsets.UTF_8);
+        assertTrue(rowText.contains("队探54571"), "成员行含 UTF-8 名字");
+        assertTrue(created.stream().anyMatch(f -> op(f) == 0x10), "建队后 vital resync");
+        assertEquals(1, teamManager.count());
+
+        // 参数形状：[310, 0] 恰 1 值要求被拒（无新视图帧）
+        send(custom().u16(2).u8(2).i32(310).u8(2).i32(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x15));
+
+        // 312 离队 → 无视图帧、仅 vital（对齐实机）
+        send(custom().u16(1).u8(2).i32(312).toByteArray());
+        List<byte[]> left = drainOutbound();
+        assertTrue(left.stream().noneMatch(f -> op(f) == 0x15 || op(f) == 0x18),
+                "离队不发视图帧（实机仅 0x10）");
+        assertTrue(left.stream().anyMatch(f -> op(f) == 0x10));
+        assertEquals(0, teamManager.count(), "末员离队即解散");
+
+        // 316 名字 op：非宽串参数被拒（team: operation 316 requires 2 values）
+        send(custom().u16(2).u8(2).i32(316).u8(2).i32(0).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "参数形状拒绝不发行帧（巡逻 0x20 除外）");
     }
 
     private static int leU16(byte[] msg, int off) {

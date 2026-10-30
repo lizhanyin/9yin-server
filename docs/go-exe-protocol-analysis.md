@@ -318,7 +318,7 @@ Go 同构日志；**default 分支日志对齐**为参考服的
 | 215 | PlayerProgress | `player progress request before scene player exists`；内功子命令（`215 requires a learned neigong ConfigID string`、`handle inner-power msg=%d`）同属此 handler——修正第四轮"215=纯内功切换"推断 |
 | 217 | ActiveQingGong | 既有知识 |
 | 249 | YufengHoldPowerEnd | `Yufeng charge window ... without C2S 249` |
-| 326/388 | Team(含伙伴) | `team: operation %d requires %d values` |
+| 326/388 | Team(含伙伴) | `team: operation %d requires %d values`；**第二十四轮：op=首值、18 编号 op 空间（308-319/326/388/442-445），310 建队/312/313 离队已实机钉死并落地（见 §3.24）** |
 | 353/359/361 | Mail | `mail selection has invalid fields` |
 | 700/702/706 | OriginActive/GetPrize/RequireNotify | `origin 700/702/705: missing origin id`（**修正第四轮 700=Get 推断**；701=Get、705=SetShow 由邻位推断） |
 | 961 | RideSkillUse | `ride skill (not dismount) id=%s mounted=%v` |
@@ -354,7 +354,7 @@ Shortcut(200)/Warning(292)/924/868 等的守卫比较因落入式 case / 参数�
 | 19 | FashionSuit ✓ | | 291/292/293 | PKMode/Warning/PKProtect ✓ |
 | 30 | MoveItem ✓ | | 295 | SetTitle 🎉 |
 | 31 | 使用物品链（BodyItemUse+右键穿）🎉 | | 301 | VIP ✓ |
-| 34/71 | ItemAction 🎉（71 ≠ 商店关闭） | | 326/388/442~445 | Team（6 编号）🎉 |
+| 34/71 | ItemAction 🎉（71 ≠ 商店关闭） | | 308~319/326/388/442~445 | Team（**18 编号 op 空间，op=首值**，第二十四轮）🎉 |
 | 54 | ManualParry 🎉（218=ActiveParry 互证） | | 350/353/355/356/357/359/361/365 | Mail（8 编号，第二十三轮全链）🎉 |
 | 61 | ShowEquipType ✓ | | 380 | PickupDrop ✓ |
 | 70 | ShopBuy ✓（64 打开未在 custom switch 出现） | | 382 | CloseDrop ✓ |
@@ -1004,3 +1004,40 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   View80/[238] 掉落箱（Java 无 DropBox 实体）；1315B 174 属性全量批（Java 0x0D
   已覆盖主体）；0x10 属性 326/327/328 方案串（Go 表专用编号，Java 官服表体系
   不同，需先在 Java 表定位同名属性再推）。
+
+### 3.24 组队系统首轮（2026-10-30 第二十四轮）
+
+反汇编 `main.handleTeamCustom` + op-first 实机探针（`tools/smoke/team_probe2.py`），
+组队从校验桩推进到建队/离队全链。
+
+- **op 体系钉死（修正 §3.9 旧结论）**：**op = 首值**（handleTeamCustom
+  `mov 0x4(%r9),%ecx` 后查 `main.teamOpIDs` map；外层 custom switch 将
+  308-319 一并路由至此）——"6 编号"实为 **18 编号 op 空间**：
+  **308-319 连续 + 326 + 388 + 442-445**（map.init.21 的 18 个 key）。
+  参数形状（decodeNativeTeamRequest）：{310,311,312,444} 恰 1 值；
+  {313,316,445} = 2 值 `[op, 名字(宽串)]`（validCompanionRequestName 校验，
+  名字需含 `·`，如 bots.json 的 `江湖伙伴·与子偕老`）；其余走 int 参数路径。
+- **op→行为（je 块映射 + 实机响应互证）**：310=CreateTeam（je 目标块内首调用；
+  实机响应确证）、312/313=Leave（313 为宽串名字变体，`case 312, 313:` 共块）、
+  445≈Disband、443/444=TeamOf 族；team.Manager API（符号）：
+  CreateTeam/Invite/AcceptInvite/JoinTeam/Kick/ChangeCaptain/Disband/
+  SetPickMode/SetPickQuality/SetSign/PendingInvite/Send/SendToTeam/RoleIDByName。
+  其余 op（311/314/315/317-319/326/388/442-444）单会话无前置条件全部静默，
+  行为待双会话邀请流钉死。
+- **实机帧序**：310 建队 → **0x15 view 190（容量=成员数）+ 0x18 成员行 +
+  0x10 全量属性批 resync**；成员行 7 列 `[1=名字(裸 UTF-8, u32 长度含 NUL——
+  非 GBK 窄串，e9989f…=UTF-8"队"互证), 2..6=int 0, 7=int 队长位 1]`；
+  312 离队 → **仅 0x10**（无视图删除帧）。0x10 批 diff 定位 **属性 275 =
+  TeamCaptain（Go 表 type 8）**：建队置值（含名字 UTF-16 片段）、离队清空
+  （编码形态 oid/长度串存在歧义，本轮不推）。team_rec（记录 34）实测未出现
+  ——组队 UI 走 View 190 而非记录行。
+- **Java 落地**：`game/TeamManager`（teams.json Go 同构 {next_id, teams:[]}，
+  末员离队解散、队长离队顺位移交）；`protocol/TeamPackets`（0x15/0x18，
+  金样逐字节对照实机 61B 成员行）；SceneFlow **op=首值修正**（旧桩误读 val(1)）+
+  dispatch 308-319/326/388/442-445 接入 + 310 建队全链 + 312/313 离队 +
+  316/445 宽串形状校验 + ready 在队补发视图；测试 +6
+  （TeamPacketsTest 3 / TeamManagerTest 2 / SceneFlowTest.teamOps310And312），
+  全量 **180 绿**。
+- **留待后续**：邀请/接受/踢人跨会话流（双会话探针 + Invite/AcceptInvite/Kick
+  op 编号）；TeamCaptain(275) 推送（编码待钉）；311/314-319/326/388/442-444
+  逐个行为；companion 伙伴队（313/316/445 名字 op）。

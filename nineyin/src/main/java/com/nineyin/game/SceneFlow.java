@@ -11,6 +11,7 @@ import com.nineyin.protocol.MailPackets;
 import com.nineyin.protocol.NpcPackets;
 import com.nineyin.protocol.PropertyId;
 import com.nineyin.protocol.S2CPackets;
+import com.nineyin.protocol.TeamPackets;
 import com.nineyin.scene.NpcInstance;
 import com.nineyin.scene.SceneManager;
 import com.nineyin.scene.SceneWorld;
@@ -194,6 +195,13 @@ public final class SceneFlow {
         this.mailStore = mailStore;
     }
 
+    /** 组队存储（NineyinServer 装配 data/teams.json；测试默认内存实例）。 */
+    private TeamManager teamManager = TeamManager.inMemory();
+
+    public void setTeamManager(TeamManager teamManager) {
+        this.teamManager = teamManager;
+    }
+
     public void register(FxOpcodeRouter router) {
         router.register(OP_ACTIVITY, this::onActivity);
         router.register(OP_PING, this::onPing);
@@ -250,6 +258,18 @@ public final class SceneFlow {
             List<MailStore.Mail> mails = mailStore.list(session.roleId);
             for (int i = 0; i < mails.size(); i++) {
                 fx.send(mailRowFrame(i, mails.get(i)));
+            }
+        }
+        // 组队视图（View 190）：进场景在队则补发（对齐 resyncTeam 登录补发）
+        if (session.roleId != 0) {
+            TeamManager.Team team = teamManager.teamOf(session.roleId);
+            if (team != null) {
+                fx.send(TeamPackets.teamViewCreate(team.members.size()));
+                for (int i = 0; i < team.members.size(); i++) {
+                    TeamManager.Member m = team.members.get(i);
+                    fx.send(TeamPackets.teamMemberRow(i + 1, m.name(),
+                            m.roleId() == team.captainRoleId));
+                }
             }
         }
         log.info("scene {} NPCs sent={} of {} loaded (portals={})", session.spawnResource, sent,
@@ -532,8 +552,9 @@ public final class SceneFlow {
             case 295 -> handleSetTitle(fx, session, msg);
             // 骑乘上下骑/新坐骑（反汇编：243=Ride / 266=NewRide）
             case 243, 266 -> handleRide(fx, session, msg);
-            // 组队（反汇编：326/388/442~445 → handleTeamCustomWithCompanion）
-            case 326, 388, 442, 443, 444, 445 -> handleTeam(fx, session, msg);
+            // 组队（§3.24：op=首值，外层将 308-319 与 326/388/442-445 一并路由至此）
+            case 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319,
+                 326, 388, 442, 443, 444, 445 -> handleTeam(fx, session, msg);
             // 一键穿（反汇编：886~889 → handleOnestepEquipCustom，`wear now requires one
             // wearable equipment item`）
             case 886, 887, 888, 889 -> handleOnestepEquip(fx, session, msg);
@@ -1286,20 +1307,70 @@ public final class SceneFlow {
                 sub.intOrZero(), msg.size() - 2);
     }
 
-    /** 326/388 组队（参考服：`reject team op %d before player spawn` / `team: operation %d requires %d values`；队伍系统未接）。 */
+    /**
+     * 组队（§3.24 反汇编 + 实机钉死）：**op = 首值**（外层 custom switch 将
+     * 308-319/326/388/442-445 一并路由至此，teamOpIDs 18 编号校验）。
+     * 参数形状（decodeNativeTeamRequest）：{310,311,312,444} 恰 1 值；
+     * {313,316,445} = 2 值 [op, 名字(宽串)]；其余 op 走 int 参数路径。
+     * 行为：310 建队 → 0x15 view190 + 成员行 + 0x10 全量 resync（实机帧序）；
+     * 312/313 离队 → 仅 0x10（实机无视图删除帧）；其余 op 校验层 + Go 同构日志
+     * （`team: operation %d requires %d values`）。
+     */
     private void handleTeam(FxSession fx, LoginSession session, CustomMsg msg) {
-        CustomMsg.Val op = msg.val(1);
+        int op = msg.msgId();   // op 即首值（反汇编 `mov 0x4(%r9),%ecx` 后查 teamOpIDs）
         if (session.actor == null) {
-            log.info("reject team op {} before player spawn",
-                    op != null && op.asExactInt() ? op.intOrZero() : -1);
+            log.info("reject team op {} before player spawn", op);
             return;
         }
-        if (op == null || !op.asExactInt()) {
-            log.info("team malformed vals={}", summarizeVals(msg));
-            return;
+        switch (op) {
+            case 310 -> {   // CreateTeam（恰 1 值）
+                if (msg.size() != 1) {
+                    log.info("team: operation {} requires {} values", op, 1);
+                    return;
+                }
+                String name = session.roleName != null ? session.roleName : "";
+                TeamManager.Team team = teamManager.create(session.roleId, name);
+                fx.send(TeamPackets.teamViewCreate(team.members.size()));
+                for (int i = 0; i < team.members.size(); i++) {
+                    TeamManager.Member m = team.members.get(i);
+                    fx.send(TeamPackets.teamMemberRow(i + 1, m.name(),
+                            m.roleId() == team.captainRoleId));
+                }
+                fx.send(session.actor.vitalUpdate());
+                log.info("team {} created via captain {} members={}",
+                        team.id, session.roleId, team.members.size());
+            }
+            case 312, 313 -> {   // Leave（313 为带名字变体：2 值宽串）
+                if (op == 313 ? msg.size() != 2 : msg.size() != 1) {
+                    log.info("team: operation {} requires {} values", op, op == 313 ? 2 : 1);
+                    return;
+                }
+                if (op == 313) {
+                    CustomMsg.Val v = msg.val(1);
+                    if (v == null || v.type != CustomMsg.TYPE_WIDE_STRING) {
+                        log.info("team: operation {} requires {} values", op, 2);
+                        return;
+                    }
+                }
+                if (teamManager.leave(session.roleId)) {
+                    fx.send(session.actor.vitalUpdate());
+                    log.info("team member {} left team", session.roleId);
+                }
+            }
+            // 名字 op（宽串）：{316,445}
+            case 316, 445 -> {
+                if (msg.size() != 2 || msg.val(1) == null
+                        || msg.val(1).type != CustomMsg.TYPE_WIDE_STRING) {
+                    log.info("team: operation {} requires {} values", op, 2);
+                    return;
+                }
+                log.info("team op {} name={} pending (companion team ops unpinned)",
+                        op, msg.val(1).str);
+            }
+            // 其余 op（311/314/315/317/318/319/326/388/442/443/444）：校验层 + 待钉死
+            default -> log.info("team op {} vals={} (per-op behavior pending pinning)",
+                    op, summarizeVals(msg));
         }
-        log.info("team msg={} op={} (team system not implemented; per-op arity pending)",
-                msg.msgId(), op.intOrZero());
     }
 
     /**

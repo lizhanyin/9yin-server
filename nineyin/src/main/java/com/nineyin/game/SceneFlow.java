@@ -3,6 +3,7 @@ package com.nineyin.game;
 import com.nineyin.db.RoleStore;
 import com.nineyin.login.LoginFlow;
 import com.nineyin.login.LoginSession;
+import com.nineyin.protocol.Appearance;
 import com.nineyin.protocol.BootstrapPackets;
 import com.nineyin.protocol.CustomPackets;
 import com.nineyin.protocol.InventoryPackets;
@@ -393,6 +394,15 @@ public final class SceneFlow {
                     fx.send(S2CPackets.objectPropertyInt(223, session.operateMode));
                 }
             }
+            // 显示装备类型（参考服：showequip_type set to %d / invalid value %d；
+            // 外观 gear visual 帧的线格式未钉死，先校验+存储）
+            case 61 -> handleShowEquipType(fx, session, msg);
+            // PK 三开关（参考服参数校验串钉死布局）：
+            // 291 TVarList(291, mode)；292 无参 toggle（响应走 normal 0x10，属性待钉死）；
+            // 293 TVarList(293, type, onoff)
+            case 291 -> handleChangePkMode(fx, session, msg);
+            case 292 -> handleChangeWarning(fx, session);
+            case 293 -> handlePkProtectToggle(fx, session, msg);
             // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认）
             case 819 -> handleTermsSign(fx, session);
             // 商店购买流程（64 打开 / 70 购买 / 71 关闭）：S2C 响应格式待抓包钉死，先对齐 C++ 记日志
@@ -428,6 +438,71 @@ public final class SceneFlow {
         fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_SIGN_COUNT, (int) t[0]));
         log.info("terms sign accepted account={} first={} signCount={} at={} ip={}",
                 session.accountKey, first, t[0], t[1], fx.remoteAddress());
+    }
+
+    /**
+     * 291 PK 模式切换（参考服：change pk mode expects TVarList(291, mode) / invalid mode）。
+     * 权威值 0x10 推送 PKMode(436, short)；官服属性表 type 1 → i16 编码。
+     */
+    private void handleChangePkMode(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val v = msg.val(1);
+        if (v == null || !v.asExactInt()) {
+            log.info("pk mode 291 ignored: bad mode argc={}", msg.size() - 1);
+            return;
+        }
+        int mode = v.intOrZero();
+        if (mode < 0 || mode > 2) {
+            log.info("pk mode 291 invalid mode {}", mode);
+            return;
+        }
+        int old = session.pkMode;
+        session.pkMode = mode;
+        fx.send(S2CPackets.objectPropertyShort(PropertyId.PK_MODE, mode));
+        log.info("pk mode {} -> {} (property 436 pushed)", old, mode);
+    }
+
+    /**
+     * 292 警告开关（参考服：warning expects TVarList(292) with no extra values；
+     * change warning %d -> %d via normal 0x10）。0x10 目标属性 ID 未从 exe 钉死，
+     * 先翻转+存储，属性推送待抓包补上（见 docs/go-exe-protocol-analysis.md §3.2）。
+     */
+    private void handleChangeWarning(FxSession fx, LoginSession session) {
+        boolean next = !session.warningOn;
+        int old = session.warningOn ? 1 : 0;
+        session.warningOn = next;
+        log.info("change warning {} -> {} (0x10 property pending capture)", old, next ? 1 : 0);
+    }
+
+    /**
+     * 293 PK 保护开关（参考服：toggle expects TVarList(293, type, onoff)；
+     * client pk protect toggle type=%d on=%d）。
+     */
+    private void handlePkProtectToggle(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val type = msg.val(1);
+        CustomMsg.Val on = msg.val(2);
+        if (type == null || on == null || !type.asExactInt() || !on.asExactInt()) {
+            log.info("pk protect 293 ignored: bad args argc={}", msg.size() - 1);
+            return;
+        }
+        session.pkProtectType = type.intOrZero();
+        session.pkProtectOn = on.intOrZero() != 0;
+        log.info("pk protect toggle type={} on={}", session.pkProtectType, session.pkProtectOn);
+    }
+
+    /** 61 显示装备类型（参考服：showequip_type set to %d / invalid value %d）。 */
+    private void handleShowEquipType(FxSession fx, LoginSession session, CustomMsg msg) {
+        CustomMsg.Val v = msg.val(1);
+        if (v == null || !v.asExactInt()) {
+            log.info("showequip_type 61 ignored: bad type argc={}", msg.size() - 1);
+            return;
+        }
+        int type = v.intOrZero();
+        if (type < 0) {
+            log.info("showequip_type 61 invalid value {}", type);
+            return;
+        }
+        session.showEquipType = type;
+        log.info("showequip_type set to {}", type);
     }
 
     /** 参数摘要：全部值以空格连接，单值与总长截断（移动/按键串等长参数不至于淹没日志）。 */
@@ -593,11 +668,17 @@ public final class SceneFlow {
             log.info("move 30 bag[{}:{}]{}->bag[{}:{}] config={}",
                     fromView, fromSlot, category, view, slot, item.configId());
         }
+        // 穿/脱触及装备纸娃娃时重推武器模型（对齐参考服 pushGearVisual：WeaponMode=1597 随 0x10 增量）
+        if (fromView == InventoryPackets.VIEW_EQUIP_DOLL || toView == InventoryPackets.VIEW_EQUIP_DOLL) {
+            out.add(InventoryPackets.weaponModeFrame(session.liveEquipped,
+                    Appearance.resolveVisual(session.appearance).sex()));
+        }
         for (byte[] frame : out) {
             fx.send(frame);
         }
         session.inventoryFrames = InventoryPackets.inventoryFrames(
-                roleId, session.liveEquipped, session.liveBagged);
+                roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
     }
 
     private static int intArg(CustomMsg msg, int idx) {

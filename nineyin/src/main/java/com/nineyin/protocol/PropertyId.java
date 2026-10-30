@@ -49,6 +49,7 @@ public final class PropertyId {
     public static final int CAPITAL_TYPE0 = 415;   // i64（金币）
     public static final int CAPITAL_TYPE1 = 416;   // i64（碎银）
     public static final int MODIFY_SKILL_LOCK_TIME = 221;
+    public static final int PK_MODE = 436;         // short：0=和平 1=善恶 2=杀戮（msgId=291 切换）
     public static final int CUR_SKILL_ID = 459;    // string
     public static final int LOGIC_STATE = 462;     // byte: 0=普通 1=战斗 102=打坐
     public static final int DEAD = 463;            // byte

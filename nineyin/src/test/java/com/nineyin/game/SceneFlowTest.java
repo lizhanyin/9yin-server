@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 场景同步全链路：登录→建角(book1 千灯镇 fixture)→进场景→NPC 下发/巡逻/打坐/快捷键/移动。 */
@@ -276,6 +277,59 @@ class SceneFlowTest {
         send(custom().u16(1).u8(2).i32(819).toByteArray());
         drainOutbound();
         assertEquals(t[1], roleStore.termsState(accountKey)[1], "重复同意不得刷新时间");
+    }
+
+    @Test
+    void pkAndClientTogglesMatchGoServer() throws Exception {
+        // 登录 → 建角 → 选角 → Ready
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // 291 PK 模式 =2：0x10 推送 PKMode(436=0x01B4, short) 值 2
+        send(custom().u16(2).u8(2).i32(291).u8(2).i32(2).toByteArray());
+        List<byte[]> pk = drainOutbound();
+        assertTrue(pk.stream().anyMatch(f -> op(f) == 0x10
+                        && f[12] == (byte) 0xB4 && f[13] == 0x01
+                        && f[14] == 2 && f[15] == 0),
+                "291 应以 i16 推送属性 436=2");
+        assertEquals(2, login.pkMode);
+
+        // 291 非法模式 5：拒绝，不推 436，状态不变
+        send(custom().u16(2).u8(2).i32(291).u8(2).i32(5).toByteArray());
+        List<byte[]> badPk = drainOutbound();
+        assertTrue(badPk.stream().noneMatch(f -> op(f) == 0x10
+                        && f[12] == (byte) 0xB4 && f[13] == 0x01),
+                "非法模式不得推送 436");
+        assertEquals(2, login.pkMode);
+
+        // 292 警告开关：无参 toggle 0→1→0（0x10 属性待抓包钉死，只验状态）
+        send(custom().u16(1).u8(2).i32(292).toByteArray());
+        drainOutbound();
+        assertTrue(login.warningOn, "292 首次应翻转为开");
+        send(custom().u16(1).u8(2).i32(292).toByteArray());
+        drainOutbound();
+        assertFalse(login.warningOn, "292 二次应翻转为关");
+
+        // 293 PK 保护：[type=1, onoff=1] 落状态
+        send(custom().u16(3).u8(2).i32(293).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        drainOutbound();
+        assertEquals(1, login.pkProtectType);
+        assertTrue(login.pkProtectOn);
+
+        // 61 显示装备类型：type=1 落状态；负值拒绝
+        send(custom().u16(2).u8(2).i32(61).u8(2).i32(1).toByteArray());
+        drainOutbound();
+        assertEquals(1, login.showEquipType);
+        send(custom().u16(2).u8(2).i32(61).u8(2).i32(-1).toByteArray());
+        drainOutbound();
+        assertEquals(1, login.showEquipType, "负值不得覆盖");
     }
 
     private static boolean containsUtf8(byte[] frame, String s) {

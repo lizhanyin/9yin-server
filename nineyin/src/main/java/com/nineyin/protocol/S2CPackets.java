@@ -26,6 +26,17 @@ public final class S2CPackets {
         return objectPropertyInt(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, propIdx, value);
     }
 
+    public static byte[] objectPropertyShort(int objectId, int ownerId, int propIdx, int value) {
+        return objectPropertyHeader(objectId, ownerId)
+                .u16(propIdx)
+                .u16(value)
+                .toByteArray();
+    }
+
+    public static byte[] objectPropertyShort(int propIdx, int value) {
+        return objectPropertyShort(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, propIdx, value);
+    }
+
     public static byte[] objectPropertyByte(int objectId, int ownerId, int propIdx, int value) {
         return objectPropertyHeader(objectId, ownerId)
                 .u16(propIdx)
@@ -73,6 +84,12 @@ public final class S2CPackets {
         public Batch u8(int propIdx, int value) {
             count++;
             w.u16(propIdx).u8(value);
+            return this;
+        }
+
+        public Batch i16(int propIdx, int value) {
+            count++;
+            w.u16(propIdx).u16(value);
             return this;
         }
 

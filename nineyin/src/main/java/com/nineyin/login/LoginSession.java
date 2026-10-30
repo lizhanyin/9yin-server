@@ -33,6 +33,16 @@ public final class LoginSession {
     public int operateMode;
     public int pingCount;
 
+    /** PK 模式（msgId=291）：0=和平 1=善恶 2=杀戮；权威值随 0x10 PKMode(436) 推送。 */
+    public int pkMode;
+    /** 警告开关（msgId=292，无参 toggle）。 */
+    public boolean warningOn;
+    /** PK 保护开关（msgId=293，[type, onoff]）。 */
+    public int pkProtectType;
+    public boolean pkProtectOn;
+    /** 装备显示类型（msgId=61）。 */
+    public int showEquipType;
+
     /** 用户须知签署状态（登录时装载，0=未同意）。 */
     public int termsAgreed;
     public long termsAgreedAtSec;

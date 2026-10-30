@@ -133,10 +133,12 @@ public final class InventoryPackets {
     /**
      * 全套库存下发帧（0x0B 之后调用）：装备纸娃娃 View 1 + 各背包页物品，
      * 带参考实现的 0x19 版本帧节奏。同时缓存于 LoginSession 供 0x0C 重发。
+     * 末尾附武器模型属性帧（WeaponMode=1597），重进场景时角色手持武器一并恢复。
      */
     public static List<byte[]> inventoryFrames(long roleId,
                                                List<RoleInventoryStore.Equipped> equipped,
-                                               List<RoleInventoryStore.Bagged> bagged) {
+                                               List<RoleInventoryStore.Bagged> bagged,
+                                               byte sex) {
         List<byte[]> frames = new ArrayList<>(32 + equipped.size() * 3 + bagged.size() * 3);
         for (RoleInventoryStore.Equipped item : equipped) {
             frames.add(equipmentViewAdd(item, uniqueId(roleId, "equip", item.slot())));
@@ -152,7 +154,36 @@ public final class InventoryPackets {
                 frames.add(viewRemove(mirror, n));
             }
         }
+        frames.add(weaponModeFrame(equipped, sex));
         return frames;
+    }
+
+    /**
+     * 武器模型属性帧（0x10 WeaponMode=1597，对齐参考服 pushGearVisual）：
+     * 装备栏含武器（EquipType=Weapon/ShotWeapon/InnerWeapon）时取第一个的模型路径，
+     * 无武器为空串。模型解析走 EquipmentModels（equipment.ini→itemartstatic.ini），
+     * 链路缺失回退 config 原值（与建角外观同一回退策略）。
+     */
+    public static byte[] weaponModeFrame(List<RoleInventoryStore.Equipped> equipped, byte sex) {
+        String model = "";
+        for (RoleInventoryStore.Equipped item : equipped) {
+            if (isWeaponEquipType(item.equipType())) {
+                model = EquipmentModels.resolve(item.configId(), sex);
+                break;
+            }
+        }
+        return S2CPackets.objectPropertyString(PropertyId.WEAPON_MODE, model);
+    }
+
+    /** 武器类 EquipType（equipment.ini 词表：Weapon 外功武器 / ShotWeapon 暗器 / InnerWeapon 内功武器）。 */
+    static boolean isWeaponEquipType(String equipType) {
+        if (equipType == null) {
+            return false;
+        }
+        return switch (equipType.toLowerCase(java.util.Locale.ROOT)) {
+            case "weapon", "shotweapon", "innerweapon" -> true;
+            default -> false;
+        };
     }
 
     /** 装备对象（View 1，索引 = 身体槽位，对齐参考抓包：14 基础属性 + 词缀/特效二选一 + UID + 图标）。 */

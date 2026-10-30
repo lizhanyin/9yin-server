@@ -114,7 +114,7 @@
 |---|---|---|---|---|
 | `duels` 切磋 | mostly 80% | ⬜ | 0% | 无实现 |
 | `wounded` 受伤状态 | mostly 70% | ⬜ | 0% | 无实现（瘀血是血量分层，非受伤玩法） |
-| `infamy` 恶人值与红名 | mostly 72% | ⬜ | 0% | 无实现 |
+| `infamy` 恶人值与红名 | mostly 72% | ⬜ | 2% | PK 模式/警告/PK 保护开关（msgId 291/292/293，PKMode=436 属性推送）已对齐参考服；PKValue/红名逻辑未开始 |
 | `sky-ladder` 天梯擂台 | progress 75% | ⬜ | 0% | 无实现 |
 | `mount-hua` 华山论剑 | progress 80% | ⬜ | 0% | 无实现 |
 | `random-arena` 随机比武 | progress 70% | ⬜ | 0% | 无实现 |
@@ -233,3 +233,5 @@
 |---|---|---|---|
 | 2026-10-29 | 全部 85 项 | 初版：从 vagrant.pw/roadmap 拉取清单并完成首次评估 | — |
 | 2026-10-29 | 推进顺序 | 新增 [script-system-assessment.md](script-system-assessment.md)：评估并决策暂不接入脚本系统，延后至内容生产期 | — |
+| 2026-10-30 | 协议基线 | 新增 [go-exe-protocol-analysis.md](go-exe-protocol-analysis.md)：逆向分析 Go 参考服（9yin-game-native-menu.exe）的帧层/CustomSend msgId 全集，建立 Java↔参考服对照矩阵（含 4 项疑似偏差） | — |
+| 2026-10-30 | 协议基线（infamy 前置） | 对齐参考服实现 msgId 291/292/293（PK 模式/警告/PK 保护开关，PKMode=436 属性推送）与 61 显示装备类型（`SceneFlow`）；未知 C2S opcode 首现 INFO+hexdump（`FxOpcodeRouter`），测试 `SceneFlowTest.pkAndClientTogglesMatchGoServer` | — |

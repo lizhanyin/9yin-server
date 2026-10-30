@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 库存 view 帧（对齐 F 盘参考 exe 抓包的布局）。 */
@@ -76,9 +77,10 @@ class InventoryPacketsTest {
 
         List<byte[]> frames = InventoryPackets.inventoryFrames(2,
                 List.of(new RoleInventoryStore.Equipped(1, "helmet_sell_10101", 140, "Hat", 100, 100, "")),
-                List.of(new RoleInventoryStore.Bagged(8, "yaopin_00200", 1, 10, 1, "止血草")));
-        // 1 装备 + 道具页成对版本帧（0x19 view2 + add + 0x19 view174）
-        assertEquals(4, frames.size());
+                List.of(new RoleInventoryStore.Bagged(8, "yaopin_00200", 1, 10, 1, "止血草")),
+                (byte) 0);
+        // 1 装备 + 道具页成对版本帧（0x19 view2 + add + 0x19 view174）+ 武器模型帧
+        assertEquals(5, frames.size());
         assertEquals(0x18, frames.get(0)[0]);
         assertEquals(1, leU16(frames.get(0), 1));       // View 1
         assertEquals(0x19, frames.get(1)[0]);
@@ -89,6 +91,35 @@ class InventoryPacketsTest {
         assertEquals(6, leU16(frames.get(2), 5));       // 道具 6 属性
         assertEquals(0x19, frames.get(3)[0]);
         assertEquals(174, leU16(frames.get(3), 1));     // 镜像页
+        // 末帧：无武器时 WeaponMode(1597)="" 的 0x10 属性推送
+        byte[] weapon = frames.get(4);
+        assertEquals(0x10, weapon[0]);
+        assertEquals(1597, leU16(weapon, 12));
+    }
+
+    @Test
+    void weaponModeFramePushesEquippedWeaponModel() {
+        // 无武器：空串属性
+        byte[] empty = InventoryPackets.weaponModeFrame(List.of(), (byte) 0);
+        assertEquals(0x10, empty[0]);
+        assertEquals(1597, leU16(empty, 12));
+
+        // 穿武器（EquipType=Weapon）：模型解析链路缺失时回退 config 原值（与建角外观同策略）
+        List<RoleInventoryStore.Equipped> worn = List.of(
+                new RoleInventoryStore.Equipped(3, "helmet_sell_10101", 140, "Hat", 100, 100, ""),
+                new RoleInventoryStore.Equipped(1, "sword_60701", 130, "Weapon", 100, 100, ""));
+        byte[] frame = InventoryPackets.weaponModeFrame(worn, (byte) 0);
+        assertEquals(0x10, frame[0]);
+        assertEquals(1597, leU16(frame, 12));
+        assertTrue(new String(frame, java.nio.charset.StandardCharsets.US_ASCII).contains("sword_60701"),
+                "武器模型应至少回退 config 原值");
+
+        // 武器判定：Weapon/ShotWeapon/InnerWeapon 是武器，Hat 不是
+        assertTrue(InventoryPackets.isWeaponEquipType("Weapon"));
+        assertTrue(InventoryPackets.isWeaponEquipType("ShotWeapon"));
+        assertTrue(InventoryPackets.isWeaponEquipType("InnerWeapon"));
+        assertFalse(InventoryPackets.isWeaponEquipType("Hat"));
+        assertFalse(InventoryPackets.isWeaponEquipType(null));
     }
 
     @Test

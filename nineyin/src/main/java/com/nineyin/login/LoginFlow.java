@@ -317,7 +317,8 @@ public final class LoginFlow {
         if (equipped.isEmpty() && bagged.isEmpty()) {
             return;
         }
-        s.inventoryFrames = InventoryPackets.inventoryFrames(s.roleId, equipped, bagged);
+        s.inventoryFrames = InventoryPackets.inventoryFrames(s.roleId, equipped, bagged,
+                com.nineyin.protocol.Appearance.resolveVisual(s.appearance).sex());
         s.liveEquipped = new ArrayList<>(equipped);
         s.liveBagged = new ArrayList<>(bagged);
         CustomPackets.sendAll(fx, s.inventoryFrames);

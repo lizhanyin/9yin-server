@@ -243,4 +243,14 @@ public final class CustomMsg {
 
     private CustomMsg() {
     }
+
+    /** 直接按值构造（测试与校验层用）：msgId 占首位 i32，args 依次追加。 */
+    public static CustomMsg of(int msgId, Val... args) {
+        CustomMsg m = new CustomMsg();
+        m.vals.add(new Val(TYPE_I32, msgId, 0, 0, null, 0, 0));
+        for (Val a : args) {
+            m.vals.add(a);
+        }
+        return m;
+    }
 }

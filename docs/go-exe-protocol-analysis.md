@@ -134,6 +134,12 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 - **msgId 293**：PK 保护开关（`pk protect toggle type=%d on=%d` 日志对齐）
 - **msgId 61**：showequip_type（校验+存储+日志；装备外观帧待钉死）
 - 未知 C2S opcode：对齐探针行为——首现 INFO 带 `len + hex dump`（Go：`unknown C2S opcode=0x%02X len=%d dump=%x`）
+- **`TVarList` 参数校验器**（`com.nineyin.game.TVarList`）：把参考服的
+  `expects TVarList(NNN, ...)` 校验层做成声明式规格（msgId + 参数个数 + 类型/字面值，
+  如 `TVarList.check(msg, 293, intArg("type"), intArg("onoff"))`），
+  错误文本与参考服同构（`TVarList(293, type, onoff)` + 实际值摘要），
+  便于实机日志两边对照；240/291/292/293/61 五个 handler 已迁移到该层。
+  后续钉死新 msgId 的参数布局后（§2.1 表），直接按规格实现即可。
 - **穿/脱武器视觉推送**（对齐 `pushGearVisual`）：msgId 30 触及装备纸娃娃时 0x10 推送
   WeaponMode(1597) 模型路径（`InventoryPackets.weaponModeFrame`，EquipType=Weapon/ShotWeapon/InnerWeapon
   判定，equipment.ini→itemartstatic.ini 解析、缺失回退 config 原值）；武器帧并入 `inventoryFrames`

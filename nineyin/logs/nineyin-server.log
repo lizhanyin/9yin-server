@@ -10171,3 +10171,1119 @@ Created at:
 2026-10-30 09:21:02.160 [main] INFO  com.nineyin.server.SvrListHandler - area request served: svrlist
 2026-10-30 09:21:02.165 [main] INFO  com.nineyin.shop.ShopRepository - shops loaded=2 items=4 from C:\Users\Lizy\AppData\Local\Temp\junit4665946191053850373\shop.ini
 2026-10-30 09:21:02.186 [main] INFO  com.nineyin.server.FxOpcodeRouter - unknown C2S opcode=0x18 len=12 dump=00000000  18 70 29 6a 01 00 b5 20  00 00 00 00              |.p)j... ....| from embedded
+2026-10-30 09:30:19.091 [main] INFO  com.nineyin.db.JsonRoleStore - role store loaded 1 roles from C:\Users\Lizy\AppData\Local\Temp\junit2685911895483924860\roles.json
+2026-10-30 09:30:19.104 [main] INFO  com.nineyin.db.JsonRoleStore - role store loaded 2 roles from C:\Users\Lizy\AppData\Local\Temp\junit2685911895483924860\roles.json
+2026-10-30 09:30:19.113 [main] ERROR com.nineyin.db.JsonRoleStore - role store load failed: C:\Users\Lizy\AppData\Local\Temp\junit1230397553370453158\roles.json
+com.alibaba.fastjson.JSONException: expect ':' at 0, actual i
+	at com.alibaba.fastjson.parser.DefaultJSONParser.parseObject(DefaultJSONParser.java:302)
+	at com.alibaba.fastjson.parser.DefaultJSONParser.parse(DefaultJSONParser.java:1430)
+	at com.alibaba.fastjson.parser.DefaultJSONParser.parse(DefaultJSONParser.java:1390)
+	at com.alibaba.fastjson.JSON.parse(JSON.java:181)
+	at com.alibaba.fastjson.JSON.parse(JSON.java:191)
+	at com.alibaba.fastjson.JSON.parse(JSON.java:244)
+	at com.alibaba.fastjson.JSON.parseObject(JSON.java:248)
+	at com.nineyin.db.JsonRoleStore.load(JsonRoleStore.java:154)
+	at com.nineyin.db.JsonRoleStore.<init>(JsonRoleStore.java:56)
+	at com.nineyin.db.JsonRoleStoreTest.refusesToOverwriteFileWhenLoadFailed(JsonRoleStoreTest.java:145)
+	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	at org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	at org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	at org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	at org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	at org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	at org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	at org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	at org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	at org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	at org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	at org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	at org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	at org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	at org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	at org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	at org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	at org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	at org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	at org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	at org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	at org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	at org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	at org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	at org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	at org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	at org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	at org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	at org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	at org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	at org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	at org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	at org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	at org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	at org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	at org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	at org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	at org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	at org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	at org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:19.114 [main] ERROR com.nineyin.db.JsonRoleStore - role store save skipped — load previously failed, refusing to overwrite C:\Users\Lizy\AppData\Local\Temp\junit1230397553370453158\roles.json
+2026-10-30 09:30:19.133 [main] INFO  com.nineyin.db.JsonRoleStore - role store loaded 1 roles from C:\Users\Lizy\AppData\Local\Temp\junit15846432577881936161\roles.json
+2026-10-30 09:30:19.141 [main] INFO  com.nineyin.db.JsonRoleStore - role store loaded 1 roles from C:\Users\Lizy\AppData\Local\Temp\junit10376119802673495461\roles.json
+2026-10-30 09:30:19.159 [main] DEBUG com.zaxxer.hikari.HikariConfig - nineyin-role - configuration:
+2026-10-30 09:30:19.163 [main] DEBUG com.zaxxer.hikari.HikariConfig - allowPoolSuspension................................false
+2026-10-30 09:30:19.163 [main] DEBUG com.zaxxer.hikari.HikariConfig - autoCommit................................true
+2026-10-30 09:30:19.163 [main] DEBUG com.zaxxer.hikari.HikariConfig - catalog................................none
+2026-10-30 09:30:19.163 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionInitSql................................none
+2026-10-30 09:30:19.164 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTestQuery................................none
+2026-10-30 09:30:19.166 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTimeout................................5000
+2026-10-30 09:30:19.166 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSource................................none
+2026-10-30 09:30:19.167 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceClassName................................none
+2026-10-30 09:30:19.167 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceJNDI................................none
+2026-10-30 09:30:19.167 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceProperties................................{password=<masked>, cachePrepStmts=true}
+2026-10-30 09:30:19.168 [main] DEBUG com.zaxxer.hikari.HikariConfig - driverClassName................................none
+2026-10-30 09:30:19.168 [main] DEBUG com.zaxxer.hikari.HikariConfig - exceptionOverrideClassName................................none
+2026-10-30 09:30:19.168 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckProperties................................{}
+2026-10-30 09:30:19.169 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckRegistry................................none
+2026-10-30 09:30:19.169 [main] DEBUG com.zaxxer.hikari.HikariConfig - idleTimeout................................600000
+2026-10-30 09:30:19.169 [main] DEBUG com.zaxxer.hikari.HikariConfig - initializationFailTimeout................................1
+2026-10-30 09:30:19.169 [main] DEBUG com.zaxxer.hikari.HikariConfig - isolateInternalQueries................................false
+2026-10-30 09:30:19.170 [main] DEBUG com.zaxxer.hikari.HikariConfig - jdbcUrl................................jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.170 [main] DEBUG com.zaxxer.hikari.HikariConfig - keepaliveTime................................0
+2026-10-30 09:30:19.170 [main] DEBUG com.zaxxer.hikari.HikariConfig - leakDetectionThreshold................................0
+2026-10-30 09:30:19.171 [main] DEBUG com.zaxxer.hikari.HikariConfig - maxLifetime................................1800000
+2026-10-30 09:30:19.171 [main] DEBUG com.zaxxer.hikari.HikariConfig - maximumPoolSize................................4
+2026-10-30 09:30:19.171 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricRegistry................................none
+2026-10-30 09:30:19.172 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricsTrackerFactory................................none
+2026-10-30 09:30:19.172 [main] DEBUG com.zaxxer.hikari.HikariConfig - minimumIdle................................1
+2026-10-30 09:30:19.173 [main] DEBUG com.zaxxer.hikari.HikariConfig - password................................<masked>
+2026-10-30 09:30:19.173 [main] DEBUG com.zaxxer.hikari.HikariConfig - poolName................................"nineyin-role"
+2026-10-30 09:30:19.173 [main] DEBUG com.zaxxer.hikari.HikariConfig - readOnly................................false
+2026-10-30 09:30:19.173 [main] DEBUG com.zaxxer.hikari.HikariConfig - registerMbeans................................false
+2026-10-30 09:30:19.174 [main] DEBUG com.zaxxer.hikari.HikariConfig - scheduledExecutor................................none
+2026-10-30 09:30:19.174 [main] DEBUG com.zaxxer.hikari.HikariConfig - schema................................none
+2026-10-30 09:30:19.174 [main] DEBUG com.zaxxer.hikari.HikariConfig - threadFactory................................internal
+2026-10-30 09:30:19.174 [main] DEBUG com.zaxxer.hikari.HikariConfig - transactionIsolation................................default
+2026-10-30 09:30:19.174 [main] DEBUG com.zaxxer.hikari.HikariConfig - username................................"nineyin"
+2026-10-30 09:30:19.175 [main] DEBUG com.zaxxer.hikari.HikariConfig - validationTimeout................................5000
+2026-10-30 09:30:19.180 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Starting...
+2026-10-30 09:30:19.197 [main] DEBUG c.z.hikari.util.DriverDataSource - Loaded driver with class name com.mysql.cj.jdbc.Driver for jdbcUrl=jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.345 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Added connection com.mysql.cj.jdbc.ConnectionImpl@4ba534b0
+2026-10-30 09:30:19.347 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Start completed.
+2026-10-30 09:30:19.401 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown initiated...
+2026-10-30 09:30:19.401 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Before shutdown stats (total=1, active=0, idle=1, waiting=0)
+2026-10-30 09:30:19.403 [nineyin-role connection closer] DEBUG com.zaxxer.hikari.pool.PoolBase - nineyin-role - Closing connection com.mysql.cj.jdbc.ConnectionImpl@4ba534b0: (connection evicted)
+2026-10-30 09:30:19.411 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - After shutdown stats (total=0, active=0, idle=0, waiting=0)
+2026-10-30 09:30:19.411 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown completed.
+2026-10-30 09:30:19.415 [main] DEBUG com.zaxxer.hikari.HikariConfig - nineyin-role - configuration:
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - allowPoolSuspension................................false
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - autoCommit................................true
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - catalog................................none
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionInitSql................................none
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTestQuery................................none
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTimeout................................5000
+2026-10-30 09:30:19.416 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSource................................none
+2026-10-30 09:30:19.417 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceClassName................................none
+2026-10-30 09:30:19.417 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceJNDI................................none
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceProperties................................{password=<masked>, cachePrepStmts=true}
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - driverClassName................................none
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - exceptionOverrideClassName................................none
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckProperties................................{}
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckRegistry................................none
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - idleTimeout................................600000
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - initializationFailTimeout................................1
+2026-10-30 09:30:19.418 [main] DEBUG com.zaxxer.hikari.HikariConfig - isolateInternalQueries................................false
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - jdbcUrl................................jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - keepaliveTime................................0
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - leakDetectionThreshold................................0
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - maxLifetime................................1800000
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - maximumPoolSize................................4
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricRegistry................................none
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricsTrackerFactory................................none
+2026-10-30 09:30:19.419 [main] DEBUG com.zaxxer.hikari.HikariConfig - minimumIdle................................1
+2026-10-30 09:30:19.420 [main] DEBUG com.zaxxer.hikari.HikariConfig - password................................<masked>
+2026-10-30 09:30:19.420 [main] DEBUG com.zaxxer.hikari.HikariConfig - poolName................................"nineyin-role"
+2026-10-30 09:30:19.420 [main] DEBUG com.zaxxer.hikari.HikariConfig - readOnly................................false
+2026-10-30 09:30:19.420 [main] DEBUG com.zaxxer.hikari.HikariConfig - registerMbeans................................false
+2026-10-30 09:30:19.420 [main] DEBUG com.zaxxer.hikari.HikariConfig - scheduledExecutor................................none
+2026-10-30 09:30:19.421 [main] DEBUG com.zaxxer.hikari.HikariConfig - schema................................none
+2026-10-30 09:30:19.421 [main] DEBUG com.zaxxer.hikari.HikariConfig - threadFactory................................internal
+2026-10-30 09:30:19.421 [main] DEBUG com.zaxxer.hikari.HikariConfig - transactionIsolation................................default
+2026-10-30 09:30:19.421 [main] DEBUG com.zaxxer.hikari.HikariConfig - username................................"nineyin"
+2026-10-30 09:30:19.421 [main] DEBUG com.zaxxer.hikari.HikariConfig - validationTimeout................................5000
+2026-10-30 09:30:19.421 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Starting...
+2026-10-30 09:30:19.421 [main] DEBUG c.z.hikari.util.DriverDataSource - Loaded driver with class name com.mysql.cj.jdbc.Driver for jdbcUrl=jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.428 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Added connection com.mysql.cj.jdbc.ConnectionImpl@60b71e8f
+2026-10-30 09:30:19.428 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Start completed.
+2026-10-30 09:30:19.489 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown initiated...
+2026-10-30 09:30:19.490 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Before shutdown stats (total=1, active=0, idle=1, waiting=0)
+2026-10-30 09:30:19.490 [nineyin-role connection closer] DEBUG com.zaxxer.hikari.pool.PoolBase - nineyin-role - Closing connection com.mysql.cj.jdbc.ConnectionImpl@60b71e8f: (connection evicted)
+2026-10-30 09:30:19.491 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - After shutdown stats (total=0, active=0, idle=0, waiting=0)
+2026-10-30 09:30:19.491 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown completed.
+2026-10-30 09:30:19.495 [main] DEBUG com.zaxxer.hikari.HikariConfig - nineyin-role - configuration:
+2026-10-30 09:30:19.495 [main] DEBUG com.zaxxer.hikari.HikariConfig - allowPoolSuspension................................false
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - autoCommit................................true
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - catalog................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionInitSql................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTestQuery................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTimeout................................5000
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSource................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceClassName................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceJNDI................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceProperties................................{password=<masked>, cachePrepStmts=true}
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - driverClassName................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - exceptionOverrideClassName................................none
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckProperties................................{}
+2026-10-30 09:30:19.496 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckRegistry................................none
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - idleTimeout................................600000
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - initializationFailTimeout................................1
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - isolateInternalQueries................................false
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - jdbcUrl................................jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - keepaliveTime................................0
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - leakDetectionThreshold................................0
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - maxLifetime................................1800000
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - maximumPoolSize................................4
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricRegistry................................none
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricsTrackerFactory................................none
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - minimumIdle................................1
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - password................................<masked>
+2026-10-30 09:30:19.498 [main] DEBUG com.zaxxer.hikari.HikariConfig - poolName................................"nineyin-role"
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - readOnly................................false
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - registerMbeans................................false
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - scheduledExecutor................................none
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - schema................................none
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - threadFactory................................internal
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - transactionIsolation................................default
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - username................................"nineyin"
+2026-10-30 09:30:19.499 [main] DEBUG com.zaxxer.hikari.HikariConfig - validationTimeout................................5000
+2026-10-30 09:30:19.499 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Starting...
+2026-10-30 09:30:19.500 [main] DEBUG c.z.hikari.util.DriverDataSource - Loaded driver with class name com.mysql.cj.jdbc.Driver for jdbcUrl=jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.505 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Added connection com.mysql.cj.jdbc.ConnectionImpl@361c294e
+2026-10-30 09:30:19.505 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Start completed.
+2026-10-30 09:30:19.532 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown initiated...
+2026-10-30 09:30:19.533 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Before shutdown stats (total=1, active=0, idle=1, waiting=0)
+2026-10-30 09:30:19.533 [nineyin-role connection closer] DEBUG com.zaxxer.hikari.pool.PoolBase - nineyin-role - Closing connection com.mysql.cj.jdbc.ConnectionImpl@361c294e: (connection evicted)
+2026-10-30 09:30:19.533 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - After shutdown stats (total=0, active=0, idle=0, waiting=0)
+2026-10-30 09:30:19.534 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown completed.
+2026-10-30 09:30:19.536 [main] DEBUG com.zaxxer.hikari.HikariConfig - nineyin-role - configuration:
+2026-10-30 09:30:19.536 [main] DEBUG com.zaxxer.hikari.HikariConfig - allowPoolSuspension................................false
+2026-10-30 09:30:19.536 [main] DEBUG com.zaxxer.hikari.HikariConfig - autoCommit................................true
+2026-10-30 09:30:19.536 [main] DEBUG com.zaxxer.hikari.HikariConfig - catalog................................none
+2026-10-30 09:30:19.536 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionInitSql................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTestQuery................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - connectionTimeout................................5000
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSource................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceClassName................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceJNDI................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - dataSourceProperties................................{password=<masked>, cachePrepStmts=true}
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - driverClassName................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - exceptionOverrideClassName................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckProperties................................{}
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - healthCheckRegistry................................none
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - idleTimeout................................600000
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - initializationFailTimeout................................1
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - isolateInternalQueries................................false
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - jdbcUrl................................jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.537 [main] DEBUG com.zaxxer.hikari.HikariConfig - keepaliveTime................................0
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - leakDetectionThreshold................................0
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - maxLifetime................................1800000
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - maximumPoolSize................................4
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricRegistry................................none
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - metricsTrackerFactory................................none
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - minimumIdle................................1
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - password................................<masked>
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - poolName................................"nineyin-role"
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - readOnly................................false
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - registerMbeans................................false
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - scheduledExecutor................................none
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - schema................................none
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - threadFactory................................internal
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - transactionIsolation................................default
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - username................................"nineyin"
+2026-10-30 09:30:19.538 [main] DEBUG com.zaxxer.hikari.HikariConfig - validationTimeout................................5000
+2026-10-30 09:30:19.538 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Starting...
+2026-10-30 09:30:19.539 [main] DEBUG c.z.hikari.util.DriverDataSource - Loaded driver with class name com.mysql.cj.jdbc.Driver for jdbcUrl=jdbc:mysql://127.0.0.1:3306/nineyin?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+2026-10-30 09:30:19.543 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Added connection com.mysql.cj.jdbc.ConnectionImpl@5db4c359
+2026-10-30 09:30:19.544 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Start completed.
+2026-10-30 09:30:19.591 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown initiated...
+2026-10-30 09:30:19.592 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - Before shutdown stats (total=1, active=0, idle=1, waiting=0)
+2026-10-30 09:30:19.592 [nineyin-role connection closer] DEBUG com.zaxxer.hikari.pool.PoolBase - nineyin-role - Closing connection com.mysql.cj.jdbc.ConnectionImpl@5db4c359: (connection evicted)
+2026-10-30 09:30:19.592 [main] DEBUG com.zaxxer.hikari.pool.HikariPool - nineyin-role - After shutdown stats (total=0, active=0, idle=0, waiting=0)
+2026-10-30 09:30:19.592 [main] INFO  com.zaxxer.hikari.HikariDataSource - nineyin-role - Shutdown completed.
+2026-10-30 09:30:19.610 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.612 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.612 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit11684324284533738529\share\npc\npcconfig
+2026-10-30 09:30:19.623 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.624 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.624 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit10205045193414971942\share\npc\npcconfig
+2026-10-30 09:30:19.637 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.639 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.639 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit9792912103225829789\share\npc\npcconfig
+2026-10-30 09:30:19.719 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.724 [main] INFO  com.nineyin.game.AiEventEngine - player test parries BossClone003005 (skill clone003_hsj_01) -> damage=60 endurance=0 PARRY BROKEN
+2026-10-30 09:30:19.729 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_01 -> test damage=60 crit=false parried=true hp=955
+2026-10-30 09:30:19.729 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_sx -> test damage=260 crit=false parried=false hp=760
+2026-10-30 09:30:19.741 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.742 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.742 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit10748045348169063275\share\npc\npcconfig
+2026-10-30 09:30:19.743 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.743 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_enrage (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.744 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 phase trigger at hp<=30%
+2026-10-30 09:30:19.755 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.757 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.758 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit17667700292392108574\share\npc\npcconfig
+2026-10-30 09:30:19.773 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.775 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.775 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit1942536468543561775\share\npc\npcconfig
+2026-10-30 09:30:19.776 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.776 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_enrage (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.777 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_sx -> test damage=260 crit=false parried=false hp=805
+2026-10-30 09:30:19.777 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 phase trigger at hp<=30%
+2026-10-30 09:30:19.777 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_01 -> test damage=120 crit=false parried=false hp=715
+2026-10-30 09:30:19.787 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.789 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.789 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit2849515966571401033\share\npc\npcconfig
+2026-10-30 09:30:19.790 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.790 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_enrage (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.790 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_sx -> test damage=260 crit=false parried=false hp=805
+2026-10-30 09:30:19.790 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 phase trigger at hp<=30%
+2026-10-30 09:30:19.791 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_01 -> test damage=120 crit=false parried=false hp=715
+2026-10-30 09:30:19.800 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.801 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.801 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit6056158887931815183\share\npc\npcconfig
+2026-10-30 09:30:19.801 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.801 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonA (oid=900003) at (7.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.801 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonB (oid=900004) at (10.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.801 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonC (oid=900005) at (13.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.802 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003001 cast clone003_hsj_sx -> test damage=260 crit=false parried=false hp=805
+2026-10-30 09:30:19.812 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.813 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.813 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit4287812861466398671\share\npc\npcconfig
+2026-10-30 09:30:19.868 [nineyin-game-scheduler] INFO  com.nineyin.game.CloneLoot - boss box opened npc=BossBox003005A loot=打开「BossBox003005A的宝箱」，获得了：门派一阶内功书页、铜制装备图谱、碎银
+2026-10-30 09:30:19.891 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.891 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.891 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit2389668643083286272\share\npc\npcconfig
+2026-10-30 09:30:19.892 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.892 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonA (oid=900003) at (7.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.892 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonB (oid=900004) at (10.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.892 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn SummonC (oid=900005) at (13.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.902 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.903 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.903 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit7877398962326664865\share\npc\npcconfig
+2026-10-30 09:30:19.904 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.915 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.916 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.916 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit7114621529825387422\share\npc\npcconfig
+2026-10-30 09:30:19.917 [main] INFO  com.nineyin.game.CloneLoot - open box rejected (out of range 3.0m) npc=BossBox003005A
+2026-10-30 09:30:19.930 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.931 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.931 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit3853490374340244419\share\npc\npcconfig
+2026-10-30 09:30:19.932 [main] INFO  com.nineyin.rule.BuffCatalog - buff catalog loaded: 1 buffs
+2026-10-30 09:30:19.944 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.945 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.946 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit9847727980184671492\share\npc\npcconfig
+2026-10-30 09:30:19.946 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn BossBox003005A (oid=900002) at (10.0,0.0,-20.0) difficulty=1 rating=1
+2026-10-30 09:30:19.956 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.957 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.957 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit16523537786819042014\share\npc\npcconfig
+2026-10-30 09:30:19.957 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.959 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_01 -> test damage=120 crit=false parried=false hp=910
+2026-10-30 09:30:19.959 [main] INFO  com.nineyin.game.AiEventEngine - boss BossClone003005 cast clone003_hsj_sx -> test damage=260 crit=false parried=false hp=715
+2026-10-30 09:30:19.968 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.969 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.969 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit2302344759289103867\share\npc\npcconfig
+2026-10-30 09:30:19.970 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.970 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hard (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.981 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.982 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.983 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit13902113274106902584\share\npc\npcconfig
+2026-10-30 09:30:19.983 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.983 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=0) -> BossClone003005 (900001)
+2026-10-30 09:30:19.994 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:19.995 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:19.995 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit8910133458160985969\share\npc\npcconfig
+2026-10-30 09:30:20.005 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:20.006 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:20.006 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit14465745620124241822\share\npc\npcconfig
+2026-10-30 09:30:20.007 [main] INFO  com.nineyin.rule.BuffCatalog - buff catalog loaded: 1 buffs
+2026-10-30 09:30:20.007 [main] INFO  com.nineyin.game.AiEventEngine - ai buff buff_test_hsj (static=123) -> BossClone003005 (900001)
+2026-10-30 09:30:20.017 [main] INFO  com.nineyin.rule.AiRuleData - ai rules loaded: packages=2 events=8 conditions=3 formulas=1
+2026-10-30 09:30:20.018 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file boxnpc.txt rows=4
+2026-10-30 09:30:20.018 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit7853024073630319710\share\npc\npcconfig
+2026-10-30 09:30:20.018 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn BossBox003005B (oid=900002) at (10.0,0.0,-20.0) difficulty=2 rating=1
+2026-10-30 09:30:20.018 [main] INFO  com.nineyin.game.AiEventEngine - ai spawn BossBox003005C (oid=900003) at (10.0,0.0,-20.0) difficulty=2 rating=1
+2026-10-30 09:30:20.045 [main] INFO  com.nineyin.game.NinJiuZhi - ninjiuzhi loaded: stage=1 (1内) points=0 overrides=0 thresholds=custom:false file=C:\Users\Lizy\AppData\Local\Temp\junit1850617431948194532\ninjiuzhi.json
+2026-10-30 09:30:20.048 [main] INFO  com.nineyin.game.NinJiuZhi - ninjiuzhi loaded: stage=4 (4内) points=1 overrides=0 thresholds=custom:false file=C:\Users\Lizy\AppData\Local\Temp\junit1850617431948194532\ninjiuzhi.json
+2026-10-30 09:30:20.058 [main] INFO  com.nineyin.game.NinJiuZhi - ninjiuzhi loaded: stage=2 (2内) points=0 overrides=0 thresholds=custom:true file=C:\Users\Lizy\AppData\Local\Temp\junit10036262460519067769\ninjiuzhi.json
+2026-10-30 09:30:20.066 [main] INFO  com.nineyin.game.NinJiuZhi - ninjiuzhi loaded: stage=1 (1内) points=0 overrides=5 thresholds=custom:false file=C:\Users\Lizy\AppData\Local\Temp\junit15731348539052620563\ninjiuzhi.json
+2026-10-30 09:30:20.163 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 agreed=0 no role ip=embedded
+2026-10-30 09:30:20.174 [main] INFO  com.nineyin.login.LoginFlow - role saved account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 name=行走江湖 book=book1 scene=born04
+2026-10-30 09:30:20.209 [main] INFO  com.nineyin.login.LoginFlow - ChooseRole scene=ini\scene\born04_QianDengZhen pos=(874.933,-32.392,746.688) faction=force_yihua silver=99999
+2026-10-30 09:30:20.214 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=4
+2026-10-30 09:30:20.214 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit10388058067443401352\share\npc\npcconfig
+2026-10-30 09:30:20.215 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit10388058067443401352\share\rule\door_data.ini
+2026-10-30 09:30:20.217 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit10388058067443401352\share\creator\npc_creator\born04_qiandengzhen count=4
+2026-10-30 09:30:20.220 [main] INFO  com.nineyin.scene.PatrolPaths - mappath loaded born04_npc.ini sections_now=1
+2026-10-30 09:30:20.220 [main] INFO  com.nineyin.scene.PatrolPaths - mappath table scene=born04 named_paths=1
+2026-10-30 09:30:20.221 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 4 -> 3
+2026-10-30 09:30:20.222 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=2 stand=1 missing_or_far=0 named_paths=1
+2026-10-30 09:30:20.225 [main] INFO  com.nineyin.game.SceneFlow - scene born04 NPCs sent=3 of 3 loaded (portals=0)
+2026-10-30 09:30:20.275 [main] INFO  com.nineyin.login.LoginFlow - UI bootstrap mode=0 skills=8 qinggong=18 books=6 clockMin=570
+2026-10-30 09:30:20.282 [main] INFO  com.nineyin.game.SceneFlow - terms sign accepted account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 first=true signCount=1 at=1793323820 ip=embedded
+2026-10-30 09:30:20.286 [main] INFO  com.nineyin.game.SceneFlow - terms sign accepted account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 first=false signCount=1 at=1793323820 ip=embedded
+2026-10-30 09:30:20.296 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 agreed=0 no role ip=embedded
+2026-10-30 09:30:20.298 [main] INFO  com.nineyin.login.LoginFlow - role saved account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 name=行走江湖 book=book1 scene=born04
+2026-10-30 09:30:20.302 [main] INFO  com.nineyin.login.LoginFlow - ChooseRole scene=ini\scene\born04_QianDengZhen pos=(874.933,-32.392,746.688) faction=force_yihua silver=99999
+2026-10-30 09:30:20.303 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=4
+2026-10-30 09:30:20.303 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit12738930781811761415\share\npc\npcconfig
+2026-10-30 09:30:20.303 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit12738930781811761415\share\rule\door_data.ini
+2026-10-30 09:30:20.304 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit12738930781811761415\share\creator\npc_creator\born04_qiandengzhen count=4
+2026-10-30 09:30:20.307 [main] INFO  com.nineyin.scene.PatrolPaths - mappath loaded born04_npc.ini sections_now=1
+2026-10-30 09:30:20.307 [main] INFO  com.nineyin.scene.PatrolPaths - mappath table scene=born04 named_paths=1
+2026-10-30 09:30:20.307 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 4 -> 3
+2026-10-30 09:30:20.307 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=2 stand=1 missing_or_far=0 named_paths=1
+2026-10-30 09:30:20.308 [main] INFO  com.nineyin.game.SceneFlow - scene born04 NPCs sent=3 of 3 loaded (portals=0)
+2026-10-30 09:30:20.331 [main] INFO  com.nineyin.login.LoginFlow - UI bootstrap mode=0 skills=8 qinggong=18 books=6 clockMin=570
+2026-10-30 09:30:20.336 [main] INFO  com.nineyin.game.SceneFlow - pk mode 0 -> 2 (property 436 pushed)
+2026-10-30 09:30:20.337 [main] INFO  com.nineyin.game.SceneFlow - change pk mode invalid mode 5
+2026-10-30 09:30:20.337 [main] INFO  com.nineyin.game.SceneFlow - change warning 0 -> 1 (0x10 property pending capture)
+2026-10-30 09:30:20.337 [main] INFO  com.nineyin.game.SceneFlow - change warning 1 -> 0 (0x10 property pending capture)
+2026-10-30 09:30:20.338 [main] INFO  com.nineyin.game.SceneFlow - pk protect toggle type=1 on=true
+2026-10-30 09:30:20.338 [main] INFO  com.nineyin.game.SceneFlow - showequip_type set to 1
+2026-10-30 09:30:20.338 [main] INFO  com.nineyin.game.SceneFlow - showequip_type invalid value -1
+2026-10-30 09:30:20.348 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 agreed=0 no role ip=embedded
+2026-10-30 09:30:20.350 [main] INFO  com.nineyin.login.LoginFlow - role saved account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 name=行走江湖 book=book1 scene=born04
+2026-10-30 09:30:20.353 [main] INFO  com.nineyin.login.LoginFlow - ChooseRole scene=ini\scene\born04_QianDengZhen pos=(874.933,-32.392,746.688) faction=force_yihua silver=99999
+2026-10-30 09:30:20.356 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=4
+2026-10-30 09:30:20.356 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit13322486507546510359\share\npc\npcconfig
+2026-10-30 09:30:20.356 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit13322486507546510359\share\rule\door_data.ini
+2026-10-30 09:30:20.358 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit13322486507546510359\share\creator\npc_creator\born04_qiandengzhen count=4
+2026-10-30 09:30:20.359 [main] INFO  com.nineyin.scene.PatrolPaths - mappath loaded born04_npc.ini sections_now=1
+2026-10-30 09:30:20.359 [main] INFO  com.nineyin.scene.PatrolPaths - mappath table scene=born04 named_paths=1
+2026-10-30 09:30:20.359 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 4 -> 3
+2026-10-30 09:30:20.359 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=2 stand=1 missing_or_far=0 named_paths=1
+2026-10-30 09:30:20.360 [main] INFO  com.nineyin.game.SceneFlow - scene born04 NPCs sent=3 of 3 loaded (portals=0)
+2026-10-30 09:30:20.380 [main] INFO  com.nineyin.login.LoginFlow - UI bootstrap mode=0 skills=8 qinggong=18 books=6 clockMin=570
+2026-10-30 09:30:20.384 [main] INFO  com.nineyin.game.SceneFlow - sitcross LogicState -> 102 (cmd=1)
+2026-10-30 09:30:20.385 [main] INFO  com.nineyin.game.SceneFlow - sitcross cancelled by move
+2026-10-30 09:30:21.490 [main] INFO  com.nineyin.game.SceneFlow - set shortcut idx=5 kind=skill id=CS_jh_xfz01
+2026-10-30 09:30:21.504 [main] INFO  com.nineyin.game.SelectFlow - Select target=10001 -> LastObject only (no menu)
+2026-10-30 09:30:21.504 [main] INFO  com.nineyin.game.SelectFlow - cinematic talk leave seq=2 npc=10001
+2026-10-30 09:30:21.513 [main] INFO  com.nineyin.game.SelectFlow - Select target=10001 -> LastObject only (no menu)
+2026-10-30 09:30:21.513 [main] INFO  com.nineyin.game.SelectFlow - Select clear target (ESC/deselect) seq=2
+2026-10-30 09:30:21.522 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 agreed=0 no role ip=embedded
+2026-10-30 09:30:21.523 [main] INFO  com.nineyin.login.LoginFlow - role saved account=acct:v1:796c806e3c9d5949f07edb27f1de1910bba4d7033bba54e580c7a918defc5890 name=测试侠 book=book1 scene=born04
+2026-10-30 09:30:21.526 [main] INFO  com.nineyin.login.LoginFlow - ChooseRole scene=ini\scene\born04_QianDengZhen pos=(874.933,-32.392,746.688) faction=force_yihua silver=99999
+2026-10-30 09:30:21.527 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=1
+2026-10-30 09:30:21.527 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=1 from C:\Users\Lizy\AppData\Local\Temp\junit9185359957728146886\share\npc\npcconfig
+2026-10-30 09:30:21.527 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit9185359957728146886\share\rule\door_data.ini
+2026-10-30 09:30:21.528 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit9185359957728146886\share\creator\npc_creator\born04_qiandengzhen count=1
+2026-10-30 09:30:21.528 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit9185359957728146886\share\creator\mappath
+2026-10-30 09:30:21.528 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 1 -> 1
+2026-10-30 09:30:21.528 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=1 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.528 [main] INFO  com.nineyin.game.SceneFlow - scene born04 NPCs sent=1 of 1 loaded (portals=0)
+2026-10-30 09:30:21.541 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.sendUiBootstrap(LoginFlow.java:280)
+	com.nineyin.login.LoginFlow.onClientReady(LoginFlow.java:259)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SceneFlowTest.send(SceneFlowTest.java:100)
+	com.nineyin.game.SceneFlowTest.fullSceneFlow(SceneFlowTest.java:194)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.541 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.sendUiBootstrap(LoginFlow.java:280)
+	com.nineyin.login.LoginFlow.onClientReady(LoginFlow.java:259)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SceneFlowTest.send(SceneFlowTest.java:100)
+	com.nineyin.game.SceneFlowTest.pkAndClientTogglesMatchGoServer(SceneFlowTest.java:291)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.541 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.sendUiBootstrap(LoginFlow.java:280)
+	com.nineyin.login.LoginFlow.onClientReady(LoginFlow.java:259)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SceneFlowTest.send(SceneFlowTest.java:100)
+	com.nineyin.game.SceneFlowTest.termsSign819MarksAgreedAndPushesProperties(SceneFlowTest.java:259)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.542 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.onChooseRole(LoginFlow.java:218)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SelectFlowTest.send(SelectFlowTest.java:106)
+	com.nineyin.game.SelectFlowTest.loginUntilReady(SelectFlowTest.java:80)
+	com.nineyin.game.SelectFlowTest.walkAwayClearsSelection(SelectFlowTest.java:195)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.542 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.sendUiBootstrap(LoginFlow.java:276)
+	com.nineyin.login.LoginFlow.onClientReady(LoginFlow.java:259)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SceneFlowTest.send(SceneFlowTest.java:100)
+	com.nineyin.game.SceneFlowTest.pkAndClientTogglesMatchGoServer(SceneFlowTest.java:291)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.544 [main] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See https://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+Created at:
+	io.netty.buffer.AdaptiveByteBufAllocator.newDirectBuffer(AdaptiveByteBufAllocator.java:67)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:168)
+	io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:159)
+	io.netty.buffer.AbstractByteBufAllocator.ioBuffer(AbstractByteBufAllocator.java:112)
+	io.netty.handler.codec.MessageToByteEncoder.allocateBuffer(MessageToByteEncoder.java:140)
+	io.netty.handler.codec.MessageToByteEncoder.write(MessageToByteEncoder.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:800)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:776)
+	io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:859)
+	io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1088)
+	io.netty.channel.Channel.writeAndFlush(Channel.java:257)
+	io.netty.channel.embedded.EmbeddedChannel.writeAndFlush(EmbeddedChannel.java:792)
+	com.nineyin.server.FxSession.send(FxSession.java:41)
+	com.nineyin.protocol.CustomPackets.sendAll(CustomPackets.java:126)
+	com.nineyin.login.LoginFlow.sendUiBootstrap(LoginFlow.java:285)
+	com.nineyin.login.LoginFlow.onClientReady(LoginFlow.java:259)
+	com.nineyin.server.FxOpcodeRouter.dispatch(FxOpcodeRouter.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:45)
+	com.nineyin.server.FxServerHandler.channelRead0(FxServerHandler.java:11)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:361)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:325)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:357)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1471)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:960)
+	io.netty.channel.embedded.EmbeddedChannel.writeInbound(EmbeddedChannel.java:369)
+	com.nineyin.game.SceneFlowTest.send(SceneFlowTest.java:100)
+	com.nineyin.game.SceneFlowTest.termsSign819MarksAgreedAndPushesProperties(SceneFlowTest.java:259)
+	java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)
+	org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)
+	org.junit.jupiter.engine.extension.TimeoutExtension.intercept(TimeoutExtension.java:156)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestableMethod(TimeoutExtension.java:147)
+	org.junit.jupiter.engine.extension.TimeoutExtension.interceptTestMethod(TimeoutExtension.java:86)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker$ReflectiveInterceptorCall.lambda$ofVoidMethod$0(InterceptingExecutableInvoker.java:103)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.lambda$invoke$0(InterceptingExecutableInvoker.java:93)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain$InterceptedInvocation.proceed(InvocationInterceptorChain.java:106)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.proceed(InvocationInterceptorChain.java:64)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.chainAndInvoke(InvocationInterceptorChain.java:45)
+	org.junit.jupiter.engine.execution.InvocationInterceptorChain.invoke(InvocationInterceptorChain.java:37)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:92)
+	org.junit.jupiter.engine.execution.InterceptingExecutableInvoker.invoke(InterceptingExecutableInvoker.java:86)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.lambda$invokeTestMethod$7(TestMethodTestDescriptor.java:218)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.invokeTestMethod(TestMethodTestDescriptor.java:214)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:139)
+	org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor.execute(TestMethodTestDescriptor.java:69)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:151)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.invokeAll(SameThreadHierarchicalTestExecutorService.java:41)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$6(NodeTestTask.java:155)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$8(NodeTestTask.java:141)
+	org.junit.platform.engine.support.hierarchical.Node.around(Node.java:137)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.lambda$executeRecursively$9(NodeTestTask.java:139)
+	org.junit.platform.engine.support.hierarchical.ThrowableCollector.execute(ThrowableCollector.java:73)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.executeRecursively(NodeTestTask.java:138)
+	org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:95)
+	org.junit.platform.engine.support.hierarchical.SameThreadHierarchicalTestExecutorService.submit(SameThreadHierarchicalTestExecutorService.java:35)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutor.execute(HierarchicalTestExecutor.java:57)
+	org.junit.platform.engine.support.hierarchical.HierarchicalTestEngine.execute(HierarchicalTestEngine.java:54)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:198)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:169)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:93)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.lambda$execute$0(EngineExecutionOrchestrator.java:58)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.withInterceptedStreams(EngineExecutionOrchestrator.java:141)
+	org.junit.platform.launcher.core.EngineExecutionOrchestrator.execute(EngineExecutionOrchestrator.java:57)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:103)
+	org.junit.platform.launcher.core.DefaultLauncher.execute(DefaultLauncher.java:85)
+	org.junit.platform.launcher.core.DelegatingLauncher.execute(DelegatingLauncher.java:47)
+	org.apache.maven.surefire.junitplatform.LazyLauncher.execute(LazyLauncher.java:56)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.execute(JUnitPlatformProvider.java:184)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invokeAllTests(JUnitPlatformProvider.java:148)
+	org.apache.maven.surefire.junitplatform.JUnitPlatformProvider.invoke(JUnitPlatformProvider.java:122)
+	org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:385)
+	org.apache.maven.surefire.booter.ForkedBooter.execute(ForkedBooter.java:162)
+	org.apache.maven.surefire.booter.ForkedBooter.run(ForkedBooter.java:507)
+	org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:495)
+2026-10-30 09:30:21.552 [main] INFO  com.nineyin.login.LoginFlow - UI bootstrap mode=0 skills=8 qinggong=18 books=6 clockMin=570
+2026-10-30 09:30:21.553 [main] INFO  com.nineyin.game.SelectFlow - Select target=10001 -> LastObject only (no menu)
+2026-10-30 09:30:21.553 [main] INFO  com.nineyin.game.SelectFlow - auto-clear LastObject (out of range) was=10001
+2026-10-30 09:30:21.577 [main] INFO  com.nineyin.game.WorldBossManager - world boss loaded: normal entries=1 (time rules=1), jh bosses=1 (point scenes=2), maplist scenes=3
+2026-10-30 09:30:21.578 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file bossnpc.txt rows=3
+2026-10-30 09:30:21.578 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=3 from C:\Users\Lizy\AppData\Local\Temp\junit4432522811657524000\share\npc\npcconfig
+2026-10-30 09:30:21.578 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit4432522811657524000\share\rule\door_data.ini
+2026-10-30 09:30:21.578 [main] WARN  com.nineyin.scene.SceneCreatorLoader - npc creator dir missing: C:\Users\Lizy\AppData\Local\Temp\junit4432522811657524000\share\creator\npc_creator\scene13
+2026-10-30 09:30:21.578 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit4432522811657524000\share\creator\mappath
+2026-10-30 09:30:21.578 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 0 -> 0
+2026-10-30 09:30:21.578 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=0 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.579 [main] INFO  com.nineyin.game.WorldBossManager - world boss spawned: bossnewworld002 at scene13 (1008.0,81.0,1684.0)
+2026-10-30 09:30:21.592 [main] INFO  com.nineyin.game.WorldBossManager - world boss loaded: normal entries=1 (time rules=1), jh bosses=1 (point scenes=2), maplist scenes=3
+2026-10-30 09:30:21.592 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file bossnpc.txt rows=3
+2026-10-30 09:30:21.593 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=3 from C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\npc\npcconfig
+2026-10-30 09:30:21.593 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\rule\door_data.ini
+2026-10-30 09:30:21.593 [main] WARN  com.nineyin.scene.SceneCreatorLoader - npc creator dir missing: C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\creator\npc_creator\school07_wudang
+2026-10-30 09:30:21.593 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\creator\mappath
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 0 -> 0
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=0 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.game.WorldBossManager - world boss spawned: bossworld001_hd at school07 (896.4,-6.3,391.1)
+2026-10-30 09:30:21.593 [main] WARN  com.nineyin.scene.SceneCreatorLoader - npc creator dir missing: C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\creator\npc_creator\scene13
+2026-10-30 09:30:21.593 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit10766929896776587056\share\creator\mappath
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 0 -> 0
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=0 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.593 [main] INFO  com.nineyin.game.WorldBossManager - world boss spawned: bossnewworld002 at scene13 (1573.0,79.0,798.0)
+2026-10-30 09:30:21.605 [main] INFO  com.nineyin.game.WorldBossManager - world boss loaded: normal entries=1 (time rules=1), jh bosses=1 (point scenes=2), maplist scenes=3
+2026-10-30 09:30:21.613 [main] INFO  com.nineyin.game.WorldBossManager - world boss loaded: normal entries=1 (time rules=1), jh bosses=1 (point scenes=2), maplist scenes=3
+2026-10-30 09:30:21.614 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file bossnpc.txt rows=3
+2026-10-30 09:30:21.614 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=3 from C:\Users\Lizy\AppData\Local\Temp\junit6572701639372110152\share\npc\npcconfig
+2026-10-30 09:30:21.614 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit6572701639372110152\share\rule\door_data.ini
+2026-10-30 09:30:21.614 [main] WARN  com.nineyin.scene.SceneCreatorLoader - npc creator dir missing: C:\Users\Lizy\AppData\Local\Temp\junit6572701639372110152\share\creator\npc_creator\school07_wudang
+2026-10-30 09:30:21.614 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit6572701639372110152\share\creator\mappath
+2026-10-30 09:30:21.614 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 0 -> 0
+2026-10-30 09:30:21.614 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=0 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.614 [main] INFO  com.nineyin.game.WorldBossManager - world boss spawned: bossnewworld001 at school07 (896.4,-6.3,391.1)
+2026-10-30 09:30:21.646 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit5578860946694228533\npc_creator\scene08_test count=3
+2026-10-30 09:30:21.654 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file clonenpc.txt rows=8
+2026-10-30 09:30:21.655 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=8 from C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\npc\npcconfig
+2026-10-30 09:30:21.655 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\rule\door_data.ini
+2026-10-30 09:30:21.657 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc clone placements loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\creator\npc_creator\clone003 count=9
+2026-10-30 09:30:21.657 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\creator\mappath
+2026-10-30 09:30:21.657 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=9 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.659 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc clone placements loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\creator\npc_creator\clone003 count=9
+2026-10-30 09:30:21.659 [main] WARN  com.nineyin.scene.PatrolPaths - mappath dir missing: C:\Users\Lizy\AppData\Local\Temp\junit1933280795441644465\share\creator\mappath
+2026-10-30 09:30:21.659 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=9 missing_or_far=0 named_paths=0
+2026-10-30 09:30:21.668 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=4
+2026-10-30 09:30:21.668 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=4 from C:\Users\Lizy\AppData\Local\Temp\junit5400100697735154576\share\npc\npcconfig
+2026-10-30 09:30:21.668 [main] WARN  com.nineyin.scene.DoorRoutes - door_data.ini missing: C:\Users\Lizy\AppData\Local\Temp\junit5400100697735154576\share\rule\door_data.ini
+2026-10-30 09:30:21.669 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit5400100697735154576\share\creator\npc_creator\born04_qiandengzhen count=4
+2026-10-30 09:30:21.670 [main] INFO  com.nineyin.scene.PatrolPaths - mappath loaded born04_npc.ini sections_now=1
+2026-10-30 09:30:21.670 [main] INFO  com.nineyin.scene.PatrolPaths - mappath table scene=born04 named_paths=1
+2026-10-30 09:30:21.670 [main] INFO  com.nineyin.scene.SceneManager - activity/event NPCs stripped: 4 -> 3
+2026-10-30 09:30:21.670 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=2 stand=1 missing_or_far=0 named_paths=1
+2026-10-30 09:30:21.677 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit5263520456630658123\npc_creator\born04_qiandengzhen count=3
+2026-10-30 09:30:21.683 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc clone placements loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit10078319181482219145\npc_creator\clone003 count=9
+2026-10-30 09:30:21.685 [main] INFO  com.nineyin.scene.SceneCreatorLoader - npc permanent loaded dir=C:\Users\Lizy\AppData\Local\Temp\junit10078319181482219145\npc_creator\clone003 count=8
+2026-10-30 09:30:21.690 [main] INFO  com.nineyin.scene.PatrolPaths - mappath loaded born04_npc.ini sections_now=2
+2026-10-30 09:30:21.690 [main] INFO  com.nineyin.scene.PatrolPaths - mappath table scene=born04 named_paths=2
+2026-10-30 09:30:21.690 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=1 stand=0 missing_or_far=0 named_paths=2
+2026-10-30 09:30:21.690 [main] INFO  com.nineyin.scene.PatrolPaths - patrol policy: walkers=0 stand=1 missing_or_far=1 named_paths=2
+2026-10-30 09:30:21.694 [main] INFO  c.n.scene.NpcTemplateRepository - npc template file city_commonnpc.txt rows=2
+2026-10-30 09:30:21.694 [main] INFO  c.n.scene.NpcTemplateRepository - npc templates total=2 from C:\Users\Lizy\AppData\Local\Temp\junit4782004609421705264\npcconfig
+2026-10-30 09:30:21.700 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:1eaa51e5db08613921f4b891c4a4cb6c64f0cfd77de88d96fd150946163f2bb1 agreed=0 no role ip=embedded
+2026-10-30 09:30:21.710 [main] INFO  com.nineyin.login.LoginFlow - login account=acct:v1:1eaa51e5db08613921f4b891c4a4cb6c64f0cfd77de88d96fd150946163f2bb1 agreed=0 no role ip=embedded
+2026-10-30 09:30:21.711 [main] INFO  com.nineyin.login.LoginFlow - role saved account=acct:v1:1eaa51e5db08613921f4b891c4a4cb6c64f0cfd77de88d96fd150946163f2bb1 name=测试侠客 book=book4 scene=city05
+2026-10-30 09:30:21.712 [main] INFO  com.nineyin.login.LoginFlow - ChooseRole scene=ini\scene\city05_ChengDu pos=(915.753,31.192,538.193) faction=force_yihua silver=99999
+2026-10-30 09:30:21.725 [main] INFO  com.nineyin.login.LoginFlow - UI bootstrap mode=0 skills=8 qinggong=18 books=6 clockMin=570
+2026-10-30 09:30:21.748 [main] WARN  com.nineyin.server.SvrListHandler - unknown area command: hello
+2026-10-30 09:30:21.751 [main] INFO  com.nineyin.server.SvrListHandler - area request served: svrlist
+2026-10-30 09:30:21.760 [main] INFO  com.nineyin.shop.ShopRepository - shops loaded=2 items=4 from C:\Users\Lizy\AppData\Local\Temp\junit16397314742257226852\shop.ini
+2026-10-30 09:30:21.788 [main] INFO  com.nineyin.server.FxOpcodeRouter - unknown C2S opcode=0x18 len=12 dump=00000000  18 70 29 6a 01 00 b5 20  00 00 00 00              |.p)j... ....| from embedded

@@ -401,7 +401,7 @@ public final class SceneFlow {
             // 291 TVarList(291, mode)；292 无参 toggle（响应走 normal 0x10，属性待钉死）；
             // 293 TVarList(293, type, onoff)
             case 291 -> handleChangePkMode(fx, session, msg);
-            case 292 -> handleChangeWarning(fx, session);
+            case 292 -> handleChangeWarning(fx, session, msg);
             case 293 -> handlePkProtectToggle(fx, session, msg);
             // 用户须知"同意"确认（实测：客户端进世界后 ~30s 首发并每 ~1 分钟重复，直至服务器确认）
             case 819 -> handleTermsSign(fx, session);
@@ -445,14 +445,14 @@ public final class SceneFlow {
      * 权威值 0x10 推送 PKMode(436, short)；官服属性表 type 1 → i16 编码。
      */
     private void handleChangePkMode(FxSession fx, LoginSession session, CustomMsg msg) {
-        CustomMsg.Val v = msg.val(1);
-        if (v == null || !v.asExactInt()) {
-            log.info("pk mode 291 ignored: bad mode argc={}", msg.size() - 1);
+        TVarList.Result r = TVarList.check(msg, 291, TVarList.intArg("mode"));
+        if (!r.ok()) {
+            log.info("change pk mode expects {}, got {}", r.expected(), r.got());
             return;
         }
-        int mode = v.intOrZero();
+        int mode = msg.val(1).intOrZero();
         if (mode < 0 || mode > 2) {
-            log.info("pk mode 291 invalid mode {}", mode);
+            log.info("change pk mode invalid mode {}", mode);
             return;
         }
         int old = session.pkMode;
@@ -466,7 +466,12 @@ public final class SceneFlow {
      * change warning %d -> %d via normal 0x10）。0x10 目标属性 ID 未从 exe 钉死，
      * 先翻转+存储，属性推送待抓包补上（见 docs/go-exe-protocol-analysis.md §3.2）。
      */
-    private void handleChangeWarning(FxSession fx, LoginSession session) {
+    private void handleChangeWarning(FxSession fx, LoginSession session, CustomMsg msg) {
+        TVarList.Result r = TVarList.check(msg, 292);
+        if (!r.ok()) {
+            log.info("change warning expects {} with no extra values, got {}", r.expected(), r.got());
+            return;
+        }
         boolean next = !session.warningOn;
         int old = session.warningOn ? 1 : 0;
         session.warningOn = next;
@@ -478,47 +483,35 @@ public final class SceneFlow {
      * client pk protect toggle type=%d on=%d）。
      */
     private void handlePkProtectToggle(FxSession fx, LoginSession session, CustomMsg msg) {
-        CustomMsg.Val type = msg.val(1);
-        CustomMsg.Val on = msg.val(2);
-        if (type == null || on == null || !type.asExactInt() || !on.asExactInt()) {
-            log.info("pk protect 293 ignored: bad args argc={}", msg.size() - 1);
+        TVarList.Result r = TVarList.check(msg, 293, TVarList.intArg("type"), TVarList.intArg("onoff"));
+        if (!r.ok()) {
+            log.info("pk protect toggle expects {}, got {}", r.expected(), r.got());
             return;
         }
-        session.pkProtectType = type.intOrZero();
-        session.pkProtectOn = on.intOrZero() != 0;
+        session.pkProtectType = msg.val(1).intOrZero();
+        session.pkProtectOn = msg.val(2).intOrZero() != 0;
         log.info("pk protect toggle type={} on={}", session.pkProtectType, session.pkProtectOn);
     }
 
     /** 61 显示装备类型（参考服：showequip_type set to %d / invalid value %d）。 */
     private void handleShowEquipType(FxSession fx, LoginSession session, CustomMsg msg) {
-        CustomMsg.Val v = msg.val(1);
-        if (v == null || !v.asExactInt()) {
-            log.info("showequip_type 61 ignored: bad type argc={}", msg.size() - 1);
+        TVarList.Result r = TVarList.check(msg, 61, TVarList.intArg("type"));
+        if (!r.ok()) {
+            log.info("showequip_type expects {}, got {}", r.expected(), r.got());
             return;
         }
-        int type = v.intOrZero();
+        int type = msg.val(1).intOrZero();
         if (type < 0) {
-            log.info("showequip_type 61 invalid value {}", type);
+            log.info("showequip_type invalid value {}", type);
             return;
         }
         session.showEquipType = type;
         log.info("showequip_type set to {}", type);
     }
 
-    /** 参数摘要：全部值以空格连接，单值与总长截断（移动/按键串等长参数不至于淹没日志）。 */
+    /** 参数摘要（单值 48 字符、总长 160 截断）：统一走 TVarList.describe，与校验错误文本同格式。 */
     private static String summarizeVals(CustomMsg msg) {
-        StringBuilder sb = new StringBuilder(48);
-        for (int i = 0; i < msg.size() && sb.length() < 160; i++) {
-            if (i > 0) {
-                sb.append(' ');
-            }
-            String v = msg.val(i).toString();
-            if (v.length() > 48) {
-                v = v.substring(0, 48) + "…";
-            }
-            sb.append(v);
-        }
-        return sb.toString();
+        return TVarList.describe(msg);
     }
 
     /** 打坐：cmd 1=坐下(102) 0/2=起身(0)；权威状态在 actor，并按 tick 恢复血蓝。 */
@@ -526,11 +519,12 @@ public final class SceneFlow {
         if (session.actor == null) {
             return;
         }
-        CustomMsg.Val cmd = msg.val(1);
-        if (cmd == null || !cmd.asExactInt()) {
+        TVarList.Result r = TVarList.check(msg, 240, TVarList.intArg("start_or_stop"));
+        if (!r.ok()) {
+            log.info("sitcross expects {}, got {}", r.expected(), r.got());
             return;
         }
-        int next = switch (cmd.intOrZero()) {
+        int next = switch (msg.val(1).intOrZero()) {
             case 1 -> PlayerActor.LOGIC_STATE_SITCROSS;
             case 0, 2 -> PlayerActor.LOGIC_STATE_NORMAL;
             default -> session.actor.logicState;
@@ -541,7 +535,7 @@ public final class SceneFlow {
         session.actor.logicState = next;
         fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, next));
         fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, next == PlayerActor.LOGIC_STATE_SITCROSS ? "sitdown" : "stand"));
-        log.info("sitcross LogicState -> {} (cmd={})", next, cmd.intOrZero());
+        log.info("sitcross LogicState -> {} (cmd={})", next, msg.val(1).intOrZero());
     }
 
     /** 200 设快捷键：idx, kind(str 或 int→skill), id；同 index 替换（先 0x12 删旧行）。 */

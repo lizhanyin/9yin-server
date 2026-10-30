@@ -764,9 +764,44 @@ class SceneFlowTest {
     }
 
     /**
-     * 一键穿 886 全链（需 NINEYIN_SERVER_ROOT 真实 equipment.ini 解析 EquipType）：
-     * uid 反查 → Hat→槽 1 → 0x18 纸娃娃 ViewAdd + 词缀加成。无 env 时跳过。
+     * 31 右键穿全链（需 NINEYIN_SERVER_ROOT 真实 equipment.ini）：[31, view=121, slot, 0]
+     * 定位背包装备 → 穿上槽位 → 0x18 纸娃娃 ViewAdd；参数不足拒绝；非穿物拒绝。
      */
+    @Test
+    void rightClickEquip31WearsFromBagSlot() {
+        String root = System.getenv("NINEYIN_SERVER_ROOT");
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null && !root.isEmpty(),
+                "NINEYIN_SERVER_ROOT 未设置，跳过真实表右键穿链路");
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        login.roleId = 42;
+        login.liveEquipped = new ArrayList<>();
+        login.liveBagged = new ArrayList<>();
+        login.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
+                3, "helmet_sell_10101", 140, 1, 2, ""));
+
+        // 参数不足（<4 值）拒绝
+        send(custom().u16(2).u8(2).i32(31).u8(2).i32(121).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x18));
+
+        // 装备页(121) slot 3 → 右键穿上槽 1 + 0x18 纸娃娃帧
+        send(custom().u16(4).u8(2).i32(31).u8(2).i32(121).u8(2).i32(3).u8(2).i32(0).toByteArray());
+        List<byte[]> worn = drainOutbound();
+        assertTrue(worn.stream().anyMatch(f -> op(f) == 0x18), "right-click equip must wear");
+        assertEquals(1, login.liveEquipped.size());
+        assertEquals(1, login.liveEquipped.get(0).slot());
+        assertTrue(login.liveBagged.isEmpty());
+        // 首穿绑定只记一次（重复穿脱不重复记）
+        assertEquals(1, login.boundUids.size());
+    }
+
     @Test
     void onestepEquip886WearsViaUid() {
         String root = System.getenv("NINEYIN_SERVER_ROOT");

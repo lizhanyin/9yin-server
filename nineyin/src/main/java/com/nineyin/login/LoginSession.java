@@ -66,6 +66,19 @@ public final class LoginSession {
     public List<com.nineyin.db.RoleInventoryStore.Equipped> liveEquipped;
     public List<com.nineyin.db.RoleInventoryStore.Bagged> liveBagged;
 
+    /**
+     * 已绑定物品 uid（首次穿戴时记录，对齐参考服 `bound (first wear)`）。
+     * 会话级状态；跨会话/落库持久化待存档格式钉死后接入。
+     */
+    public final java.util.Set<String> boundUids = new java.util.HashSet<>();
+
+    /**
+     * 当前打开的商店快照（SelectFlow.openShop 写入；msgId=70 购买按 page/pos
+     * 在此挂单查找——列语义与 game_shop_items 互证：
+     * 0=config 1=amount(库存) 2=capital 3=price 5=page 6=position）。
+     */
+    public com.nineyin.shop.ShopRepository.Shop openShop;
+
     public LoginSession(FxSession fx) {
         this.fx = fx;
     }

@@ -74,7 +74,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 |---|---|---|---|---|
 | 1 | 聊天 | `[channel, ...]` | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)` | 🟨 第六轮：出生校验+日志（聊天广播未接） |
 | 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志 |
-| 19 | 使用物品广义链（FashionSuit 打头） | sub（str→invalid / int→unhandled） | **第八轮链追踪：`case 19` 一个块内 FashionSuit→YufengItemUse→GiftBoxItemUse→EquipItemUse（右键穿）→WuJiBookUse 链式认领（各 handler 返回 bool，未认领落下一个）**；`fashion_suit has no sub-message` 等三分支 | 🟨 第八轮：链头校验+链尾 pending 日志 |
+| 19 | 时装套装 FashionSuit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` 等三分支；**第十轮修正：链（Yufeng/GiftBox/EquipItemUse/WuJiBook）各 handler 自检 msgId==31，服务的是 31 不是 19；19 由 FashionSuit 独占（仅查 argc≥2）** | 🟨 校验层（wear/buy 子路由待抓包） |
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
@@ -352,7 +352,7 @@ Shortcut(200)/Warning(292)/924/868 等的守卫比较因落入式 case / 参数�
 | 15 | signalAdvancedQingGongEntry 🎉 | | 270 | TwilightItemSkill ✓ |
 | 19 | FashionSuit ✓ | | 291/292/293 | PKMode/Warning/PKProtect ✓ |
 | 30 | MoveItem ✓ | | 295 | SetTitle 🎉 |
-| 31 | BodyItemUse 🎉 | | 301 | VIP ✓ |
+| 31 | 使用物品链（BodyItemUse+右键穿）🎉 | | 301 | VIP ✓ |
 | 34/71 | ItemAction 🎉（71 ≠ 商店关闭） | | 326/388/442~445 | Team（6 编号）🎉 |
 | 54 | ManualParry 🎉（218=ActiveParry 互证） | | 353/359/361/365 | Mail（4 编号）🎉 |
 | 61 | ShowEquipType ✓ | | 380 | PickupDrop ✓ |
@@ -387,7 +387,7 @@ Java 侧：`dispatchCustom` 新增 2/15/31/54/70/84/112/107/145/187/243/266/295/
 Clone 族保留精确拒绝文本；70 升级带 stock 校验串引用）；517/868/819 的注释
 按"非 Go case"事实修正（case 保留，客户端实测会发）。
 
-### 3.10 handler 链追踪：msgId 19 = 使用物品广义链（2026-10-30 第八轮）
+### 3.10 handler 链追踪：使用物品链（2026-10-30 第八轮；归属第十轮修正为 31）
 
 第七轮"仍未定位"的谜底：**EquipItemUse 等没有独立 case**。反汇编链追踪发现
 Go 把一批"使用类" handler 链在同一个 case 块里，每个返回 bool，未认领落到
@@ -429,6 +429,23 @@ case 19: FashionSuitCustom → YufengItemUse → GiftBoxItemUse
 - **测试**：槽位映射单测（含双槽/全占用替换/未收录拒绝）+ env-gated 全链测试
   （NINEYIN_SERVER_ROOT 指真实表时：假 uid 拒绝 + helmet_sell_10101 穿上槽 1
   + 0x18 纸娃娃帧断言），已实跑验证。
+
+### 3.12 右键穿与使用链归属修正轮（2026-10-30 第十轮）
+
+**归属修正**：反汇编 handler 头部发现 YufengItemUse/GiftBoxItemUse/EquipItemUse/
+WuJiBookUse 四个链成员**各自自检 `msgId==31`**（`cmpl $0x1f,0x4(%r8)`），BodyItemUse
+不自检——第八轮的"19 = 使用链"结论修正为：**链服务 msgId 31**（多 msgId 共享
+case 块 + handler 自检认领的形态）；19 由 FashionSuit 独占（仅查 argc≥2）。
+
+- **参数布局**（`cmp $0x4,%r9` 自检）：`[31, view(int), slot(int), ...]` 至少 4 值；
+  EquipItemUse 右键穿用 view+slot 定位背包物品（`lootBagForView`），槽位映射来自
+  Go `inventory.SlotsForEquipType`（与第九轮官方存档实测映射互证）。
+- **Java 落地**：穿装机械抽成共享核心 `wearBagItem`（一键穿 886 与右键穿 31 共用，
+  帧序/持久化/词缀加成同构）；31 的 handler 重写为使用链形态——参数校验 →
+  view+slot 反查 → 可穿校验（`right-click equip %s reject: not wearable`）→
+  **首穿绑定**（`bound (first wear)`，会话级 `boundUids`，持久化待接）→ 穿上。
+- **测试**：env-gated 全链（参数不足拒绝 / 121 页 slot 3 右键穿上槽 1 / 0x18 帧 /
+  绑定只记一次），实跑日志与 Go 同构；151 全绿。
 
 
 ## 4. 后续继续挖掘的方法

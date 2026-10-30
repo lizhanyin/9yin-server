@@ -1,14 +1,13 @@
 /.idea/
 target/
 /package/
-/logs/
 /test/
 /statistics/
 build
 *.iml
 
-/__pycache__/
-/logs/*
+tools/smoke/__pycache__
+nineyin/logs
 -----
 
 *.ctxt

@@ -787,9 +787,47 @@ public final class SceneFlow {
                 summarizeVals(msg));
     }
 
-    /** 31 身体道具使用（参考服：`rejected body item %s for sex=%d body_type=%d`）。 */
+    /**
+     * 31 使用物品链（第十轮反汇编钉死：Yufeng/GiftBox/EquipItemUse/WuJiBook 四个
+     * handler 都自检 msgId==31，链式认领；参数 `[31, view(int), slot(int), ...]`
+     * 至少 4 值——EquipItemUse 右键穿用 view+slot 定位背包物品）。
+     * Java：BodyItemUse（身体道具表未接）与御风/礼盒/无极段落未实装先拒绝，
+     * EquipItemUse 段走共享穿装核心；首次穿戴记绑定（会话级，持久化待接）。
+     */
     private void handleBodyItemUse(FxSession fx, LoginSession session, CustomMsg msg) {
-        log.info("body item use vals={} (body item table not implemented)", summarizeVals(msg));
+        if (msg.size() < 4) {
+            log.info("item use 31 malformed vals={}", summarizeVals(msg));
+            return;
+        }
+        if (session.roleId == 0 || session.liveBagged == null || session.liveEquipped == null) {
+            log.info("right-click equip reject: no live inventory");
+            return;
+        }
+        int view = intArg(msg, 1);
+        int slot = intArg(msg, 2);
+        // view+slot 反查背包物品
+        com.nineyin.db.RoleInventoryStore.Bagged item = null;
+        for (var b : session.liveBagged) {
+            if (b.slot() == slot && InventoryPackets.bagViewOf(b.viewId()) == view) {
+                item = b;
+                break;
+            }
+        }
+        if (item == null) {
+            log.info("right-click equip reject: bag[{}:{}] empty", view, slot);
+            return;
+        }
+        if (equipTypeOf(item.configId()).isEmpty()) {
+            log.info("right-click equip {} reject: not wearable", item.configId());
+            return;
+        }
+        String uid = InventoryPackets.uniqueId(session.roleId, "bag", slot);
+        boolean firstWear = session.boundUids.add(uid);
+        if (firstWear) {
+            log.info("right-click equip {} bound (first wear)", item.configId());
+        }
+        log.info("right-click equip uid={} config={}", uid, item.configId());
+        wearBagItem(fx, session, item, view);
     }
 
     /** 54 手动招架（反汇编：handleManualParryCustom；`publish manual parry state`，与 218 主动招架同翻状态）。 */
@@ -830,9 +868,7 @@ public final class SceneFlow {
     /**
      * 886~889 一键穿（参考服：`onestep equip uid=%s` / `not found in bags` /
      * `wear now requires one wearable equipment item`）。按背包 uid（ViewAdd 下发的
-     * MD5 串）认领物品，EquipType→身体槽位映射取自官方存档实测（equip.json 33 件：
-     * Hat=1/Cloth=3/Pants=4/Wrist=6/Leg=7/Shoes=8/Earring=11,12/Necklace=13/
-     * Fingerring=14,15/Weapon=22），双槽类型落第一个空槽。穿上帧序与 msgId=30 同构。
+     * MD5 串）认领物品，穿装走共享核心 {@link #wearBagItem}。
      */
     private void handleOnestepEquip(FxSession fx, LoginSession session, CustomMsg msg) {
         CustomMsg.Val uidVal = msg.val(1);
@@ -861,15 +897,28 @@ public final class SceneFlow {
             log.info("onestep equip uid={} not found in bags", uid);
             return;
         }
+        // 穿装细节（槽位/换位/加成）由 wearBagItem 记录；这里只记认领
+        log.info("onestep equip uid={} config={}", uid, item.configId());
+        wearBagItem(fx, session, item, fromView);
+    }
+
+    /**
+     * 共享穿装核心（一键穿 886 / 右键穿 31 共用）：定位槽位（官方存档实测映射
+     * {@link #EQUIP_SLOTS}）→ 背包清格+镜像 → 旧装备让位 → 0x18 纸娃娃 ViewAdd →
+     * WeaponMode 模型帧 → §3.7 词缀加成重算 → inventoryFrames 缓存重建 → 持久化。
+     *
+     * @return 被换下的旧装备 configId；目标格无旧装备返回 ""；物品不可穿返回 null
+     *         （已打 `wear now requires...` / `right-click equip ... reject` 日志）
+     */
+    private String wearBagItem(FxSession fx, LoginSession session,
+                               com.nineyin.db.RoleInventoryStore.Bagged item, int fromView) {
         String equipType = equipTypeOf(item.configId());
         int slot = equipSlotFor(equipType, session.liveEquipped);
         if (equipType.isEmpty() || slot <= 0) {
-            log.info("wear now requires one wearable equipment item (uid={} config={} type={})",
-                    uid, item.configId(), equipType);
-            return;
+            log.info("wear now requires one wearable equipment item (config={} type={})",
+                    item.configId(), equipType);
+            return null;
         }
-        // 穿上（帧序与 msgId=30 穿上分支同构：背包清格+镜像 → 旧装备让位 → 纸娃娃落位 →
-        // 武器模型 → 词缀加成重算 → 库存缓存重建）
         long roleId = session.roleId;
         int fromSlot = item.slot();
         int category = bagWireToCategory(fromView);
@@ -881,7 +930,9 @@ public final class SceneFlow {
             out.add(InventoryPackets.viewRemove(fromMirror, fromSlot));
         }
         com.nineyin.db.RoleInventoryStore.Equipped old = removeEquipped(session, slot);
+        String oldConfig = null;
         if (old != null) {
+            oldConfig = old.configId();
             int oldSlot = freeBagSlot(session.liveBagged, InventoryPackets.VIEW_EQUIP_BAG);
             out.add(InventoryPackets.viewRemove(InventoryPackets.VIEW_EQUIP_BAG, oldSlot));
             out.add(InventoryPackets.bagViewAdd(
@@ -896,7 +947,7 @@ public final class SceneFlow {
             session.liveBagged.add(new com.nineyin.db.RoleInventoryStore.Bagged(
                     oldSlot, old.configId(), old.itemType(), 1, 2, ""));
             if (inventory != null && !inventory.swapEquipSlot(roleId, slot, oldSlot)) {
-                log.warn("onestep swap equip[{}]->bag[{}] persist failed", slot, oldSlot);
+                log.warn("wear swap equip[{}]->bag[{}] persist failed", slot, oldSlot);
             }
         }
         com.nineyin.db.RoleInventoryStore.Equipped worn =
@@ -907,7 +958,7 @@ public final class SceneFlow {
                 worn, InventoryPackets.uniqueId(roleId, "equip", slot)));
         session.liveEquipped.add(worn);
         if (inventory != null && !inventory.moveBagToEquip(roleId, fromSlot, slot, category)) {
-            log.warn("onestep bag[{}]->equip[{}] persist failed", fromSlot, slot);
+            log.warn("wear bag[{}]->equip[{}] persist failed", fromSlot, slot);
         }
         out.add(InventoryPackets.weaponModeFrame(session.liveEquipped,
                 Appearance.resolveVisual(session.appearance).sex()));
@@ -928,8 +979,9 @@ public final class SceneFlow {
         session.inventoryFrames = InventoryPackets.inventoryFrames(
                 roleId, session.liveEquipped, session.liveBagged,
                 Appearance.resolveVisual(session.appearance).sex());
-        log.info("onestep equip uid={} config={} -> slot={}{}", uid, item.configId(), slot,
-                old != null ? " (swapped out " + old.configId() + ")" : "");
+        log.info("wear config={} -> slot={}{}", item.configId(), slot,
+                oldConfig != null ? " (swapped out " + oldConfig + ")" : "");
+        return oldConfig != null ? oldConfig : "";
     }
 
     /**

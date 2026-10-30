@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 装备词缀加成链（§3.7）：proppack.ini 解析 → propBuilt 引用 → equip*Add 累积 →
@@ -90,6 +91,72 @@ class EquipBonusTest {
                 affixed("1,12592;1,12592;1,12592;1,62995;1,62995;1,62995")));
         assertEquals(117, actor.equipStaAdd, "3×StaAdd39 叠加");
         assertEquals(1425, actor.equipPhyDef, "3×PhyDef475 叠加（此前 PhyDef 名未映射丢失）");
+    }
+
+    /** 装备特效（§3.18）：EffectPackID → buff varprop 的 @PropModifyPackRec 叠加 + 免疫位收集。 */
+    @Test
+    void appliesEquipEffectBuffStatPacksAndImmunities() throws Exception {
+        PropPackCatalog packs = catalog();
+        com.nineyin.rule.EquipEffectCatalog effects = effectCatalog();
+        PlayerActor actor = new PlayerActor();
+        // 词缀层 475 + 特效层（1647: eqp_test_a@6 的 PPR=62995 再叠 475；b@1 免疫位 33）
+        actor.recomputeEquipBonuses(packs, List.of(affixed("1,62995")));
+        actor.applyEquipEffects(effects, packs, List.of(1647));
+        assertEquals(950, actor.equipPhyDef, "词缀 475 + 特效 varprop proppack 475 叠加");
+        assertEquals(java.util.Set.of(33), actor.equipImmunities(), "eqp_test_b@1 免疫位");
+        // 重算归零后再走属性+免疫双效包（63000: a@1 → PPR 62995 + Immunity 38）
+        actor.recomputeEquipBonuses(packs, List.of());
+        actor.applyEquipEffects(effects, packs, List.of(63000));
+        assertEquals(475, actor.equipPhyDef);
+        assertEquals(java.util.Set.of(38), actor.equipImmunities(), "a@1 行带 Immunity=38");
+        // null 目录清空免疫位
+        actor.applyEquipEffects(null, packs, List.of(1647));
+        assertTrue(actor.equipImmunities().isEmpty());
+    }
+
+    /** 特效目录 fixture（带属性词条的 63000 包用于 PlayerActor 叠加断言）。 */
+    private com.nineyin.rule.EquipEffectCatalog effectCatalog() throws Exception {
+        Path skill = tempDir.resolve("skill");
+        Path rule = tempDir.resolve("rule");
+        Files.createDirectories(skill);
+        Files.createDirectories(rule);
+        Files.writeString(skill.resolve("buff_new.ini"), """
+                [eqp_test_a]
+                StaticData=7001
+                [eqp_test_b]
+                StaticData=7002
+                """, GBK);
+        Files.writeString(skill.resolve("buff_static.ini"), """
+                [7001]
+                MinVarPropNo=300001
+                MaxVarPropNo=300006
+                [7002]
+                MinVarPropNo=300101
+                MaxVarPropNo=300102
+                """, GBK);
+        Files.writeString(skill.resolve("buff_varprop.ini"), """
+                [300001]
+                Level=1
+                @PropModifyPackRec=62995
+                Immunity=38
+                [300006]
+                Level=6
+                @PropModifyPackRec=62995
+                [300101]
+                Level=1
+                Immunity=33
+                """, GBK);
+        Files.writeString(rule.resolve("equip_special_effect_pack.ini"), """
+                [1647]
+                EquipAddBuff=eqp_test_a,6;eqp_test_b,1
+                [10013]
+                EquipAddBuff=eqp_test_b,1
+                [63000]
+                EquipAddBuff=eqp_test_a,1
+                """, GBK);
+        com.nineyin.rule.EquipEffectCatalog catalog = new com.nineyin.rule.EquipEffectCatalog();
+        catalog.load(tempDir);
+        return catalog;
     }
 
     @Test

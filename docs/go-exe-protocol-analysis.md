@@ -757,3 +757,64 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   `skillCatalogRow` 10 属性同 roleSkillViewAdd 布局（Level=12 展示值）；u16 护栏
   65,530；ready 批在目录已推时只重推行不重建容器（对齐参考）。SkillInitTable 的
   LearnedSkill 补 totalFill 列 + `all()` 保序访问器。156 测试全绿。
+- **实机验证点（下次真机连 Java 服时重点观察）**：① 技能书/图鉴界面——目录整推后
+  应能看到全部门派技能（此前仅 23 技，界面大量空白）；② 穿装备后的防御数值变化
+  ——PhyDef 修复后护甲类词缀（如 62995 物防+475）应实际生效于面板防御。
+
+### 3.17 基础技数字 id 与装备特效链轮（2026-10-30 第十七轮）
+
+**C. ready 批数字 id 基础项语义钉死**（§3.16 B 遗留的 167 项）：
+
+- View 40 ready 批中的数字 ConfigID（新号 167 唯一/商弘 186 唯一，各重推 2 次）
+  = **jn_* 基础江湖技能按 skill_static 行号下发**：167/167 完美反查
+  skill_new.ini `StaticData=<该值>` 的节（128 SkillNormal + 38 SkillLock + 1 个
+  ItemType=1006），如 4=jn_aoe_1h_01（单手 AOE 普攻）、1=default_normal_skill。
+  下发时 ItemType 统一标 **1010**、Level=1（基础技无成长）、fill=0；数量随账号
+  已学集变化。**Java 暂不跟进**（客户端自带基础技动作，服务端重推为参考服冗余），
+  若后续实测普攻异常再按此映射补推。
+
+**D. 装备特效（EffectPackID）四跳链路钉死**：
+
+```
+装备帧 [325] EffectPackID（helmet=10013 / sword_60702=1647 / 首饰 60702=11151）
+ → share/rule/equip_special_effect_pack.ini [N].EquipAddBuff=<buffId>,<等级>[;…]
+    （563 节；10013=eqp_ImmStun,1；1647=eqp_WpResParry,6;eqp_wp_06,1 双 buff）
+ → share/skill/buff_new.ini [eqp_*]（258 个 eqp_* 节）：script=Buffer + StaticData
+ → share/skill/buff_static.ini [行号]：行为标志（Visible=0 隐形、CantCustomRemove=1、
+    OffLineClear=1）+ varprop 区间
+ → share/skill/buff_varprop.ini [区间]：实际效果（eqp_ImmStun 110221.. = Immunity=33/
+    34/35… 按 buff 等级升位——头盔的"免疫眩晕"即此位）
+```
+
+- 语义：**装备特效 = 穿上即挂的隐形 buff**（不可手动移除、下线清除），效果经
+  varprop 落属性/免疫位；同 EffectivePack 可挂多 buff、buff 带等级（6 级破招架）。
+- **Java 缺口**（~~① 装备帧未传输 EffectPackID 属性~~——**第十七轮误记**：传输层
+  早已存在（InventoryPackets `P_EFFECT_PACK=1957`，装备/背包两构造器均下发，
+  值取 equipment.ini 配置）；② 穿/脱装备的 buff 生命周期与 ③ 免疫位判定——
+  **第十八轮已落地 ②**，见 §3.18）。
+
+### 3.18 装备特效 buff 层实现轮（2026-10-30 第十八轮）
+
+§3.17 链路的服务端应用层落地（传输层经查证早已存在，见上修正）：
+
+- **`rule/EquipEffectCatalog`**（四跳链路装载）：equip_special_effect_pack
+  （pack→[(buffId,level)]，实测表 **518 包/257 buff**）→ buff_new（buffId→StaticData）
+  → buff_static（StaticData→varprop 区间）→ buff_varprop（按 Level 索引行）。
+  行取法：精确级优先 → ≤level 最大级（floor）→ 最大级兜底；
+  `@PropModifyPackRec` 支持 `;,` 多值（实测 `95021;95061`）。
+- **`PlayerActor.applyEquipEffects(effects, packs, packIds)`**：与
+  recomputeEquipBonuses 成对调用（词缀先、特效后；三个接线点：ClientReady 进场景、
+  msgId 30 穿/脱、一键穿/右键穿共用核心）。属性类特效经 varprop 的
+  @PropModifyPackRec **复用词缀累积器**叠入 equip*Add（MaxHP/MaxMP 变化自动走
+  增量推送）；Immunity 位收集进 `equipImmunities()`（只读）。
+- **修复 `AiRuleData` 共享解析器潜在 bug**：KV 正则 `^(\w+)=` 不认 `@` 键，
+  `@PropModifyPackRec`/`@SkillModifyPackRec` 等真实表行被**静默整行丢弃**——
+  放宽为 `[\w@.]+`（BuffCatalog/AiRuleData 既有消费不受影响，全量测试绿）。
+- **装备特效包号解析**：SceneFlow `equipEffectPackIds`（liveEquipped 逐件经
+  EquipmentModels.itemStatic 取 equipment.ini 配置值；**实例级覆盖未接**——实测
+  商弘的 sword_60702 抓包为 1647 而配置为 1648，重铸会换特效包，存档链待接）。
+- **留待后续**：EventProcess 脚本类效果（302 处，需脚本系统）、
+  @SkillModifyPackRec 技能修改（32 处）、Immunity 位在 CombatFormulas 的消费
+  （控制效果系统接入后）、buff 的客户端帧（buff_static Visible=0 隐形，无需推送）。
+- **测试**：+4（链路解析/等级 floor 回退/actor 叠加+免疫收集/真实表冒烟
+  NINEYIN_SERVER_ROOT 下 518 包+实测值抽查），全量 160 绿。

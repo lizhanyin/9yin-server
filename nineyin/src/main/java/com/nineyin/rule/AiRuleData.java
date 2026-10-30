@@ -33,7 +33,8 @@ public final class AiRuleData {
     public static final Charset GBK = Charset.forName("GBK");
 
     private static final Logger log = LoggerFactory.getLogger(AiRuleData.class);
-    private static final Pattern KV = Pattern.compile("^(\\w+)=([^\\r\\n]*)");
+    /** 键字符含 @/.（buff_varprop 的 @PropModifyPackRec、任务表等真实存在，\w 会整行丢弃）。 */
+    private static final Pattern KV = Pattern.compile("^([\\w@.]+)=([^\\r\\n]*)");
 
     /** AI 包：EventGroup 事件 ID 列表（Text 为策划备注名）。 */
     public record AiPackage(int id, String text, List<Integer> eventIds) {

@@ -381,6 +381,41 @@ public final class PlayerActor {
         }
     }
 
+    /** 装备特效免疫位（EffectPackID → EquipAddBuff → varprop Immunity；控制效果接入后生效）。 */
+    private final java.util.Set<Integer> equipImmunities = new java.util.LinkedHashSet<>();
+
+    /**
+     * 装备特效应用（§3.17 链路）：与 recomputeEquipBonuses 同调用点、先词缀后特效。
+     * 属性类效果（varprop @PropModifyPackRec）复用词缀累积器继续叠加；Immunity 位
+     * 收集进 {@link #equipImmunities()}（EventProcess/@SkillModifyPackRec 脚本系留待后续）。
+     *
+     * @param effectPackIds 每件已穿装备的特效包号（0=无；来自 equipment.ini 配置）
+     */
+    public void applyEquipEffects(com.nineyin.rule.EquipEffectCatalog effects,
+                                  PropPackCatalog packs, List<Integer> effectPackIds) {
+        equipImmunities.clear();
+        if (effects == null || effectPackIds == null) {
+            return;
+        }
+        for (int packId : effectPackIds) {
+            for (com.nineyin.rule.EquipEffectCatalog.EquipBuff b : effects.buffsOfPack(packId)) {
+                if (packs != null) {
+                    for (int pp : effects.propPacksOf(b.buffId(), b.level())) {
+                        for (PropPackCatalog.Mod mod : packs.modsOf(pp)) {
+                            accumulateEquipMod(mod);
+                        }
+                    }
+                }
+                equipImmunities.addAll(effects.immunitiesOf(b.buffId(), b.level()));
+            }
+        }
+    }
+
+    /** 当前装备特效免疫位（只读视图）。 */
+    public java.util.Set<Integer> equipImmunities() {
+        return java.util.Collections.unmodifiableSet(equipImmunities);
+    }
+
     /** 词缀属性名 → equip*Add 累积器；未覆盖词缀（概率%/倍率/内功防御系等）忽略。
      *  后缀省略变体（PhyDef/MaxHP/Str/Sta/Dex/Dodge/MaxMP/MeleePower，实测 proppack
      *  与抓包装备 62995=PhyDef+475）与 *Add 同累积器；重复包号逐条叠加。 */

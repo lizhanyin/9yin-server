@@ -86,6 +86,8 @@ public final class SceneFlow {
     private final ChargeShopCatalog chargeShop;
     /** 词缀属性包目录（装备 PropModify 加成；缺失时加成层禁用，对齐参考服）。 */
     private final PropPackCatalog propPacks;
+    /** 装备特效目录（equip_special_effect_pack + buff 三表，§3.17 链路）。 */
+    private final com.nineyin.rule.EquipEffectCatalog equipEffects;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -154,6 +156,22 @@ public final class SceneFlow {
                 : new ChargeShopCatalog();
         this.propPacks = PropPackCatalog.load(
                 sceneManager.shareRoot().resolve("modifypack").resolve("proppack.ini"));
+        this.equipEffects = new com.nineyin.rule.EquipEffectCatalog();
+        this.equipEffects.load(sceneManager.shareRoot());
+    }
+
+    /** 每件已穿装备的特效包号（equipment.ini 配置解析；0=无特效；供 applyEquipEffects）。 */
+    private List<Integer> equipEffectPackIds(LoginSession session) {
+        if (session.liveEquipped == null) {
+            return List.of();
+        }
+        List<Integer> ids = new ArrayList<>(session.liveEquipped.size());
+        for (com.nineyin.db.RoleInventoryStore.Equipped e : session.liveEquipped) {
+            com.nineyin.protocol.EquipmentModels.ItemStatic st =
+                    com.nineyin.protocol.EquipmentModels.itemStatic(e.configId());
+            ids.add(st != null ? st.effectPackId() : 0);
+        }
+        return ids;
     }
 
     /** 九阴志全局门控（GM / 广播接线用）。 */
@@ -191,6 +209,7 @@ public final class SceneFlow {
         // 装备词缀加成（库存在 onChooseRole 已下发，此处 liveEquipped 就绪；进场景属性批走有效值）
         if (session.actor != null) {
             session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+            session.actor.applyEquipEffects(equipEffects, propPacks, equipEffectPackIds(session));
         }
         List<NpcInstance> visible = visibleNpcs(st.world, session.x, session.z);
         int cap = st.world.cloneScene ? CLONE_NPC_CAP : INITIAL_NPC_CAP;
@@ -1092,6 +1111,7 @@ public final class SceneFlow {
             int hpBefore = session.actor.maxHp();
             int mpBefore = session.actor.maxMp();
             session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+            session.actor.applyEquipEffects(equipEffects, propPacks, equipEffectPackIds(session));
             if (session.actor.maxHp() != hpBefore || session.actor.maxMp() != mpBefore) {
                 out.add(S2CPackets.playerBatch()
                         .i32(PropertyId.MAX_HP, session.actor.maxHp())
@@ -1686,6 +1706,7 @@ public final class SceneFlow {
                 int maxHpBefore = session.actor.maxHp();
                 int maxMpBefore = session.actor.maxMp();
                 session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+                session.actor.applyEquipEffects(equipEffects, propPacks, equipEffectPackIds(session));
                 if (session.actor.maxHp() != maxHpBefore || session.actor.maxMp() != maxMpBefore) {
                     out.add(S2CPackets.playerBatch()
                             .i32(PropertyId.MAX_HP, session.actor.maxHp())

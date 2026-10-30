@@ -156,7 +156,8 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
   判定，equipment.ini→itemartstatic.ini 解析、缺失回退 config 原值）；武器帧并入 `inventoryFrames`
   缓存，初始进场景与 0x0C 重进自动恢复手持武器
 
-装备系统仍缺（对照 exe）：装备属性加成（equipStrAdd/equipPhyDef 等未接 CombatStats）、
+装备系统仍缺（对照 exe）：~~装备属性加成（equipStrAdd/equipPhyDef 等未接
+CombatStats）~~（**第五轮已闭合**，见 §3.7）、
 右键使用穿戴（EquipItemUse）/一键穿（OnestepEquip）两个未钉死编号的 msgId、
 时装外观刷新（FashionCoat=1352 系）、重铸 WeaponRecast 全套。
 
@@ -252,6 +253,35 @@ Go 同构日志；**default 分支日志对齐**为参考服的
   GM 侧动作名为 `set_jingmai_tier`）；下一批可挖：`wear now requires one wearable
   equipment item`（OnestepEquip）与 `right-click equip %s reject`（EquipItemUse）
   的行为串已找到，但编号未钉死，需反汇编或 GM 探针。
+
+### 3.7 装备词缀加成轮（2026-10-30 第五轮）
+
+闭合 §3.3 记录的装备缺口第一块：**装备属性加成接入 CombatStats**
+（`equipStrAdd/equipPhyDef 等未接` → 已接）。
+
+- **数据链**：`share/modifypack/proppack.ini`（GBK，34,711 个有效词缀包节；每节
+  `r=,PropName,Value,Flag` 一到多行，Flag 0/1 语义未钉死、累积时忽略）→ 新建
+  `com.nineyin.game.PropPackCatalog`（装载日志对齐 `proppack catalog ready packs=%d
+  file=%s` / `proppack.ini unavailable (%v); equip PropModify bonuses disabled`）。
+  装备的 `propBuilt` 串（"1,id;1,id"，id 即节号，来自 DB 词缀 JSON 的
+  `[{pack_rec,prop_built}]` 转换）逐件解析引用词缀包。
+- **累积层**（`PlayerActor.equip*Add`，字段名与 Go 累积器同构：equipMaxHPAdd/
+  equipDexAdd/equipPhyDef/equipMeleePowerAdd/equipMinMelee/equipMaxMelee…）：
+  `recomputeEquipBonuses(catalog, liveEquipped)` 先清零再逐件累积，幂等可反复
+  调用（对齐 Go `recomputeCombat`）。
+- **应用面**（只取已有文档化换算，未发明公式）：
+  PhyVa/MeleePower→攻击、PhyDef→防御、Dex(身法)1:1→命中 + PhyHit→命中、
+  Dodge→闪避、Str(臂力)1:1→暴击值、MaxHP/MaxMP→有效上限 `maxHp()/maxMp()`
+  （vitalUpdate/tick 恢复/revive/瘀血上限全部改走有效值）。
+  五维其余（Ing/Spi/Sta）、MagicHit/MagicVa、内功防御四系、概率%/倍率词缀
+  累积但不应用（无对应字段），待内功/经脉系统接入后扩展。
+- **接线点**：SceneFlow 构造器装载目录；`sendSceneNpcs`（ClientReady 钩子，
+  库存已下发）进场景重算；msgId 30 穿/脱触及装备栏后重算，有效上限变化时
+  0x10 推 MaxHP(577)/MaxMP(578) 增量 + vital 同步并打加成摘要日志。
+- **装备系统仍缺**（§3.3 剩余）：右键使用穿戴（EquipItemUse）/一键穿
+  （OnestepEquip）编号未钉死、时装外观刷新（FashionCoat=1352 系）、
+  重铸 WeaponRecast 全套（`recast preview reject: need 5 args` 等串已找到，
+  编号未钉死）。
 
 ## 4. 后续继续挖掘的方法
 

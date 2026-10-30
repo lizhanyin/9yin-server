@@ -88,6 +88,16 @@ public final class PlayerActor {
     public float dodgeRateBonus;          // 闪避率加成（0.05 = +5%，受 24% 上限约束）
     public int damageReduction;           // 外功伤害减免（每 10 点减 1 点伤害）
 
+    // ---------- 装备词缀加成（proppack → equip*Add 累积层，对齐 Go recomputeCombat） ----------
+    // 字段名与 Go 累积器同构（equipMaxHPAdd/equipDexAdd/equipPhyDef/equipMeleePowerAdd…）。
+    // 应用面只取已有文档化换算的属性：PhyVa/MeleePower→攻击、PhyDef→防御、
+    // Dex(身法)1:1→命中 + PhyHit→命中、Dodge→闪避、Str(臂力)1:1→暴击值、
+    // MaxHP/MaxMP→有效上限；五维其余与内功/魔法系先累积不应用（无对应字段）。
+    public int equipMaxHpAdd, equipMaxMpAdd;
+    public int equipStrAdd, equipDexAdd, equipIngAdd, equipSpiAdd, equipStaAdd;
+    public int equipPhyDef, equipPhyHit, equipMagicHit, equipDodge;
+    public int equipPhyVa, equipMagicVa, equipMeleePowerAdd, equipMinMelee, equipMaxMelee;
+
     // 招架（Wiki Parry Attributes；耐力/恢复默认值为骨架近似，官服基础值未公开）
     public boolean parrying;              // 218 招架开关
     public int parryEndurance = 100;      // 招架耐力（当前）
@@ -303,13 +313,97 @@ public final class PlayerActor {
     /** 瘀血上限：最大血量的 30%，超出部分直接扣血量。 */
     static final double BRUISE_CAP_RATIO = 0.30;
 
-    /** 当前战斗属性档案（喂给 CombatFormulas）。 */
+    /** 当前战斗属性档案（喂给 CombatFormulas）；装备词缀加成在此叠加（基础字段不动）。 */
     public CombatStats combatStats() {
-        return new CombatStats(attack, defense, pierce,
+        return new CombatStats(attack + equipPhyVa + equipMeleePowerAdd,
+                defense + equipPhyDef, pierce,
                 critDamageBonus, critDamageReduction, critRateBonus, critRateReduction,
-                accuracy, evasion, hitRateBonus, dodgeRateBonus,
+                accuracy + equipDexAdd + equipPhyHit, evasion + equipDodge,
+                hitRateBonus, dodgeRateBonus,
                 damageReduction, blockRating, internalConversion,
-                critValue, resilience);
+                critValue + equipStrAdd, resilience);
+    }
+
+    /** 有效上限（基础 + 装备词缀；夹下限 1 防词缀负值归零）。 */
+    public int maxHp() {
+        return Math.max(1, baseMaxHp + equipMaxHpAdd);
+    }
+
+    public int maxMp() {
+        return Math.max(1, baseMaxMp + equipMaxMpAdd);
+    }
+
+    /**
+     * 从装备栏词缀重算加成累积（装备 propBuilt 串 "1,id;1,id" → proppack 节 → r= 属性行）。
+     * 幂等：先清零再累积，穿/脱/进场景均可反复调用；基础属性字段不受影响。
+     */
+    public void recomputeEquipBonuses(PropPackCatalog catalog,
+                                      List<com.nineyin.db.RoleInventoryStore.Equipped> equipped) {
+        equipMaxHpAdd = 0;
+        equipMaxMpAdd = 0;
+        equipStrAdd = 0;
+        equipDexAdd = 0;
+        equipIngAdd = 0;
+        equipSpiAdd = 0;
+        equipStaAdd = 0;
+        equipPhyDef = 0;
+        equipPhyHit = 0;
+        equipMagicHit = 0;
+        equipDodge = 0;
+        equipPhyVa = 0;
+        equipMagicVa = 0;
+        equipMeleePowerAdd = 0;
+        equipMinMelee = 0;
+        equipMaxMelee = 0;
+        if (catalog == null || equipped == null) {
+            return;
+        }
+        for (com.nineyin.db.RoleInventoryStore.Equipped item : equipped) {
+            String built = item.propBuilt();
+            if (built == null || built.isEmpty()) {
+                continue;
+            }
+            for (String pair : built.split(";")) {
+                String[] cols = pair.split(",");
+                if (cols.length < 2) {
+                    continue;
+                }
+                int packId;
+                try {
+                    packId = Integer.parseInt(cols[1].trim());
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                for (PropPackCatalog.Mod mod : catalog.modsOf(packId)) {
+                    accumulateEquipMod(mod);
+                }
+            }
+        }
+    }
+
+    /** 词缀属性名 → equip*Add 累积器；未覆盖词缀（概率%/倍率/内功防御系等）忽略。 */
+    private void accumulateEquipMod(PropPackCatalog.Mod mod) {
+        switch (mod.prop()) {
+            case "MaxHPAdd" -> equipMaxHpAdd += mod.value();
+            case "MaxMPAdd" -> equipMaxMpAdd += mod.value();
+            case "StrAdd" -> equipStrAdd += mod.value();
+            case "DexAdd" -> equipDexAdd += mod.value();
+            case "IngAdd" -> equipIngAdd += mod.value();
+            case "SpiAdd" -> equipSpiAdd += mod.value();
+            case "StaAdd" -> equipStaAdd += mod.value();
+            case "PhyDefAdd" -> equipPhyDef += mod.value();
+            case "PhyHitAdd" -> equipPhyHit += mod.value();
+            case "MagicHitAdd" -> equipMagicHit += mod.value();
+            case "DodgeAdd" -> equipDodge += mod.value();
+            case "PhyVaAdd" -> equipPhyVa += mod.value();
+            case "MagicVaAdd" -> equipMagicVa += mod.value();
+            case "MeleePowerAdd" -> equipMeleePowerAdd += mod.value();
+            case "MinMeleeDamage" -> equipMinMelee += mod.value();
+            case "MaxMeleeDamage" -> equipMaxMelee += mod.value();
+            default -> {
+                // 概率%/倍率/内功防御四系等：无对应字段，累积层不覆盖
+            }
+        }
     }
 
     /** 招架耐力消耗（按来袭攻击力计）：返回是否刚被打破（耐力归零）。 */
@@ -326,7 +420,7 @@ public final class PlayerActor {
         if (damage <= 0 || hp <= 0) {
             return false;
         }
-        int bruiseCap = (int) (baseMaxHp * BRUISE_CAP_RATIO);
+        int bruiseCap = (int) (maxHp() * BRUISE_CAP_RATIO);
         int bruise = Math.min((int) (damage * BRUISE_SPLIT_RATIO), Math.max(0, bruiseCap - hitHp));
         hitHp += bruise;
         hp = Math.max(0, hp - (damage - bruise));
@@ -334,8 +428,8 @@ public final class PlayerActor {
     }
 
     public void revive() {
-        hp = baseMaxHp;
-        mp = baseMaxMp;
+        hp = maxHp();
+        mp = maxMp();
         hitHp = 0;
         logicState = LOGIC_STATE_NORMAL;
     }
@@ -346,14 +440,14 @@ public final class PlayerActor {
     public boolean tick(long nowMs) {
         boolean changed = pruneBuffs(nowMs);
         if (logicState == LOGIC_STATE_SITCROSS) {
-            int hpRate = Math.max(0, (baseMaxHp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
-            int mpRate = Math.max(0, (baseMaxMp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
-            if (hp < baseMaxHp) {
-                hp = Math.min(baseMaxHp, hp + hpRate);
+            int hpRate = Math.max(0, (maxHp() + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
+            int mpRate = Math.max(0, (maxMp() + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
+            if (hp < maxHp()) {
+                hp = Math.min(maxHp(), hp + hpRate);
                 changed = true;
             }
-            if (mp < baseMaxMp) {
-                mp = Math.min(baseMaxMp, mp + mpRate);
+            if (mp < maxMp()) {
+                mp = Math.min(maxMp(), mp + mpRate);
                 changed = true;
             }
         }
@@ -416,19 +510,21 @@ public final class PlayerActor {
 
     // ---------- vital 同步 ----------
 
-    /** 完整权威状态（多属性 0x10），官服属性表索引。 */
+    /** 完整权威状态（多属性 0x10），官服属性表索引（上限/恢复速度走装备加成后的有效值）。 */
     public byte[] vitalUpdate() {
         S2CPackets.Batch b = S2CPackets.playerBatch();
-        int hpRatio = baseMaxHp <= 0 ? 0 : (int) ((long) hp * 100 / baseMaxHp);
-        int hitRatio = baseMaxHp <= 0 ? 0 : (int) ((long) hitHp * 100 / baseMaxHp);
-        int mpRatio = baseMaxMp <= 0 ? 0 : (int) ((long) mp * 100 / baseMaxMp);
-        int hpUp = Math.max(0, (baseMaxHp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
-        int mpUp = Math.max(0, (baseMaxMp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
+        int effHp = maxHp();
+        int effMp = maxMp();
+        int hpRatio = (int) ((long) hp * 100 / effHp);
+        int hitRatio = (int) ((long) hitHp * 100 / effHp);
+        int mpRatio = (int) ((long) mp * 100 / effMp);
+        int hpUp = Math.max(0, (effHp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
+        int mpUp = Math.max(0, (effMp + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
         b.u8(PropertyId.LOGIC_STATE, logicState)
                 .i32(PropertyId.HP_RATIO, hpRatio)
                 .i32(PropertyId.MP_RATIO, mpRatio)
-                .i32(PropertyId.MAX_HP, baseMaxHp)
-                .i32(PropertyId.MAX_MP, baseMaxMp)
+                .i32(PropertyId.MAX_HP, effHp)
+                .i32(PropertyId.MAX_MP, effMp)
                 .i32(PropertyId.HP, hp)
                 .i32(PropertyId.MP, mp)
                 .i32(PropertyId.SPEED_RATIO, 100)

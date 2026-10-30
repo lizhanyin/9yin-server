@@ -82,6 +82,8 @@ public final class SceneFlow {
     private final SkillInitTable skillInit;
     /** 充值商城货品表（560；缺失时购买链按 no goods 拒绝）。 */
     private final ChargeShopCatalog chargeShop;
+    /** 词缀属性包目录（装备 PropModify 加成；缺失时加成层禁用，对齐参考服）。 */
+    private final PropPackCatalog propPacks;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -148,6 +150,8 @@ public final class SceneFlow {
         this.chargeShop = iniRoot != null
                 ? ChargeShopCatalog.load(iniRoot.resolve("ini").resolve("charge_shop_goods.ini"))
                 : new ChargeShopCatalog();
+        this.propPacks = PropPackCatalog.load(
+                sceneManager.shareRoot().resolve("modifypack").resolve("proppack.ini"));
     }
 
     /** 九阴志全局门控（GM / 广播接线用）。 */
@@ -182,6 +186,10 @@ public final class SceneFlow {
         st.sentIds.clear();
         st.world = sceneManager.world(session.spawnResource);
         st.world.tick(System.currentTimeMillis());
+        // 装备词缀加成（库存在 onChooseRole 已下发，此处 liveEquipped 就绪；进场景属性批走有效值）
+        if (session.actor != null) {
+            session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+        }
         List<NpcInstance> visible = visibleNpcs(st.world, session.x, session.z);
         int cap = st.world.cloneScene ? CLONE_NPC_CAP : INITIAL_NPC_CAP;
         int sent = 0;
@@ -1142,6 +1150,25 @@ public final class SceneFlow {
         if (fromView == InventoryPackets.VIEW_EQUIP_DOLL || toView == InventoryPackets.VIEW_EQUIP_DOLL) {
             out.add(InventoryPackets.weaponModeFrame(session.liveEquipped,
                     Appearance.resolveVisual(session.appearance).sex()));
+            // 装备词缀加成重算（对齐 recomputeCombat 的 equip*Add 层）；有效上限变化时
+            // 推 MaxHP/MaxMP 增量 + vital 同步
+            if (session.actor != null) {
+                int maxHpBefore = session.actor.maxHp();
+                int maxMpBefore = session.actor.maxMp();
+                session.actor.recomputeEquipBonuses(propPacks, session.liveEquipped);
+                if (session.actor.maxHp() != maxHpBefore || session.actor.maxMp() != maxMpBefore) {
+                    out.add(S2CPackets.playerBatch()
+                            .i32(PropertyId.MAX_HP, session.actor.maxHp())
+                            .i32(PropertyId.MAX_MP, session.actor.maxMp()).build());
+                    out.add(session.actor.vitalUpdate());
+                    log.info("equip bonuses reapplied maxHp={} maxMp={} attack+={} defense+={} accuracy+={} evasion+={}",
+                            session.actor.maxHp(), session.actor.maxMp(),
+                            session.actor.equipPhyVa + session.actor.equipMeleePowerAdd,
+                            session.actor.equipPhyDef,
+                            session.actor.equipDexAdd + session.actor.equipPhyHit,
+                            session.actor.equipDodge);
+                }
+            }
         }
         for (byte[] frame : out) {
             fx.send(frame);

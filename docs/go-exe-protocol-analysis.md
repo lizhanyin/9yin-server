@@ -31,7 +31,7 @@
 | 0x03 | ClientMsgWorldInfo | `write empty world info: %v` / `sent ServerWorldInfo with five open books` | ✅ `LoginFlow.onWorldInfo` |
 | 0x04 | 选角 | `choose role without an account-owned role` | ✅ `LoginFlow.onChooseRole` |
 | 0x05 | 建角 | `INSERT INTO roles(...)` / `persist created role: %v` | ✅ `LoginFlow.onCreateRole` |
-| 0x09 | ClientReady | `ignored duplicate ClientReady in active scene` | ✅ `LoginFlow.onClientReady` |
+| 0x09 | ClientReady | `ignored duplicate ClientReady in active scene`；现版**严格 length==1**（84B 触发 `invalid session message` 断连，见 §3.14） | ✅ `LoginFlow.onClientReady` |
 | 0x0A | Activity CustomSend | `client activity CustomSend opcode=0x0A msg_id=%d args=[%s]` | ✅ `SceneFlow.onActivity` → `dispatchCustom` |
 | 0x18 | Ping/心跳 | `write heartbeat reply: %v` | ✅ `SceneFlow.onPing` |
 | 0x1E | CustomSend 直发（旧客户端） | `client CustomSend opcode=0x%02X msg_id=%d args=[%s]` | ✅ `SceneFlow.onDirectCustom` |
@@ -73,7 +73,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | msgId | 功能 | 参数布局 | exe 行为要点 | Java 现状 |
 |---|---|---|---|---|
 | 1 | 聊天 | `[1, channel(int), chatType(int), text(str), ...]`（按 echo 串反推） | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)`、`chat text is empty`；S2C echo：`chat echo object=%d channel=%d chatType=%d text=%q`（帧格式待钉死） | 🟨 第十二轮：channel/text 校验；echo 待抓包 |
-| 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志 |
+| 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志；**第十四轮：布局 `[2, cmd(int), text(str)]`，缺 text 报 `command text is empty`** |
 | 19 | 时装套装 FashionSuit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` 等三分支；**第十轮修正：链（Yufeng/GiftBox/EquipItemUse/WuJiBook）各 handler 自检 msgId==31，服务的是 31 不是 19；19 由 FashionSuit 独占（仅查 argc≥2）** | 🟨 校验层（wear/buy 子路由待抓包） |
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
@@ -112,7 +112,7 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 | 864 | 生活职业 | `[jobName(str)]`（假设首参） | `unknown life job %q` / `life job %s already learned; republish job_rec`、`apprenticed life job=%s level=%d points=%d` | 🟨 第四轮：未知职业拒绝（职业表与 job_rec 未接） |
 | 865 | 踢馆 | sub 6=确认切换 / 7=离场 | `CUSTOM_MSG_TG_SWITCH`（见 audit/tiguan 文档完整线序）、`tiguan 865 bad sub_msg %s` | 🟨 第三轮：sub 6/7 校验+日志（分组场景生命周期待实装） |
 | 868 | 踢馆轮盘 | `[action(str)]` | `tiguan roulette 868 bad action %s`、`missing action`；**第七轮：868 非 custom case（Go 在 865 handler 内子路由）** | 🟨 第三轮：action 校验+日志（合法词表待钉死） |
-| 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick（响应载体假设 0x1E 同 msgId，待抓包） |
+| 924 | 消息延迟 | `[924, tick(i64)]` | `message delay 924: expected [int32:924, int64:tick]` → `message delay 924 response` | 🟨 第三轮：布局钉死+回显 tick；**第十四轮：现版 exe 实际不处理 924**（0x1E unhandled / 0x0A 解析后静默），Java 保留为超集 |
 | 943 | 兵录修改 | `[943, sub(int), name(str), num(int)]` | `binglu modify: missing sub message`、`sub message is not an integer`、`unhandled sub=%d name=%q num=%d` | 🟨 第三轮：sub 三分支校验日志（binglu 数据表未接） |
 | 961 | 骑乘技能 | `[skillId(str)]`（假设） | 反汇编：961 → handleRideSkillUse；`ride skill (not dismount) id=%s mounted=%v` | 🟨 第六轮：日志（坐骑状态未接） |
 | 819 | 用户须知签署 | — | （Java 侧实测闭环；**第七轮：819 非 custom case，Go 在登录/场景流处理**） | ✅ |
@@ -657,3 +657,65 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
   3→Card、其余→Gold）；**库存语义确认为静态挂单 amount**（Go 串层无 per-role
   消耗表/扣减落库痕迹，`stock=%d < requested=%d` 比对的就是挂单限量）。
 - **待办**：购买成功后的 S2C 库存刷新帧（格式待抓包）。
+
+### 3.14 模拟登录实机抓包轮（2026-10-30 第十三轮）
+
+用 `tools/smoke/capture_go_server.py`（复用 smoke_client 帧编解码；`--fresh` 随机账号走建角链 /
+`--probes` 追加探针 / `--seconds` 空闲推流窗口）对**在用 18.4MB exe**（19061）实跑全链路模拟登录，
+38082 帧落盘 `tools/smoke/go_capture_20261030_140759.bin/.txt`（`.bin` 兼容
+`decode_ref_capture.py` 离线解析）。
+
+- **0x09 Ready 严格 1 字节**（本轮新钉死）：现版 exe 对会话消息做长度强校验，
+  84B 旧格式（F 盘版要求 ≥84B，两端行为相反）触发
+  `reject client message: invalid session message: client opcode 0x09 length 84 (want exactly 1)`
+  并**立即断连**。Java 侧任意长度都收，如需对齐应同样拒绝非 1 字节。
+  其余 C2S 长度均被接受：登录 105B（v2 多槽位）/世界信息 1B/建角 84B/选角 84B。
+- **链路与帧量**（复登路径）：login 0x04 → world 0x05 → choose 21383 帧
+  （0x09 属性表+0x0A+0x0B+109×0x0D+3444×0x11+17674×0x18 视图+152×0x1F）
+  → ready 16402 帧（1681×0x11+14339×0x18+24×0x1E+…）→ 空闲窗口 6s 43 帧
+  NPC 巡逻推送（0x1F/0x20 持续）→ ping/探针均有响应。choose 帧量与旧 F 盘版抓包
+  （ref_capture 21385 帧）基本一致，同源互证。
+- **服务端日志互证**：`C2S opcode=0x09 len=1`、`granted native sitcross shortcut
+  index=9 kind=skill id=zs_default_01`、240 打坐 `sitcross native state 0 -> 102 ->
+  0 via normal 0x10 (buffs applied=…)`、291 `client change pk mode -> 和平(0)
+  changed=false`——探针全部按预期处理。
+- **未解项**（**第十四轮全部闭环**，见 §3.15）：ready 尾部两个未收录 opcode
+  **0xFB(len=90)/0xD5(len=15)**（单次出现，待抓包钉死语义）；924 探针因 i64 值缺
+  TVarList 类型 tag 未被受理；GM 探针(msgId 2)无服务端日志；Go 心跳回包 opcode
+  待钉死（Java 用 0x38；抓包中见疑似周期推送 0x1A）。
+
+### 3.15 模拟登录深挖轮（2026-10-30 第十四轮）——§3.14 未解项全部闭环
+
+以 test001（角色**商弘**，`acct:v1:112cd36f…`，带装备/技能/背包）完成全链路抓包：
+**38,046+ 帧**（`tools/smoke/go_capture_shanghong.bin`，View1 纸娃娃 11 件已穿装备全
+属性、View40 技能 **34,518 对象**、View121 背包物品），另有原始字节级抓取
+`go_raw_wire.bin`（3.5MB，解出 41,817 帧零违例）。账号代入方式：blob→SHA-256 单向
+不可构造（45 种编码组合离线爆破未命中），经 roles.json identities 临时映射实现
+（备份→停服→映射→重启→抓→还原），test001 原映射未动。
+
+- **属性表两套索引体系**（重大）：现版 exe 下发 **726 条**表（`tools/smoke/go_prop_table.txt`
+  已提取），与 Java 官服 2424 条表的 index→Name 映射 **723/726 不同**，同名属性还有
+  双索引段（如 ConfigID@7/105、LogicState@21/463、PKMode@363/437、CapitalType1@111/417）。
+  0x10 帧布局逐字节同构（`op+0+u32 oid@2+u32 owner@6+u16 count@10+u16 idx@12+值`，
+  打坐实测 idx=21=LogicState u8 值），**客户端按收到的表解帧，两端各自自洽**。
+  Java 无需改动；但**解读 Go 抓包必须过 Go 表换算**（Java 文档中的 436/462/416 等
+  编号是 Java 体系，勿混用）。
+- **未知 opcode 0xFB/0xD5/0xFC/0xa1/0xf7… = 解码伪影，非协议消息**：全 .text 无任何
+  写这些常量的指令；根因是 `smoke_client.decode_frames` 的残片跨块重喂 bug——
+  返回**去转义后**的帧体残片，其中字面 0xEE 重喂时被再当转义标记，`EE xx` 误报
+  bad escape → 丢缓冲错位重同步 → 伪影帧。触发条件：帧体含 0xEE（线上 `EE 00`）
+  且跨 recv 分块，View40 洪泛高发。已重写为**转义形态残片**（记录帧起点返回
+  `buf[start:]`），64k/4097/随机三种分块回放 41,710 帧零错误，live 全链路零丢帧
+  零伪影（choose 恒 21383 帧完整）。Go 线上转义完全合规，无服务端 bug。
+- **心跳**：现版 exe 对 C2S 0x18 ping **无专属回包**（1B/5B/官服 12B 三种布局实测
+  均无响应帧、日志零 `write heartbeat reply`）；0x38 timeSync 从未出现。周期帧
+  **0x1A = 服务器公告**：111B、逐字节相同、含 GBK 中文与 2012 年代时间戳，约每
+  20s 一次，与 ping/时间同步无关。Java 的 per-ping 0x38 回包是客户端 HUD 延迟
+  显示所需的增强，保留。
+- **TVarList 值类型 tag 表**（日志 `%v` 反推实测）：**0x02=int32、0x03=int64、
+  0x04=double、0x08=object(8B)**（0x06=string 既有；01/05/07 未测）。
+- **924**：0x1E 直发 → `unhandled custom msg_id=924`；0x0A 信封 → 解析成功
+  （`args=[int64:tick]`）但**无响应也无 unhandled**——现版 exe 实际不处理 924，
+  "回显载体"无参考行为可对齐，Java 现状（0x1E 回显 tick）保留为超集实现。
+- **GM 探针 2**：`handle gm command 2: gm msg 2 command text is empty`——
+  布局为 `[2, cmd(int), text(str)]`，缺字符串命令文本即拒绝（此前"无日志"之谜）。

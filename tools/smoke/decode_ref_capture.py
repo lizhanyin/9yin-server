@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""解码参考抓包：0x09 属性表(index=顺序) → 各视图物品帧逐属性带名还原。"""
-import struct
+"""解码参考抓包：0x09 属性表(index=顺序) → 各视图物品帧逐属性带名还原。
 
-CAP = 'C:/Users/lzy/AppData/Local/Temp/ref_capture.bin'
+用法：python decode_ref_capture.py <capture.bin>（缺省用旧 ref_capture.bin 路径）
+"""
+import struct
+import sys
+
+CAP = sys.argv[1] if len(sys.argv) > 1 else 'C:/Users/lzy/AppData/Local/Temp/ref_capture.bin'
 
 
 def load_frames():

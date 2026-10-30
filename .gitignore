@@ -7,6 +7,7 @@ build
 *.iml
 
 tools/smoke/__pycache__
+tools/smoke/go_capture*
 nineyin/logs
 -----
 

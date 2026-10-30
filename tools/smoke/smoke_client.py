@@ -30,22 +30,41 @@ def encode_frame(plain):
 
 
 def decode_frames(buf):
-    frames, cur, i = [], bytearray(), 0
+    """输入线上转义字节流（可跨 recv 分块重喂），返回 (明文帧列表, 未完成帧的原始转义字节)。
+
+    残片必须保持转义形态原样返回：若返回去转义后的体字节，其中的字面 0xEE
+    重喂时会被再次当作转义标记，EE xx(x∉{00,EE}) 误报 bad escape——帧体含
+    0xEE 且跨分块时必触发（View40 洪泛实测）。
+    """
+    frames, i, start = [], 0, 0
     while i < len(buf):
         if buf[i] == 0xEE:
-            if i + 1 < len(buf) and buf[i + 1] == 0x00:
-                cur.append(0xEE)
+            if i + 1 >= len(buf):
+                break                      # 终止符/转义对被分块截断
+            if buf[i + 1] == 0x00:
                 i += 2
                 continue
-            if i + 1 < len(buf) and buf[i + 1] == 0xEE:
-                frames.append(bytes(cur))
-                cur = bytearray()
+            if buf[i + 1] == 0xEE:
+                frames.append(_decode_body(buf[start:i]))
                 i += 2
+                start = i
                 continue
             raise ValueError("bad escape")
-        cur.append(buf[i])
         i += 1
-    return [xor(f) for f in frames], bytes(cur)
+    return frames, bytes(buf[start:])
+
+
+def _decode_body(escaped):
+    out = bytearray()
+    j = 0
+    while j < len(escaped):
+        if escaped[j] == 0xEE:             # 帧体内只可能是 EE 00 转义
+            out.append(0xEE)
+            j += 2
+        else:
+            out.append(escaped[j])
+            j += 1
+    return xor(bytes(out))
 
 
 def recv_frames(sock, expect_min=1, timeout=6.0, quiet=0.5):

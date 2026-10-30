@@ -475,10 +475,11 @@ public final class SceneFlow {
             case 31 -> handleBodyItemUse(fx, session, msg);
             // 手动招架（反汇编：54 → handleManualParryCustom；218 为主动招架）
             case 54 -> handleManualParry(fx, session, msg);
-            // 商店购买（反汇编：70 → handleShopBuyCustom；64 打开未在 custom switch 出现）
-            case 64 -> log.info("shop msg=64 open argc={} (response pending capture)", msg.size());
-            case 70 -> log.info("shop msg=70 buy argc={} (response pending capture; "
-                    + "stock/capital check `shop %s item %s stock=%d < requested=%d` pending)", msg.size());
+            // 商店购买（反汇编：70 → handleShopBuyCustom；64 打开未在 custom switch 出现，
+            // 开店走 SelectFlow 的 NPC 菜单链）
+            case 64 -> log.info("shop msg=64 open argc={} (open via NPC menu; response pending capture)",
+                    msg.size());
+            case 70 -> handleShopBuy(fx, session, msg);
             // 副本族（反汇编：84/112/144/145 → handleCloneCustom：进入/列表/结算确认/奖励拾取；
             // 144 的精确日志见下方独立 case）
             case 84, 112, 145 -> handleClone(fx, session, msg);
@@ -768,6 +769,131 @@ public final class SceneFlow {
     // ---- 2026-10-30 custom 第七轮：区间树解码拉全 switch 表 ----
 
     /**
+     * 70 商店购买（参考服证据链）：`shop %s buy page=%d pos=%d must be positive` →
+     * `buy amount=%d outside 1..%d` → `has no listing at page=%d pos=%d` →
+     * `item %s stock=%d < requested=%d` → `unsupported capital type %d` →
+     * `item %s needs silver=%d, have %d` → 成功 `shop %s bought %s x%d for %d (capital %d)`。
+     * 挂单来自会话打开的商店快照（SelectFlow.openShop）；列语义与 game_shop_items
+     * 互证：0=config 1=amount(库存) 2=capital(2=碎银) 3=price 5=page 6=position。
+     * 购得物品经 game_items 入包（解析失败不扣款）；碎银走 CapitalType1。
+     */
+    private void handleShopBuy(FxSession fx, LoginSession session, CustomMsg msg) {
+        var shop = session.openShop;
+        if (msg.size() < 4 || !msg.val(1).asExactInt() || !msg.val(2).asExactInt()
+                || !msg.val(3).asExactInt()) {
+            log.info("shop buy malformed vals={}", summarizeVals(msg));
+            return;
+        }
+        int page = msg.val(1).intOrZero();
+        int pos = msg.val(2).intOrZero();
+        int nums = msg.val(3).intOrZero();
+        String shopId = shop != null ? shop.id() : "<none>";
+        if (page <= 0 || pos <= 0) {
+            log.info("shop {} buy page={} pos={} must be positive", shopId, page, pos);
+            return;
+        }
+        if (nums < 1 || nums > ChargeShopCatalog.MAX_NUMS) {
+            log.info("shop {} buy amount={} outside 1..{}", shopId, nums, ChargeShopCatalog.MAX_NUMS);
+            return;
+        }
+        if (shop == null) {
+            log.info("shop {} has no listing at page={} pos={} (no open shop)", shopId, page, pos);
+            return;
+        }
+        // 挂单查找：page 列 5、position 列 6（0 基；客户端 pos 1 基）
+        com.nineyin.shop.ShopRepository.ShopItem listing = null;
+        for (var item : shop.items()) {
+            if (colInt(item, 5, 1) == page && colInt(item, 6, 0) == pos - 1
+                    && !colStr(item, 0).isEmpty()) {
+                listing = item;
+                break;
+            }
+        }
+        if (listing == null) {
+            log.info("shop {} has no listing at page={} pos={}", shopId, page, pos);
+            return;
+        }
+        String config = colStr(listing, 0);
+        int stock = colInt(listing, 1, 1);
+        int capital = colInt(listing, 2, 2);
+        int price = colInt(listing, 3, 0);
+        PlayerActor actor = session.actor;
+        if (actor == null) {
+            log.info("shop {} item {} reject: no actor", shopId, config);
+            return;
+        }
+        if (stock < nums) {
+            log.info("shop {} item {} stock={} < requested={}", shopId, config, stock, nums);
+            return;
+        }
+        // capital 2=碎银（DB 互证）；3=兑换(price=0) 同走碎银计价；其余不支持
+        if (capital != 2 && capital != 3) {
+            log.info("shop {} item {} unsupported capital type {}", shopId, config, capital);
+            return;
+        }
+        long cost = (long) price * nums;
+        if (actor.silver < cost) {
+            log.info("shop {} item {} needs silver={}, have {}", shopId, config, cost, actor.silver);
+            return;
+        }
+        // 入包（game_items 可解析才扣款；grant 路由与充值商城一致）
+        if (session.roleId == 0 || inventory == null) {
+            log.info("shop {} item {} reject: no bag store", shopId, config);
+            return;
+        }
+        var add = inventory.addBagItem(session.roleId, config, nums);
+        if (add.fail() != null) {
+            if ("full".equals(add.fail())) {
+                log.info("shop {} item {}: bag full", shopId, config);
+            } else {
+                log.info("shop {} item {}: grant route missing (not in game_items)", shopId, config);
+            }
+            return;
+        }
+        actor.silver -= cost;
+        int view = InventoryPackets.bagViewOf(add.view());
+        var granted = new com.nineyin.db.RoleInventoryStore.Bagged(
+                add.slot(), config, 0, nums, add.view(), "");
+        List<byte[]> out = new ArrayList<>();
+        out.add(InventoryPackets.viewRemove(view, add.slot()));
+        out.add(InventoryPackets.bagViewAdd(
+                granted, InventoryPackets.uniqueId(session.roleId, "bag", add.slot()), view));
+        int mirror = InventoryPackets.mirrorOf(view);
+        if (mirror != 0) {
+            out.add(InventoryPackets.viewRemove(mirror, add.slot()));
+        }
+        out.add(S2CPackets.playerBatch()
+                .i64(PropertyId.CAPITAL_TYPE1, actor.silver).build());
+        for (byte[] frame : out) {
+            fx.send(frame);
+        }
+        session.liveBagged.add(granted);
+        session.inventoryFrames = InventoryPackets.inventoryFrames(
+                session.roleId, session.liveEquipped, session.liveBagged,
+                Appearance.resolveVisual(session.appearance).sex());
+        log.info("shop {} bought {} x{} for {} (capital {})", shopId, config, nums, cost, capital);
+    }
+
+    /** shop.ini 挂单列取值（int）。 */
+    private static int colInt(com.nineyin.shop.ShopRepository.ShopItem item, int col, int def) {
+        var cols = item.columns();
+        if (col >= cols.size() || cols.get(col).isEmpty()) {
+            return def;
+        }
+        try {
+            return Integer.parseInt(cols.get(col).trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    /** shop.ini 挂单列取值（str）。 */
+    private static String colStr(com.nineyin.shop.ShopRepository.ShopItem item, int col) {
+        var cols = item.columns();
+        return col < cols.size() ? cols.get(col).trim() : "";
+    }
+
+    /**
      * 副本族（反汇编：84/112/144/145 → handleCloneCustom）。Java 无副本实例运行时：
      * 84/112 按 `clone %d unhandled` 分支；145 保留精确拒绝文本
      * （`reject 145 no clone awards view`）。
@@ -1035,7 +1161,12 @@ public final class SceneFlow {
 
 
 
-    /** 1 聊天（参考服：`reject chat before player spawn` / `ignore empty chat (channel=%d)`；聊天广播未实装）。 */
+    /**
+     * 1 聊天（参考服：`reject chat before player spawn` / `chat text is empty` /
+     * `ignore empty chat (channel=%d)`；S2C 为 echo 帧——
+     * `chat echo object=%d channel=%d chatType=%d text=%q`，帧格式待钉死）。
+     * 布局按 echo 串反推：[1, channel(int), chatType(int), text(str), ...]。
+     */
     private void handleChat(FxSession fx, LoginSession session, CustomMsg msg) {
         if (session.actor == null) {
             log.info("reject chat before player spawn");
@@ -1046,8 +1177,15 @@ public final class SceneFlow {
             log.info("ignore empty chat (channel=none) vals={}", summarizeVals(msg));
             return;
         }
-        log.info("chat channel={} pending broadcast (chat system not implemented) vals={}",
-                channel.intOrZero(), summarizeVals(msg));
+        int ch = channel.intOrZero();
+        CustomMsg.Val text = msg.val(3);
+        if (text == null || text.str == null || text.str.isEmpty()) {
+            log.info("ignore empty chat (channel={})", ch);
+            return;
+        }
+        // echo 帧格式（custom msgId/值序）待实机抓包钉死后接入
+        log.info("chat echo pending capture object=1 channel={} chatType={} text=\"{}\"",
+                ch, intArg(msg, 2), text.str.length() > 48 ? text.str.substring(0, 48) + "…" : text.str);
     }
 
     /** 34/71 道具动作（参考服：`item action %d has invalid view/slot`；动作语义子表未接）。 */

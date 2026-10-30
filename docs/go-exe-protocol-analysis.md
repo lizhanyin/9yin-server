@@ -72,13 +72,13 @@ exe 为每个功能实现一个 `handleXXX`（共 75 个，全量清单见 §2.2
 
 | msgId | 功能 | 参数布局 | exe 行为要点 | Java 现状 |
 |---|---|---|---|---|
-| 1 | 聊天 | `[channel, ...]` | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)` | 🟨 第六轮：出生校验+日志（聊天广播未接） |
+| 1 | 聊天 | `[1, channel(int), chatType(int), text(str), ...]`（按 echo 串反推） | 反汇编：1 → handleChatCustom；`reject chat before player spawn`、`ignore empty chat (channel=%d)`、`chat text is empty`；S2C echo：`chat echo object=%d channel=%d chatType=%d text=%q`（帧格式待钉死） | 🟨 第十二轮：channel/text 校验；echo 待抓包 |
 | 2/517 | GM 探针 | `[subType]` | 反汇编：2 → handleGMCustom（517 为旧误传非 Go case）；`GM custom probe msgID=%d subType=%d` | 🟨 第七轮：日志 |
 | 19 | 时装套装 FashionSuit | sub（str→invalid / int→unhandled） | `fashion_suit has no sub-message` 等三分支；**第十轮修正：链（Yufeng/GiftBox/EquipItemUse/WuJiBook）各 handler 自检 msgId==31，服务的是 31 不是 19；19 由 FashionSuit 独占（仅查 argc≥2）** | 🟨 校验层（wear/buy 子路由待抓包） |
 | 34/71 | 道具动作 ItemAction | — | 反汇编：34/71 → handleItemActionCustom（**71 旧分析误标"商店关闭"**）；`item action %d has invalid view/slot` | 🟨 第六轮：日志（动作子表未接） |
 | 30 | 移动物品 | `[fromView, fromSlot, toView, toSlot]` | 卸下 `[1,槽,121,0]`；0x18/0x19 View 帧同步 | ✅（含穿/脱武器后 WeaponMode=1597 模型推送） |
 | 61 | 显示装备类型 showequip_type | `[type:int]` | `showequip_type set to %d`；非法值 `invalid value %d`；影响装备外观显示（gear visual 帧） | 🟨 本轮：校验+存储+日志（外观帧待钉死） |
-| 64/70 | 商店 打开/购买 | — | 完整商店系统（view/stock/capital），`shop %s item %s stock=%d < requested=%d`、`operate_type_swap_goods` | 🟨 仅日志（S2C 响应格式待钉死；71 经反汇编证实是 ItemAction 非商店关闭） |
+| 64/70 | 商店 打开/购买 | buy=`[70, page, pos, amount]` | 完整商店系统；`buy page=%d pos=%d must be positive` → `amount=%d outside 1..%d` → `has no listing` → `stock=%d < requested=%d` → `unsupported capital type %d` → `needs silver=%d, have %d` → `bought %s x%d for %d (capital %d)`（71 经反汇编证实是 ItemAction 非商店关闭） | ✅ 第十一轮：70 购买全链（挂单=会话打开的商店快照，列语义与 game_shop_items 互证 0=config/1=库存/2=capital(2=碎银)/3=price/5=page/6=pos；扣碎银+game_items 入包+0x10 CapitalType1）；64 打开走 NPC 菜单链 |
 | 144 | 副本结算确认 | — | `awaiting C2S 144`（col result 确认） | 🟨 第三轮：确认收下记日志（Java 无待确认 col result） |
 | 145 | 副本奖励 View80 拾取 | — | `reject 145 no clone awards view` / `reject 145 bad index %s`、`pickup clone award slot=%d` | 🟨 第四轮：无 View80 奖励视图拒绝 |
 | 150/161 | 经脉 JingMai | `[subcommand(int), ...]` | 反汇编：150/161 → handleJingMaiCustom；`jingmai custom requires an int subcommand`、`jingmai toggle active=%v name=%q role=%d` | 🟨 第六轮：subcommand 校验（经脉表未接） |
@@ -634,3 +634,26 @@ call <main.handleXxx>; test %al,%al; jne <下一 call 之后>   ← 链式认领
 %s: gift box %s claimed prizes=%d                          ← 19 链 GiftBox 段
 %s: yufeng item use blocked while mounted                  ← 19 链 Yufeng 段
 ```
+
+### 3.13 商店购买功能实现轮（2026-10-30 第十一轮）
+
+**msgId 70 商店购买全链落地**（NPC 商店从"开店视图"推进到"可购买"）。
+
+- **列语义破译**（shop.ini 挂单行 ↔ MySQL game_shop_items 逐字段互证）：
+  `0=ConfigID, 1=amount(库存/限量), 2=capital, 3=price, 5=page, 6=position,
+  7=名称ID`；capital **2=碎银**（jhzb 案例价格 500000 互证）、3=兑换（price=0）。
+  挂单 key 可重复（同 key 多行按序保留），页内 position 唯一定位。
+- **参数布局**（证据串）：`[70, page, pos, amount]`，pos 1 基（视图 objectIndex
+  = (page-1)*页大小 + position + 1 的页内位）。
+- **链路**：参数校验 → 挂单查找（会话打开的商店快照，`SelectFlow.openShop` 写入
+  `LoginSession.openShop`）→ 库存 → capital（2/3 走碎银，其余
+  `unsupported capital type %d`）→ 碎银余额（`needs silver=%d, have %d`）→
+  game_items 入包（解析失败不扣款）→ 扣碎银 + 0x10 CapitalType1 + ViewAdd 背包帧
+  → `shop %s bought %s x%d for %d (capital %d)`。
+- **测试**：fixture 商店覆盖全拒绝分支（参数/非正/越界/无挂单/库存/capital/
+  无库存后端），断言零帧且碎银分文不动；合法购买在 JSON 后端停在 `no bag store`。
+- **第十二轮补齐**：openShop 视图 ViewAdd 补第 4 属性——价格按 Go 自协商索引
+  **107=PriceGold / 108=PriceSilver / 109=PriceCard** 下发（挂单 capital 2→Silver、
+  3→Card、其余→Gold）；**库存语义确认为静态挂单 amount**（Go 串层无 per-role
+  消耗表/扣减落库痕迹，`stock=%d < requested=%d` 比对的就是挂单限量）。
+- **待办**：购买成功后的 S2C 库存刷新帧（格式待抓包）。

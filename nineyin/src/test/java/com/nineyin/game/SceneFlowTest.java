@@ -802,6 +802,47 @@ class SceneFlowTest {
         assertEquals(1, login.boundUids.size());
     }
 
+    /** 70 商店购买校验链（fixture 商店：列 0=config 1=库存 2=capital 3=price 5=page 6=pos）。 */
+    @Test
+    void shopBuy70ValidationChain() throws Exception {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        // fixture 商店：page1 有三档（碎银 100 / 库存 1 / capital 9），page2 空
+        var cols = new java.util.ArrayList<List<String>>();
+        cols.add(List.of("yaopin_test", "99", "2", "100", "0", "1", "0", "0", "0", "", ""));
+        cols.add(List.of("rare_test", "1", "2", "100", "0", "1", "1", "0", "0", "", ""));
+        cols.add(List.of("weird_test", "99", "9", "100", "0", "1", "2", "0", "0", "", ""));
+        List<com.nineyin.shop.ShopRepository.ShopItem> items = new ArrayList<>();
+        for (int i = 0; i < cols.size(); i++) {
+            items.add(new com.nineyin.shop.ShopRepository.ShopItem("shop_test", i, cols.get(i)));
+        }
+        login.openShop = new com.nineyin.shop.ShopRepository.Shop(
+                "shop_test", "测试商店", "Page1", 0, "", items);
+        long silverBefore = login.actor.silver;
+
+        // 参数不足 / page,pos 非正 / amount 越界 / 无挂单：拒绝且不扣款
+        send(custom().u16(3).u8(2).i32(70).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(0).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(1).u8(2).i32(0).toByteArray());
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(2).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        // 库存不足（rare_test 库存 1 买 2）/ capital 不支持（weird_test capital 9）
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(2).u8(2).i32(2).toByteArray());
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(3).u8(2).i32(1).toByteArray());
+        // 合法购买（page1 pos1 碎银 100×1）：JSON 存档无库存后端 → no bag store 拒绝，碎银不动
+        send(custom().u16(4).u8(2).i32(70).u8(2).i32(1).u8(2).i32(1).u8(2).i32(1).toByteArray());
+        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) != 0x20),
+                "shop buy validation rejects emit no frames");
+        assertEquals(silverBefore, login.actor.silver, "all rejects must not charge");
+    }
+
     @Test
     void onestepEquip886WearsViaUid() {
         String root = System.getenv("NINEYIN_SERVER_ROOT");

@@ -103,7 +103,7 @@ public final class SelectFlow {
             }
             fx.send(CustomPackets.cinematicClose());
             clearMenuState(st);
-            openShop(fx, shopId);
+            openShop(fx, session, shopId);
             return;
         }
         if (func == MenuPackets.FUNC_TALK_DEPOT) {
@@ -215,12 +215,15 @@ public final class SelectFlow {
     }
 
     // 商店视图（form_shop.lua 从 View 61 的 createview 属性读配置）
-    private void openShop(FxSession fx, String shopId) {
+    private void openShop(FxSession fx, LoginSession session, String shopId) {
         ShopRepository.Shop shop = shopRepository.get(shopId);
         if (shop == null || shop.items().isEmpty()) {
             log.warn("shop {} has no items", shopId);
             return;
         }
+        // 会话快照：msgId=70 购买按 page/pos 在此挂单查找（列语义与 game_shop_items
+        // 互证：0=config 1=amount(库存) 2=capital 3=price 5=page 6=position）
+        session.openShop = shop;
         int pageCount = 1;
         List<ShopRepository.ShopItem> items = new ArrayList<>();
         for (ShopRepository.ShopItem item : shop.items()) {
@@ -246,14 +249,22 @@ public final class SelectFlow {
             int amount = colInt(item, 1, 1);
             int page = colInt(item, 5, 1);
             int position = colInt(item, 6, 0);
+            int capital = colInt(item, 2, 2);
+            int price = colInt(item, 3, 0);
             int objectIndex = (page - 1) * SHOP_PAGE_SIZE + position + 1;
-            // 官服属性表无 PriceGold/Silver/Card 名（Go 用自协商表索引 107-109）；
-            // 先发 ConfigID/Amount/MaxAmount 三属性，价格属性待抓包钉死后补
+            // 官服属性表无 PriceGold/Silver/Card 名——Go 用自协商表索引 107-109 下发价格，
+            // 按挂单 capital 选对应货币位（2=碎银→PriceSilver；3=兑换→PriceCard；其余→Gold 位）
+            int priceProp = switch (capital) {
+                case 2 -> PRICE_SILVER;
+                case 3 -> PRICE_CARD;
+                default -> PRICE_GOLD;
+            };
             com.nineyin.protocol.PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_SHOP,
-                            objectIndex, 3)
+                            objectIndex, 4)
                     .u16(PropertyId.CONFIG_ID).string(colStr(item, 0))
                     .u16(PropertyId.AMOUNT).i32(amount)
-                    .u16(PropertyId.MAX_AMOUNT).i32(99);
+                    .u16(PropertyId.MAX_AMOUNT).i32(99)
+                    .u16(priceProp).i32(price);
             fx.send(w.toByteArray());
             if (index >= 100) {
                 break;
@@ -262,6 +273,11 @@ public final class SelectFlow {
         log.info("shop view opened shop={} items={} pageCount={} type={}",
                 shopId, Math.min(items.size(), 100), pageCount, shop.type());
     }
+
+    /** 商店视图价格属性（Go 自协商索引：107=Gold / 108=Silver / 109=Card）。 */
+    static final int PRICE_GOLD = 107;
+    static final int PRICE_SILVER = 108;
+    static final int PRICE_CARD = 109;
 
     private void openDepot(FxSession fx) {
         fx.send(SkillPackets.createView(SkillPackets.VIEW_DEPOT, 18));

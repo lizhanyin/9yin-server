@@ -4158,7 +4158,8 @@ public final class SceneFlow {
         // 修炼整分钟结算（1s 驱动、内部按分钟推进；对齐 Go facultyTicker）
         FacultyState faculty = session.actor.faculty;
         if (faculty != null) {
-            int slot = faculty.advanceFaculty(java.time.Instant.now(), levelCurves);
+            refreshFengshuiBonus(fx, st, session, faculty);
+            int slot = faculty.advanceFaculty(java.time.Instant.now(), levelCurves, faculty.fengshuiPermille);
             if (slot > 0) {
                 fx.send(facultyBookFrame(slot, faculty.books.get(slot - 1)));
                 fx.send(session.actor.vitalUpdate());
@@ -4173,6 +4174,55 @@ public final class SceneFlow {
         if (changed && now - st.lastVitalMs >= 1000) {
             st.lastVitalMs = now;
             fx.send(session.actor.vitalUpdate());
+        }
+    }
+
+    /**
+     * 风水宝地加成刷新（1s tick）：站位 12m 内取最优 Fsbd 标记，
+     * 按修炼目标书武学属性查 {@link FengshuiSpots} 加成表（最宜 +20%/较宜 +10%）。
+     * 加成变化时推送 FILL_SPEED（修炼界面修速档位随之上调/回落），并写回
+     * {@code faculty.fengshuiPermille} 供整分钟结算放大修炼度获取。
+     */
+    private void refreshFengshuiBonus(FxSession fx, SceneState st, LoginSession session,
+                                      FacultyState faculty) {
+        if (st.world == null) {
+            return;
+        }
+        FacultyState.Book target = faculty.targetBook();
+        int wuXing = target != null ? target.wuXing : 0;
+        String spot = null;
+        int best = 0;
+        if (wuXing > 0) {
+            synchronized (st.world) {
+                for (NpcInstance n : st.world.npcs) {
+                    String type = FengshuiSpots.typeOf(n.configId);
+                    if (type == null || n.dead) {
+                        continue;
+                    }
+                    float dx = n.x - session.x;
+                    float dz = n.z - session.z;
+                    if (dx * dx + dz * dz
+                            > FengshuiSpots.SPOT_RADIUS * FengshuiSpots.SPOT_RADIUS) {
+                        continue;
+                    }
+                    int pct = FengshuiSpots.bonusPercent(type, wuXing);
+                    if (pct > best) {
+                        best = pct;
+                        spot = type;
+                    }
+                }
+            }
+        }
+        int permille = best * 10;
+        if (permille != faculty.fengshuiPermille) {
+            faculty.fengshuiPermille = permille;
+            if (faculty.facultyState == FacultyState.STATE_CONVERT) {
+                fx.send(S2CPackets.objectPropertyInt(PropertyId.FILL_SPEED,
+                        faculty.displayFillSpeed()));
+            }
+            log.info("fengshui spot {} +{}% (role={}, book={}, wuXing={})",
+                    spot == null ? "left" : spot, best, session.roleId,
+                    faculty.facultyName, wuXing);
         }
     }
 

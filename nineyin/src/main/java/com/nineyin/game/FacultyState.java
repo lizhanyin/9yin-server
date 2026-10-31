@@ -128,8 +128,19 @@ public final class FacultyState {
     public String facultyName = "";
     public int fillSpeed;
     public Instant lastAdvance = Instant.EPOCH;
+    /** 风水宝地加成（千分比；SceneFlow 按站位 Fsbd 标记 × 修炼书武学属性刷新，
+     *  只放大内修获取与 FILL_SPEED 显示，不落库）。 */
+    public int fengshuiPermille;
     /** 变更未落库标记（advance/切换/选卡置位，落库后清除）。 */
     public boolean persistDirty;
+
+    /** 面板显示用有效修炼速度（FILL_SPEED=772）：内修中叠加风水加成，其余状态返回原值。 */
+    public int displayFillSpeed() {
+        if (facultyState != STATE_CONVERT || facultyStyle != STYLE_NORMAL || fillSpeed <= 0) {
+            return fillSpeed;
+        }
+        return (int) ((long) fillSpeed * (1000L + Math.max(0, fengshuiPermille)) / 1000L);
+    }
 
     // ---- 种子（Go newPlayerProgress 六本；太极 30 级为本地测试基线） ----
 
@@ -308,6 +319,14 @@ public final class FacultyState {
      * 余数留在 lastAdvance（重连/重启不丢部分时间）。返回发生推进的 View 43 槽位，0=无推进。
      */
     public int advanceFaculty(Instant now, WuxueLevelInfo curves) {
+        return advanceFaculty(now, curves, 0);
+    }
+
+    /**
+     * 带风水宝地加成（千分比，{@link FengshuiSpots}）的内修结算：
+     * 加成只放大每分钟修炼度获取，修为消耗折半规则不变。
+     */
+    public int advanceFaculty(Instant now, WuxueLevelInfo curves, int fengshuiPermille) {
         if (facultyState != STATE_CONVERT || facultyStyle != STYLE_NORMAL || fillSpeed <= 0) {
             lastAdvance = now;
             return 0;
@@ -326,7 +345,7 @@ public final class FacultyState {
             if (!book.configId.equals(facultyName)) {
                 continue;
             }
-            long fill = (long) fillSpeed * minutes;
+            long fill = (long) fillSpeed * minutes * (1000L + Math.max(0, fengshuiPermille)) / 1000L;
             long cost = (fill + 1) / 2;
             if (cost > faculty) {
                 cost = faculty;

@@ -36,7 +36,8 @@ class SceneLoadersTest {
 
         NpcTemplateRepository repo = new NpcTemplateRepository();
         repo.load(tempDir.resolve("npcconfig"));
-        assertEquals(2, repo.size());
+        // 2 条表数据 + 5 条 Fsbd 风水标记内置模板（山/林/水/洞/雪，构造器注册供 visibleNpcs 放行）
+        assertEquals(7, repo.size());
 
         NpcTemplate t = repo.lookup("npc_qd_001");
         assertEquals("张铁匠", t.name(), "中文名必须按 GBK 解码");

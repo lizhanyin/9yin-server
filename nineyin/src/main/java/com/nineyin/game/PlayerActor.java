@@ -157,6 +157,23 @@ public final class PlayerActor {
     // 官银（CapitalType2=417，GM set_guanyin；与 silver/gold 同为会话内存值）。
     public long guanYin = 0;
 
+    // 人物属性面板身份块（参考服登录 0x10 帧 exe 表 256-266 段，本服 0x09 表按名换算）。
+    // powerLevel 种子 151/title027 与参考服同种子玩家（ng_wd_001 30 级）登录帧一致；
+    // GM set_power_level/set_alignment/set_vitals 写回这些字段，vitalUpdate 全量兜底。
+    public int powerLevel = 151;   // 实力等级（210）
+    public int justice;            // 侠（320）
+    public int evil;               // 恶（321）
+    public int freeBase;           // 基础狂邪（322）
+    public int characterFlag;      // 性格标记（318）
+    public int characterValue;     // 性格值（319）
+    public int ene;                // 体力（704，生活玩法）
+    public int maxEne;
+    public int resumeEne;
+    public int sat;                // 饱食（707）
+    public int maxSat;
+    public int pkValue;            // 杀戮值（426，红名来源）
+    public int drunkLevel;         // 酒量（722）
+
     public float gravity = 9.8f;
     public float moveSpeed = 5.0f;
     public float walkSpeed = 2.5f;
@@ -889,7 +906,8 @@ public final class PlayerActor {
         String facultyName = faculty != null ? faculty.facultyName : BootstrapCurNeigong.NAME;
         int curFill = target != null ? target.fill : 0;
         int totalFill = target != null ? target.total : BootstrapCurNeigong.TOTAL;
-        int fillSpeed = faculty != null ? faculty.fillSpeed : BootstrapCurNeigong.FILL_SPEED;
+        // 面板显示走有效修炼速度：内修中叠加风水宝地加成（FengshuiSpots 匹配修炼书武学属性）
+        int fillSpeed = faculty != null ? faculty.displayFillSpeed() : BootstrapCurNeigong.FILL_SPEED;
         int power = target != null ? target.power : BootstrapCurNeigong.POWER;
         int maxPower = target != null ? target.maxPower : BootstrapCurNeigong.MAX_POWER;
         b.f32(PropertyId.GRAVITY, gravity)
@@ -952,7 +970,23 @@ public final class PlayerActor {
                 .f32(PropertyId.NEG_DAMAGE_MUL, effMul(eq, "NegDamageMul"))
                 .f32(PropertyId.MAS_DAMAGE_MUL, effMul(eq, "MasDamageMul"))
                 .i32(PropertyId.PHY_PARRY_PROB, 0)
-                .i32(PropertyId.PHY_PARRY_PROB_ADD, 0);
+                .i32(PropertyId.PHY_PARRY_PROB_ADD, 0)
+                // 人物属性面板身份块（实力/称号/侠恶/性格/体力/饱食/杀戮/酒量；
+                // 参考服登录帧 exe 表 256-266 段，缺发则面板整块空白）
+                .i32(PropertyId.POWER_LEVEL, powerLevel)
+                .str(PropertyId.LEVEL_TITLE, levelTitleFor(powerLevel))
+                .i32(PropertyId.CHARACTER_FLAG, characterFlag)
+                .i32(PropertyId.CHARACTER_VALUE, characterValue)
+                .i32(PropertyId.JUSTICE, justice)
+                .i32(PropertyId.EVIL, evil)
+                .i32(PropertyId.FREE_BASE, freeBase)
+                .i32(PropertyId.ENE, ene)
+                .i32(PropertyId.MAX_ENE, maxEne)
+                .i32(PropertyId.RESUME_ENE, resumeEne)
+                .i32(PropertyId.SAT, sat)
+                .i32(PropertyId.MAX_SAT, maxSat)
+                .i32(PropertyId.PK_VALUE, pkValue)
+                .i32(PropertyId.DRUNK_LEVEL, drunkLevel);
         return b.build();
     }
 
@@ -976,6 +1010,24 @@ public final class PlayerActor {
                 .str(PropertyId.CUR_SKILL_ID, curSkillId)
                 .obj(PropertyId.CUR_SKILL_TARGET, curSkillTargetOid, curSkillTargetOwner);
         return b.build();
+    }
+
+    /** 实力等级→称号 config（对齐 menu2 titleByPowerLevel：≤5→title001 … >150→title027）。
+     * 参考服登录帧 PowerLevel=151 恰为最高档 title027。 */
+    public static String levelTitleFor(int stage) {
+        if (stage <= 5) {
+            return "title001";
+        }
+        if (stage <= 120) {
+            return String.format("title%03d", Math.min(24, (stage - 1) / 5 + 1));
+        }
+        if (stage <= 130) {
+            return "title025";
+        }
+        if (stage <= 150) {
+            return "title026";
+        }
+        return "title027";
     }
 
     /** 内功面板静态种子（Go newPlayerProgress：运功中、普通模式、太极心法 30 级）。 */

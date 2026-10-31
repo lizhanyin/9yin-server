@@ -127,6 +127,7 @@ public final class PropertyId {
     public static final int CHARACTER_FLAG = 318;   // i32 性格标记
     public static final int CHARACTER_VALUE = 319;  // i32 性格值
     public static final int POWER_LEVEL = 210;      // i32 实力等级
+    public static final int LEVEL_TITLE = 800;      // string 实力称号 config（title0NN，随 PowerLevel 档位）
     public static final int STR = 484;              // i32 臂力
     public static final int ING = 485;              // i32 内息
     public static final int DEX = 486;              // i32 身法

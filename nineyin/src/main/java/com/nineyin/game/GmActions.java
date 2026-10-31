@@ -528,13 +528,13 @@ public final class GmActions {
                 S2CPackets.Batch b = S2CPackets.playerBatch();
                 int n = 0;
                 int v;
-                if ((v = cmd.intParam("ene", -1)) >= 0) { b.i32(PropertyId.ENE, v); n++; }
-                if ((v = cmd.intParam("maxEne", -1)) >= 0) { b.i32(PropertyId.MAX_ENE, v); n++; }
-                if ((v = cmd.intParam("resumeEne", -1)) >= 0) { b.i32(PropertyId.RESUME_ENE, v); n++; }
-                if ((v = cmd.intParam("sat", -1)) >= 0) { b.i32(PropertyId.SAT, v); n++; }
-                if ((v = cmd.intParam("maxSat", -1)) >= 0) { b.i32(PropertyId.MAX_SAT, v); n++; }
-                if ((v = cmd.intParam("drunkLevel", -1)) >= 0) { b.i32(PropertyId.DRUNK_LEVEL, v); n++; }
-                if ((v = cmd.intParam("pkValue", -1)) >= 0) { b.i32(PropertyId.PK_VALUE, v); n++; }
+                if ((v = cmd.intParam("ene", -1)) >= 0) { actor.ene = v; b.i32(PropertyId.ENE, v); n++; }
+                if ((v = cmd.intParam("maxEne", -1)) >= 0) { actor.maxEne = v; b.i32(PropertyId.MAX_ENE, v); n++; }
+                if ((v = cmd.intParam("resumeEne", -1)) >= 0) { actor.resumeEne = v; b.i32(PropertyId.RESUME_ENE, v); n++; }
+                if ((v = cmd.intParam("sat", -1)) >= 0) { actor.sat = v; b.i32(PropertyId.SAT, v); n++; }
+                if ((v = cmd.intParam("maxSat", -1)) >= 0) { actor.maxSat = v; b.i32(PropertyId.MAX_SAT, v); n++; }
+                if ((v = cmd.intParam("drunkLevel", -1)) >= 0) { actor.drunkLevel = v; b.i32(PropertyId.DRUNK_LEVEL, v); n++; }
+                if ((v = cmd.intParam("pkValue", -1)) >= 0) { actor.pkValue = v; b.i32(PropertyId.PK_VALUE, v); n++; }
                 if (n == 0) {
                     return "未提供任何数值（ene/maxEne/resumeEne/sat/maxSat/drunkLevel/pkValue）";
                 }
@@ -545,9 +545,9 @@ public final class GmActions {
                 S2CPackets.Batch b = S2CPackets.playerBatch();
                 int n = 0;
                 int v;
-                if ((v = cmd.intParam("justice", -1)) >= 0) { b.i32(PropertyId.JUSTICE, v); n++; }
-                if ((v = cmd.intParam("evil", -1)) >= 0) { b.i32(PropertyId.EVIL, v); n++; }
-                if ((v = cmd.intParam("freeBase", -1)) >= 0) { b.i32(PropertyId.FREE_BASE, v); n++; }
+                if ((v = cmd.intParam("justice", -1)) >= 0) { actor.justice = v; b.i32(PropertyId.JUSTICE, v); n++; }
+                if ((v = cmd.intParam("evil", -1)) >= 0) { actor.evil = v; b.i32(PropertyId.EVIL, v); n++; }
+                if ((v = cmd.intParam("freeBase", -1)) >= 0) { actor.freeBase = v; b.i32(PropertyId.FREE_BASE, v); n++; }
                 if (n == 0) {
                     return "未提供 justice/evil/freeBase";
                 }
@@ -570,14 +570,16 @@ public final class GmActions {
                 fx.send(actor.vitalUpdate());
                 return null;
             }
-            case "set_power_level" -> {  // 实力等级 PowerLevel=210 + 称号名（titleByPowerLevel 映射）
+            case "set_power_level" -> {  // 实力等级 PowerLevel=210 + LevelTitle=800（titleByPowerLevel 映射）
                 int stage = cmd.intParam("stage", -1);
                 if (stage < 0) {
                     return "设置实力等级失败：未提供 stage";
                 }
+                actor.powerLevel = stage;
                 fx.send(S2CPackets.playerBatch()
-                        .i32(PropertyId.POWER_LEVEL, stage).build());
-                return "实力等级设为 " + stage + "，称号 " + powerTitle(stage);
+                        .i32(PropertyId.POWER_LEVEL, stage)
+                        .str(PropertyId.LEVEL_TITLE, PlayerActor.levelTitleFor(stage)).build());
+                return "实力等级设为 " + stage + "，称号 " + PlayerActor.levelTitleFor(stage);
             }
             case "set_pk_mode" -> {  // PKMode=436(u8) + HasLearnExtSkill=434(u8)，0~3
                 int mode = cmd.intParam("pkMode", -1);
@@ -869,22 +871,7 @@ public final class GmActions {
     /** 战斗假人 NPC 模板（monsternpc 表「机关木人」npc\monster026，人形可战斗）。 */
     private static final String COMBAT_DUMMY_CONFIG = "monm080701";
 
-    /** 实力等级→称号 config（对齐 menu2 titleByPowerLevel：≤5→title001 … >150→title027）。 */
-    private static String powerTitle(int stage) {
-        if (stage <= 5) {
-            return "title001";
-        }
-        if (stage <= 120) {
-            return String.format("title%03d", Math.min(24, (stage - 1) / 5 + 1));
-        }
-        if (stage <= 130) {
-            return "title025";
-        }
-        if (stage <= 150) {
-            return "title026";
-        }
-        return "title027";
-    }
+    /** 实力等级→称号 config：见 {@link PlayerActor#levelTitleFor(int)}（menu2 titleByPowerLevel）。 */
 
     /** team 子命令（对齐 menu2 gmTeamCommand 语义）：create|invite 名|join 队长名|leave|kick 名|captain 名|list。 */
     private String teamCommand(FxSession fx, LoginSession session, String teamArgs) {

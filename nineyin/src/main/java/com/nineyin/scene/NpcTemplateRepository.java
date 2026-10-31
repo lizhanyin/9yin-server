@@ -26,6 +26,23 @@ public final class NpcTemplateRepository {
     private final Map<String, NpcTemplate> templates = new HashMap<>();
     private volatile boolean loaded;
 
+    public NpcTemplateRepository() {
+        // 风水宝地标记（Fsbd_*，commonnpc.xml 常驻摆放，desc=「风水宝地标记（山/林/水/洞/雪）」）。
+        // 无 npcconfig 表行：模板缺行会被 SceneFlow.visibleNpcs 当 MISSING 丢弃，
+        // 这里按 configId 合成最简模板（脚本类留空＝非 eventnpc，客户端按 ConfigID 自行渲染）。
+        // 环境效果（ui_xl_*）：山→火/阳、林→木/阳、水→水/阴、洞→土/阴阳、雪→金/阴，
+        // 提高对应属性真气出现几率与武学经脉聚气速度（修炼界面「当前所在地的风水情况」数据源）。
+        for (String[] fsbd : new String[][]{
+                {"Fsbd_shan_01", "风水宝地·山"},
+                {"Fsbd_lin_01", "风水宝地·林"},
+                {"Fsbd_shui_01", "风水宝地·水"},
+                {"Fsbd_dong_01", "风水宝地·洞"},
+                {"Fsbd_xue_01", "风水宝地·雪"}}) {
+            templates.put(fsbd[0], new NpcTemplate(fsbd[0], "", fsbd[1], "", "", "",
+                    0, 1000, 0, 0, 0, 0, "", "", "", "", 0f, List.of(), 0, 0, 0, null));
+        }
+    }
+
     public synchronized void load(Path npcconfigRoot) {
         if (loaded) {
             return;

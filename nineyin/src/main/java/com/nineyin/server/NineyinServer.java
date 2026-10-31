@@ -359,8 +359,13 @@ public final class NineyinServer implements SummerApp {
                     continue;
                 }
                 if (login.uiBootstrapped) {
-                    long elapsed = System.nanoTime() / 1_000_000L - login.bootSteadyMs;
-                    fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), login.timeSeq++));
+                    // 0x38 周期推送默认停发：tick 字段是服务器 elapsed 基准，客户端 HUD
+                    // 延时用它算差值会封顶显示固定 3000ms（每 2s 一次，2026-10-31 实锤）；
+                    // Go 参考服不发 0x38、延时显示走旧路径正常（-Dnineyin.timesync.push=true 重开）
+                    if (Boolean.getBoolean("nineyin.timesync.push")) {
+                        long elapsed = System.nanoTime() / 1_000_000L - login.bootSteadyMs;
+                        fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), login.timeSeq++));
+                    }
                     fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK, minutes));
                     restoreWornTitle(fx, login);
                 }

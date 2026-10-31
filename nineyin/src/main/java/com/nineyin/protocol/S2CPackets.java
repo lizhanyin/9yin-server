@@ -321,6 +321,37 @@ public final class S2CPackets {
         return timeSync(tickMs, seq, System.currentTimeMillis() / 1000L);
     }
 
+    // ---------- 0x38 heartbeatReply（30 字节，逆向 menu2 exe main.heartbeatReply @0x89c860） ----------
+    // 逐字段回显客户端 0x18 ping（12B：tick@1 u32、seq@5 u16、尾段@7 u32、@11 u8），
+    // 客户端小地图 HUD 延时按 [6..7] 回显 seq 匹配回包——自增计数器会永远失配 → 固定 3000ms。
+    // [13..21]/[22..30] = Unix 秒 u64（Go 实机验证 HUD 正常；官服抓包为服务器 ms 时钟，同量级）。
+    // 官服 87 ping ↔ 87 0x38 严格成对：仅按 ping 回，无登录种子/周期推送。
+
+    public static byte[] heartbeatReply(byte[] ping, long unixSec) {
+        byte[] m = new byte[30];
+        m[0] = 0x38;
+        if (ping.length >= 7) {
+            System.arraycopy(ping, 1, m, 1, 4);            // u32 tick 回显
+            m[5] = ping[5];
+            m[6] = ping[6];                                 // u16 seq 回显（HUD 匹配键）
+            m[7] = 0;
+            if (ping.length >= 12) {
+                System.arraycopy(ping, 7, m, 8, 4);        // u32 尾段回显
+                m[12] = ping[11];                           // u8 回显
+                putU64(m, 13, unixSec);
+                m[21] = 1;
+                putU64(m, 22, unixSec);
+            }
+        }
+        return m;
+    }
+
+    private static void putU64(byte[] m, int off, long v) {
+        for (int i = 0; i < 8; i++) {
+            m[off + i] = (byte) ((v >>> (8 * i)) & 0xFF);
+        }
+    }
+
     // ---------- 0x1D ClearMenu（单字节） ----------
 
     public static byte[] clearMenu() {

@@ -1,0 +1,13 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by org.fusesource.jansi.internal.JansiLoader in an unnamed module (file:/C:/Users/lzy/.m2/wrapper/dists/apache-maven-3.9.6/0f95e7798d182e3371f3fee6d8202d3a56e6d71dfd3a2402139882ef2fbe7476/lib/jansi-2.4.0.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper (file:/C:/Users/lzy/.m2/wrapper/dists/apache-maven-3.9.6/0f95e7798d182e3371f3fee6d8202d3a56e6d71dfd3a2402139882ef2fbe7476/lib/guava-32.0.1-jre.jar)
+WARNING: Please consider reporting this to the maintainers of class com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+00:05:31.906 [main] INFO  c.nineyin.game.NeigongEffectCatalog - neigong effect catalog ready staticRanges=472 varProps=23982 buffs=28532 propPacks=36370 skillPacks=27930 schools=269 wuxing=3755 root=F:\Game\Online\9yin\9yin_server1\resources\modern\share
+wd30=Effect[buffId=buf_ng_wd_001, buffStaticData=5954, buffLevel=3, stats={DexAdd=13, IngAdd=46, SpiAdd=13, StaAdd=31, StrAdd=45, MaxHPAdd=1630, MaxMPAdd=490, MaxParryAdd=840, MinMagicDefAdd=45}, skillModifiers={}]
+yh30=Effect[buffId=buf_ng_yh_001, buffStaticData=13073, buffLevel=3, stats={DexAdd=70, IngAdd=97, SpiAdd=67, StaAdd=57, StrAdd=55, MaxHPAdd=4050, MaxMPAdd=1130, MaxParryAdd=5040, MinMagicDefAdd=100}, skillModifiers={}]
+attr(wd)=太极 wuxing=5 school=ng_wd

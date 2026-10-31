@@ -7,6 +7,7 @@ import com.nineyin.protocol.BootstrapPackets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 修炼/内功角色状态机（移植参考服 Go player_progress.go）。
@@ -29,7 +30,7 @@ public final class FacultyState {
     /** 曲线缺失时的默认等级上限（Go starter 默认 36）。 */
     public static final int DEFAULT_MAX_LEVEL = 36;
 
-    /** 单本已学内功（View 43 行 + 修炼进度）。 */
+    /** 单本已学内功（View 43 行 + 修炼进度 + 当前等级特效）。 */
     public static final class Book {
         public final String configId;
         public int staticData;
@@ -40,6 +41,18 @@ public final class FacultyState {
         public int total;
         public int power;
         public int maxPower;
+        // 当前等级特效（varprop 目录回填；Go learnedNeiGong 同款字段，种子值兜底）
+        public String buffId = "";
+        public int buffStaticData;
+        public int buffLevel;
+        public int strAdd, staAdd, dexAdd, ingAdd, spiAdd;
+        public int maxHpAdd, maxMpAdd, maxParryAdd, minMagicDefAdd;
+        // 内功属性三件套（IDA 钉死：BelongType→太极/阴柔/阳刚；wuxuebaseinfo nWuXing；neigong.ini School）
+        public String attribute = "";
+        public int wuXing;
+        public String school = "";
+        /** varprop/proppack 全量 stats 快照（MeleePowerAdd/DamageAdd/Mul 等通用键面）。 */
+        public Map<String, Integer> effectStats = Map.of();
 
         Book(String configId, int staticData, int itemType, int level, int maxLevel,
              int fill, int total, int power, int maxPower) {
@@ -64,9 +77,46 @@ public final class FacultyState {
             }
         }
 
+        /**
+         * varprop 目录回填当前等级特效（Go applyModernEffect）：运功 Buff
+         * （BufferID→buff_new StaticData）与五维/上限 Add。缺目录/缺该级行
+         * 保留原值（种子/旧值），best-effort 不抛错。
+         */
+        public void applyEffect(NeigongEffectCatalog catalog) {
+            NeigongEffectCatalog.Effect effect =
+                    catalog == null ? null : catalog.effect(staticData, level);
+            if (effect == null) {
+                // 特效缺行仍可解析静态三件套（属性/五行/门派按 staticData/configId 查表）
+                if (catalog != null) {
+                    attribute = catalog.attributeOf(staticData, configId);
+                    wuXing = catalog.wuXingOf(configId);
+                    school = catalog.schoolOf(configId);
+                }
+                return;
+            }
+            buffId = effect.buffId();
+            buffStaticData = effect.buffStaticData();
+            buffLevel = effect.buffLevel();
+            strAdd = effect.stat("StrAdd");
+            staAdd = effect.stat("StaAdd");
+            dexAdd = effect.stat("DexAdd");
+            ingAdd = effect.stat("IngAdd");
+            spiAdd = effect.stat("SpiAdd");
+            maxHpAdd = effect.stat("MaxHPAdd");
+            maxMpAdd = effect.stat("MaxMPAdd");
+            maxParryAdd = effect.stat("MaxParryAdd");
+            minMagicDefAdd = effect.stat("MinMagicDefAdd");
+            effectStats = effect.stats();
+            attribute = catalog.attributeOf(staticData, configId);
+            wuXing = catalog.wuXingOf(configId);
+            school = catalog.schoolOf(configId);
+        }
+
         BootstrapPackets.NeiGongBook toViewBook() {
             return new BootstrapPackets.NeiGongBook(configId, staticData, itemType, level,
-                    maxLevel, total, power, maxPower, "", 0, 0);
+                    maxLevel, total, power, maxPower,
+                    buffId, buffStaticData, buffLevel, fill,
+                    school, wuXing, strAdd, dexAdd, ingAdd, spiAdd, staAdd);
         }
     }
 
@@ -85,9 +135,56 @@ public final class FacultyState {
 
     public static FacultyState bootstrap() {
         FacultyState state = new FacultyState();
-        state.books.add(new Book("ng_wd_001", 5, 1002, 30, 36, 0, 273200, 4550, 4550));
-        state.books.add(new Book("ng_yh_001", 114, 1002, 30, 71, 0, 579600, 8180, 8180));
-        state.books.add(new Book("ng_th_001", 113, 1002, 30, 71, 0, 579600, 8180, 8180));
+        // 三本 30 级主内功带 Go 内联种子特效（无资源目录时的回退值，等级 30 varprop 行）；
+        // refreshEffects 后安装目录存在则以数据覆盖
+        Book wd = new Book("ng_wd_001", 5, 1002, 30, 36, 0, 273200, 4550, 4550);
+        wd.buffId = "buf_ng_wd_001";
+        wd.buffStaticData = 5954;
+        wd.buffLevel = 3;
+        wd.strAdd = 45;
+        wd.staAdd = 31;
+        wd.dexAdd = 13;
+        wd.ingAdd = 46;
+        wd.spiAdd = 13;
+        wd.maxHpAdd = 1630;
+        wd.maxMpAdd = 490;
+        wd.maxParryAdd = 840;
+        wd.minMagicDefAdd = 45;
+        wd.attribute = "太极";
+        wd.wuXing = 5;
+        wd.school = "ng_wd";
+        Book yh = new Book("ng_yh_001", 114, 1002, 30, 71, 0, 579600, 8180, 8180);
+        yh.buffId = "buf_ng_yh_001";
+        yh.buffStaticData = 13073;
+        yh.buffLevel = 3;
+        yh.strAdd = 55;
+        yh.staAdd = 57;
+        yh.dexAdd = 70;
+        yh.ingAdd = 97;
+        yh.spiAdd = 67;
+        yh.maxHpAdd = 4050;
+        yh.maxMpAdd = 1130;
+        yh.maxParryAdd = 5040;
+        yh.minMagicDefAdd = 100;
+        yh.attribute = "阴柔";
+        yh.school = "ng_yh";
+        Book th = new Book("ng_th_001", 113, 1002, 30, 71, 0, 579600, 8180, 8180);
+        th.buffId = "buf_ng_th_001";
+        th.buffStaticData = 13434;
+        th.buffLevel = 3;
+        th.strAdd = 66;
+        th.staAdd = 56;
+        th.dexAdd = 52;
+        th.ingAdd = 103;
+        th.spiAdd = 68;
+        th.maxHpAdd = 4050;
+        th.maxMpAdd = 1135;
+        th.maxParryAdd = 5070;
+        th.minMagicDefAdd = 100;
+        th.school = "ng_th";
+        state.books.add(wd);
+        state.books.add(yh);
+        state.books.add(th);
         state.books.add(new Book("ng_wd_002", 6, 1002, 1, 36, 0, 700, 120, 120));
         state.books.add(new Book("ng_jh_001", 1, 1002, 1, 36, 0, 700, 120, 120));
         state.books.add(new Book("ng_em_001", 8, 1002, 1, 36, 0, 700, 120, 120));
@@ -98,6 +195,7 @@ public final class FacultyState {
         state.facultyName = state.books.get(0).configId;
         state.fillSpeed = NORMAL_FILL_PER_MINUTE;
         state.lastAdvance = Instant.now();
+        state.refreshEffects(NeigongEffectCatalog.instance());
         return state;
     }
 
@@ -110,6 +208,18 @@ public final class FacultyState {
             }
         }
         return null;
+    }
+
+    /** 当前运功书（Go book(curNeiGong)；未学/空返回 null）。 */
+    public Book equipped() {
+        return book(curNeigong);
+    }
+
+    /** 全书本回填 varprop 特效（Go refreshAllModernEffects：best-effort，失败保留种子值）。 */
+    public void refreshEffects(NeigongEffectCatalog catalog) {
+        for (Book book : books) {
+            book.applyEffect(catalog);
+        }
     }
 
     /** 面板目标书：修炼中的书优先，否则当前运功书（Go targetBook）。 */
@@ -270,8 +380,10 @@ public final class FacultyState {
     public record ActiveAward(int slot, boolean awarded, boolean levelUp, boolean maxLevel) {
     }
 
-    /** 连续升级循环：新等级修炼度优先取曲线 r[新等级]，缺曲线回退 total+=200；威力 +20/级。 */
+    /** 连续升级循环：新等级修炼度优先取曲线 r[新等级]，缺曲线回退 total+=200；威力 +20/级。
+     *  升级后按新等级重算 varprop 特效（五维/上限 Add 与运功 Buff 随层数变化）。 */
     private void settleLevelUps(Book book, WuxueLevelInfo curves) {
+        boolean leveled = false;
         while (book.fill >= book.total && book.level < book.maxLevel) {
             book.fill -= book.total;
             book.level++;
@@ -279,6 +391,10 @@ public final class FacultyState {
             book.total = curveTotal > 0 ? (int) curveTotal : book.total + 200;
             book.maxPower += 20;
             book.power = book.maxPower;
+            leveled = true;
+        }
+        if (leveled) {
+            book.applyEffect(NeigongEffectCatalog.instance());
         }
     }
 

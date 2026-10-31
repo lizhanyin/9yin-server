@@ -80,7 +80,7 @@ public final class PropertyId {
     public static final int MP_HEART_SPEED = 617;
     public static final int MP_HEART_SPEED_ADD = 621;
     public static final int FACULTY_STATE = 757;    // 0=空闲 2=运功中
-    public static final int FACULTY_STYLE = 758;    // 0=普通 1=演武
+    public static final int FACULTY_STYLE = 758;    // 1=普通内修 2=演武（Go facultyStyle*）
     public static final int FACULTY_NAME = 759;     // string
     public static final int CUR_FILL_VALUE = 763;
     public static final int TOTAL_FILL_VALUE = 764;
@@ -132,6 +132,51 @@ public final class PropertyId {
     public static final int DEX = 486;              // i32 身法
     public static final int SPI = 487;              // i32 罡气
     public static final int STA = 488;              // i32 体魄
+
+    /** 人物属性面板战斗块（Go playerProgressFields 同名属性 → 本服官服表索引）。 */
+    public static final int MAX_PARRY = 475;        // i32 招架上限（面板值；耐力消耗另走 parryEndurance）
+    public static final int MAX_PARRY_ADD = 476;    // i32 招架上限加成（运功内功 varprop）
+    public static final int MELEE_POWER = 499;      // i32 外功攻击
+    public static final int MAGIC_POWER = 501;      // i32 内功攻击
+    public static final int MAX_MELEE_DAMAGE = 508; // i32 近战伤害上限
+    public static final int MIN_MELEE_DAMAGE = 509; // i32 近战伤害下限
+    public static final int PHY_HIT = 555;          // i32 外功命中
+    public static final int MAGIC_HIT = 558;        // i32 内功命中
+    public static final int DODGE = 561;            // i32 闪避
+    public static final int MAX_HP_ADD = 580;       // i32 上限加成（装备词缀 + 运功内功）
+    public static final int MAX_MP_ADD = 581;
+    public static final int PHY_DEF = 583;          // i32 外功防御
+    public static final int STI_DEF = 585;          // i32 刚防御
+    public static final int JUJ_DEF = 586;          // i32 柔防御
+    public static final int NEG_DEF = 587;          // i32 阴防御
+    public static final int MAS_DEF = 588;          // i32 阳防御
+    public static final int MIN_MAGIC_DEF_ADD = 596;// i32 内功防御加成（运功内功 varprop）
+    public static final int CUR_LEVEL = 762;        // i32 修炼目标书当前层数
+    // ---------- 新参考 exe 51 字段表追加批（IDA 反编译钉死，索引=exe-1） ----------
+    public static final int MAX_SHOT_DAMAGE = 510;  // i32 暗器伤害上限（种子 0）
+    public static final int MIN_SHOT_DAMAGE = 511;  // i32 暗器伤害下限（种子 0）
+    public static final int PHY_DAMAGE_ADD = 512;   // i32 五系伤害加成（经脉叠加源）
+    public static final int STI_DAMAGE_ADD = 513;
+    public static final int JUJ_DAMAGE_ADD = 514;
+    public static final int NEG_DAMAGE_ADD = 515;
+    public static final int MAS_DAMAGE_ADD = 516;
+    public static final int PHY_DAMAGE_MUL = 517;   // f32 五系伤害倍率
+    public static final int STI_DAMAGE_MUL = 518;
+    public static final int JUJ_DAMAGE_MUL = 519;
+    public static final int NEG_DAMAGE_MUL = 520;
+    public static final int MAS_DAMAGE_MUL = 521;
+    public static final int PHY_PARRY_PROB = 2424;      // i32 招架概率（exe 表 171；本服表尾追加）
+    public static final int PHY_PARRY_PROB_ADD = 2425;  // i32 招架概率加成（exe 表 172）
+    public static final int NEIGONG_USE_VALUE = 816;    // i32 使用值三连（exe >0 才发）
+    public static final int SKILL_USE_VALUE = 817;
+    /** 内功属性（阴柔/阳刚/太极）链：书行 WuXing + 玩家 CurNeiGongWuXing（IDA 钉死）。 */
+    public static final int CUR_NEIGONG_WU_XING = 653;  // i32 当前运功内功五行/属性
+    public static final int STR_ADD = 489;              // i32 View43 书行五维 Add
+    public static final int DEX_ADD = 490;
+    public static final int ING_ADD = 491;
+    public static final int SPI_ADD = 492;
+    public static final int STA_ADD = 493;
+    public static final int WU_XING = 2241;             // i32 五行/内功属性枚举
     public static final int ENE = 704;              // i32 体力
     public static final int MAX_ENE = 705;          // i32 体力上限
     public static final int RESUME_ENE = 706;       // i32 体力恢复

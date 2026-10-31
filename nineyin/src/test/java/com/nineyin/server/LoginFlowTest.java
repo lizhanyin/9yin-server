@@ -153,8 +153,8 @@ class LoginFlowTest {
         List<byte[]> enter = drainOutbound();
         assertEquals(23, enter.size());
         assertEquals(0x09, op(enter.get(0)));
-        assertEquals(2424, (enter.get(0)[1] & 0xFF) | ((enter.get(0)[2] & 0xFF) << 8),
-                "official property table entry count");
+        assertEquals(2426, (enter.get(0)[1] & 0xFF) | ((enter.get(0)[2] & 0xFF) << 8),
+                "official property table entry count (2424 官服 + PhyParryProb/Add 尾追加)");
         assertEquals(0x0A, op(enter.get(1)));
         assertEquals(819, enter.get(1).length, "40-table record schema (§3.22)");
         assertEquals(0x0B, op(enter.get(19)));
@@ -184,11 +184,11 @@ class LoginFlowTest {
                 + ready.size());
         assertEquals(0x1D, op(ready.get(0)));
         assertEquals(0x10, op(ready.get(1)));
-        // bootstrap：2 个 0x38（时钟 + 技能容器后追加）；
+        // bootstrap：0x38 默认停发（-Dnineyin.timesync.push 重开；曾毒化 HUD 延时为 3000ms）；
         // 0x11 行 = 18 轻功分类 + 20 已接任务 + ~1594 Task_Completed 位图行 + 1 打坐 + 15 起始快捷键
         long timeSync = ready.stream().filter(f -> op(f) == 0x38).count();
         long recordRows = ready.stream().filter(f -> op(f) == 0x11).count();
-        assertEquals(2, timeSync);
+        assertEquals(0, timeSync);
         assertTrue(recordRows >= 1600, "expected 1600+ record rows, got " + recordRows);
         // 视图：轻功 View46 + 内功 View43 + 技能 View40（0x18 = 70 轻功 + 6 内功 + 23 技能）
         assertEquals(3, ready.stream().filter(f -> op(f) == 0x15).count());

@@ -1079,6 +1079,9 @@ class SceneFlowTest {
      */
     @Test
     void customRoundNailedMsgIdsValidateAndEcho() throws Exception {
+        // 924 回显默认停发（-Dnineyin.msg924.echo）；本用例显式开启以覆盖回显格式
+        System.setProperty("nineyin.msg924.echo", "true");
+        try {
         // 登录后未选角：560 早到只记日志（charge shop 560 arrived before role selection）
         send(loginPacket());
         drainOutbound();
@@ -1162,6 +1165,9 @@ class SceneFlowTest {
         send(custom().u16(2).u8(2).i32(517).u8(2).i32(7).toByteArray());
         assertTrue(drainOutbound().isEmpty(),
                 "stub handlers emit no frames (patrol 0x20 excluded by empty scene state)");
+        } finally {
+            System.clearProperty("nineyin.msg924.echo");
+        }
     }
 
     private static long leU64(byte[] b, int off) {

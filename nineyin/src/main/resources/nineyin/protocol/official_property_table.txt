@@ -2422,3 +2422,5 @@
 2421	ActorOverTime	3
 2422	FeteGroupID	3
 2423	Points	3
+2424	PhyParryProb	3
+2425	PhyParryProbAdd	3

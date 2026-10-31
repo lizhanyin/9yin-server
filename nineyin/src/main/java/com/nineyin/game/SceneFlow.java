@@ -646,15 +646,20 @@ public final class SceneFlow {
         return id.contains("leader") || id.contains("world") ? -100 : 0;
     }
 
-    // ---------- 0x18 ping → 回显客户端 tick 的 0x38（HUD 延迟显示依赖此回包） ----------
+    // ---------- 0x18 ping → 0x38 heartbeatReply ----------
+    // 客户端 HUD 延时按回显 seq（ping[5..7]→帧[5..7]）匹配；旧实现发自增计数器
+    // 永远失配 → 固定 3000ms（2026-10-31 定位，官服抓包 87ping↔87回包严格成对互证）。
+    // 现按 menu2 exe heartbeatReply 逐字节移植，仅按 ping 回，无周期推送
+    // （-Dnineyin.timesync.push=false 可关）。
 
     private void onPing(FxSession fx, byte[] plain) {
         LoginSession session = fx.channel().attr(LoginFlow.SESSION).get();
         if (session == null) {
             return;
         }
-        int tick = plain.length >= 5 ? leU32(plain, 1) : 0;
-        fx.send(S2CPackets.timeSync(tick, session.timeSeq++));
+        if (!"false".equalsIgnoreCase(System.getProperty("nineyin.timesync.push"))) {
+            fx.send(S2CPackets.heartbeatReply(plain, System.currentTimeMillis() / 1000L));
+        }
         if (++session.pingCount % 10 == 0) {
             fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK,
                     LocalDateTime.now().getHour() * 60 + LocalDateTime.now().getMinute()));
@@ -1033,8 +1038,8 @@ public final class SceneFlow {
 
     /**
      * 924 消息延迟探测（参考服：`message delay 924: expected [int32:924, int64:tick]`）。
-     * 响应回显 tick（`message delay 924 response`）；回显载体按 custom 0x1E 同 msgId
-     * 假设实现——精确响应格式待实机抓包钉死。
+     * 回显默认停发：Go 参考服不回 924 而客户端 HUD 延时显示正常；我方按 custom 0x1E
+     * 同 msgId 的假设载体未经实证，疑毒化延时显示（-Dnineyin.msg924.echo=true 重开）。
      */
     private void handleMessageDelay(FxSession fx, LoginSession session, CustomMsg msg) {
         CustomMsg.Val tick = msg.val(1);
@@ -1042,7 +1047,9 @@ public final class SceneFlow {
             log.info("message delay 924: expected [int32:924, int64:tick], got {}", summarizeVals(msg));
             return;
         }
-        fx.send(CustomPackets.intMessage(924, tick.asLong()));
+        if (Boolean.getBoolean("nineyin.msg924.echo")) {
+            fx.send(CustomPackets.intMessage(924, tick.asLong()));
+        }
         log.info("message delay 924 response");
     }
 
@@ -2281,6 +2288,8 @@ public final class SceneFlow {
                     summarizeVals(msg));
             return;
         }
+        // 换书后重装载运功 Buff 槽 4（BufferInfo4 随 vitalUpdate 全量同步）
+        session.actor.installRunningNeigongBuff();
         fx.send(session.actor.vitalUpdate());
         persistFacultyNow(fx, session);
         log.info("equip neigong \"{}\" role={}", id.str, session.roleId);
@@ -2400,18 +2409,25 @@ public final class SceneFlow {
         }
     }
 
-    /** View 43 单本行刷新（0x18，9 属性布局与登录种子一致；槽位从 1 起）。 */
+    /** View 43 单本行刷新（0x18，16 属性布局与登录种子一致；槽位从 1 起）。 */
     private static byte[] facultyBookFrame(int slot, FacultyState.Book book) {
-        return SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 9)
+        return SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 16)
                 .u16(SkillPackets.V_CONFIG_ID).string(book.configId)
                 .u16(PropertyId.STATIC_DATA).i32(book.staticData)
                 .u16(PropertyId.ITEM_TYPE).i32(book.itemType)
+                .u16(PropertyId.SCHOOL).string(book.school)
                 .u16(PropertyId.LEVEL).u8(book.level)
                 .u16(PropertyId.MAX_LEVEL).i32(book.maxLevel)
+                .u16(PropertyId.STR_ADD).i32(book.strAdd)
+                .u16(PropertyId.DEX_ADD).i32(book.dexAdd)
+                .u16(PropertyId.ING_ADD).i32(book.ingAdd)
+                .u16(PropertyId.SPI_ADD).i32(book.spiAdd)
+                .u16(PropertyId.STA_ADD).i32(book.staAdd)
                 .u16(PropertyId.CUR_FILL_VALUE).i32(book.fill)
                 .u16(PropertyId.TOTAL_FILL_VALUE).i32(book.total)
                 .u16(PropertyId.POWER_VALUE).i32(book.power)
                 .u16(PropertyId.MAX_POWER_VALUE).i32(book.maxPower)
+                .u16(PropertyId.WU_XING).i32(book.wuXing)
                 .toByteArray();
     }
 

@@ -173,9 +173,9 @@ class EquipBonusTest {
         assertEquals(20, actor.equipPhyVa);
         assertEquals(10, actor.equipMeleePowerAdd);
         assertEquals(30, actor.equipMagicHit, "MagicHitAdd 累积但不应用");
-        // 有效上限
-        assertEquals(1100, actor.maxHp());
-        assertEquals(550, actor.maxMp());
+        // 有效上限（含五维换算：HP += 7×体魄 + 2×臂力；MP += 4×内息 + 罡气；基础五维各 30）
+        assertEquals(1374, actor.maxHp());
+        assertEquals(700, actor.maxMp());
         // combatStats 叠加（基础字段不动）
         CombatStats stats = actor.combatStats();
         assertEquals(actor.attack + 30, stats.attack(), "PhyVa+MeleePower → 攻击");
@@ -189,17 +189,17 @@ class EquipBonusTest {
     void recomputeIsIdempotentAndResetsOnEmpty() throws Exception {
         PropPackCatalog catalog = catalog();
         PlayerActor actor = new PlayerActor();
-        // 两件装备各带同词缀：跨装备叠加（对齐 Go 逐件累积）
+        // 两件装备各带同词缀：跨装备叠加（对齐 Go 逐件累积；基础五维换算 270 常在）
         actor.recomputeEquipBonuses(catalog, List.of(affixed("1,3"), affixed("1,3")));
-        assertEquals(1200, actor.maxHp(), "两件同词缀装备叠加");
+        assertEquals(1470, actor.maxHp(), "两件同词缀装备叠加");
         // 同一装备列表重算：幂等不重复计
         actor.recomputeEquipBonuses(catalog, List.of(affixed("1,3")));
-        assertEquals(1100, actor.maxHp());
+        assertEquals(1370, actor.maxHp());
         actor.recomputeEquipBonuses(catalog, List.of(affixed("1,3")));
-        assertEquals(1100, actor.maxHp());
+        assertEquals(1370, actor.maxHp());
         actor.recomputeEquipBonuses(catalog, List.of());
-        assertEquals(1000, actor.maxHp(), "卸空后回到基础上限");
-        assertEquals(500, actor.maxMp());
+        assertEquals(1270, actor.maxHp(), "卸空后回到基础+五维换算");
+        assertEquals(650, actor.maxMp());
         assertEquals(0, actor.equipPhyDef);
         // null 目录（缺失装载）同样清零不抛
         actor.recomputeEquipBonuses(null, List.of(affixed("1,3")));
@@ -212,7 +212,7 @@ class EquipBonusTest {
         PlayerActor actor = new PlayerActor();
         actor.recomputeEquipBonuses(catalog, List.of(
                 affixed(""), affixed(null), affixed("x"), affixed("1,zz"), affixed("1,999")));
-        assertEquals(1000, actor.maxHp(), "脏行全部跳过，无加成");
+        assertEquals(1270, actor.maxHp(), "脏行全部跳过，无加成（基础+五维换算）");
     }
 
     /** 真实服务器表装载冒烟（NINEYIN_SERVER_ROOT 未设置时跳过）：~3.7 万节 + 已知节抽查。 */

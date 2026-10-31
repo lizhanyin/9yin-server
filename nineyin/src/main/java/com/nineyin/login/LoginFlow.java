@@ -240,6 +240,8 @@ public final class LoginFlow {
             com.nineyin.game.FacultyState restored = facultyStore.load(s.roleId, levelCurves);
             if (restored != null) {
                 actor.faculty = restored;
+                // 运功内功 BuffStore 槽 4（vitalUpdate 的 BufferInfo4 随首次全量同步到端）
+                actor.installRunningNeigongBuff();
             }
         }
         s.actor = actor;
@@ -307,8 +309,13 @@ public final class LoginFlow {
         fx.send(S2CPackets.objectPropertyInt(PropertyId.NEW_TERMS_REPAIR_SIGN_COUNT, 0));
         fx.send(S2CPackets.objectPropertyInt(PropertyId.HAVE_MAIN_FORM_STYLES, -1));
         fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK, clockMinutes()));
-        long elapsed = System.nanoTime() / 1_000_000L - s.bootSteadyMs;
-        fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), s.timeSeq++));
+        // 0x38 timesync 默认停发：Go 参考服从不发 0x38 而客户端小地图延时显示正常；
+        // 我方 30B 布局是早期假设，实机会把 HUD 延时毒化成固定 3000ms
+        // （-Dnineyin.timesync.push=true 重开）
+        if (Boolean.getBoolean("nineyin.timesync.push")) {
+            long elapsed = System.nanoTime() / 1_000_000L - s.bootSteadyMs;
+            fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), s.timeSeq++));
+        }
         fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, s.actor != null ? s.actor.logicState : 0));
         // 轻功：QingGongRec 记录行 + View 46（18 分类 + 52 技能实例）
         CustomPackets.sendAll(fx, BootstrapPackets.qinggongGrantFrames());
@@ -344,7 +351,9 @@ public final class LoginFlow {
         // 内置默认快捷键方案 ×2 + VIP/系统开关 reset ×11（参考 ready 尾帧序；开关表含技能动作开关 1223）
         CustomPackets.sendAll(fx, BootstrapPackets.shortcutSchemeFrames());
         CustomPackets.sendAll(fx, CustomPackets.enableVipSwitchFrames());
-        fx.send(S2CPackets.timeSync(0, 0));
+        if (Boolean.getBoolean("nineyin.timesync.push")) {
+            fx.send(S2CPackets.timeSync(0, 0));
+        }
         // 权威状态全量同步（血蓝/轻功点/怒气/碎银/重力速度/内功面板字段）
         if (s.actor != null) {
             fx.send(s.actor.vitalUpdate());

@@ -200,10 +200,11 @@ class CombatFormulasTest {
     void bruiseOverflowCapGoesToHp() {
         PlayerActor actor = new PlayerActor();
         actor.hp = 1000;
-        actor.hitHp = 295;   // 上限 = 1000 × 30% = 300
+        // 上限 = maxHp() × 30%；五维换算后 maxHp = 1000 + 7×30 + 2×30 = 1270 → 上限 381
+        actor.hitHp = 375;
         actor.applyDamage(100);
-        assertEquals(300, actor.hitHp, "瘀血封顶 300");
-        assertEquals(905, actor.hp, "超出上限的 20 点转入血量");
+        assertEquals(381, actor.hitHp, "瘀血封顶 381（五维换算后的 30%）");
+        assertEquals(906, actor.hp, "超出上限的 6 点转入血量");
     }
 
     @Test

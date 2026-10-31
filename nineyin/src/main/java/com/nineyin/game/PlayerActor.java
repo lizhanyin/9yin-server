@@ -82,6 +82,28 @@ public final class PlayerActor {
     // 战斗属性骨架（默认对齐旧固定伤害 150；后续接装备/内功/经脉表）
     public int attack = 150;              // 外功攻击
     public int defense;                   // 外功防御
+
+    // ---------- 主属性面板块（Go playerAttributes 同构；种子值 = Go newPlayerProgress） ----------
+    // 下发走 vitalUpdate 属性块：五维叠装备词缀 + 运功内功 varprop，攻防/命中/闪避/
+    // 招架/近战伤害发基础值（Go properties() 同语义）；服务端结算仍走 combatStats()。
+    public int str = 30;                  // 臂力
+    public int sta = 30;                  // 体魄
+    public int dex = 30;                  // 身法
+    public int ing = 30;                  // 内息
+    public int spi = 30;                  // 罡气
+    public int meleePower = 80;           // 外功攻击（面板）
+    public int magicPower = 80;           // 内功攻击（面板）
+    public int phyHit = 50;               // 外功命中
+    public int magicHit = 50;             // 内功命中
+    public int dodge = 35;                // 闪避
+    public int maxParry = 100;            // 招架上限（面板；耐力消耗走 parryEndurance）
+    public int phyDef = 60;               // 外功防御
+    public int stiDef = 50;               // 刚防御
+    public int negDef = 50;               // 阴防御
+    public int masDef = 50;               // 阳防御
+    public int jujDef = 50;               // 柔防御
+    public int minMeleeDamage = 20;       // 近战伤害下限
+    public int maxMeleeDamage = 35;       // 近战伤害上限
     public int pierce;                    // 破防
     public int critValue;                 // 暴击值（外功暴击 ← 臂力 1:1；全 0 仍有 5% 基础暴击）
     public int resilience;                // 坚韧（Resilience，社区名封禁值）：压低来袭基础暴击率
@@ -376,15 +398,68 @@ public final class PlayerActor {
                 critValue + equipStrAdd, resilience);
     }
 
-    /** 有效上限（基础 + 装备词缀 + 内功被动 + 限时道具属性；夹下限 1 防词缀负值归零）。 */
+    /**
+     * 有效上限（新参考 exe totalResourceAdds 实锤，IDA 逆向钉死）：
+     * HP = 基础 + MaxHPAdd 各层（装备/运功内功/内功被动/限时道具）+ 7×体魄 + 2×臂力；
+     * MP = 基础 + MaxMPAdd 各层 + 4×内息 + 罡气。五维均含装备词缀与运功内功加成后的有效值。
+     */
     public int maxHp() {
         int ng = neigongPassive == null ? 0 : neigongPassive.maxHpAdd();
-        return Math.max(1, baseMaxHp + equipMaxHpAdd + ng + tempMaxHpAdd());
+        FacultyState.Book equipped = equippedNeigong();
+        int strEff = str + equipStrAdd + (equipped == null ? 0 : equipped.strAdd);
+        int staEff = sta + equipStaAdd + (equipped == null ? 0 : equipped.staAdd);
+        return Math.max(1, baseMaxHp + equipMaxHpAdd + ng + tempMaxHpAdd()
+                + (equipped == null ? 0 : equipped.maxHpAdd)
+                + 7 * staEff + 2 * strEff);
     }
 
     public int maxMp() {
         int ng = neigongPassive == null ? 0 : neigongPassive.maxMpAdd();
-        return Math.max(1, baseMaxMp + equipMaxMpAdd + ng);
+        FacultyState.Book equipped = equippedNeigong();
+        int ingEff = ing + equipIngAdd + (equipped == null ? 0 : equipped.ingAdd);
+        int spiEff = spi + equipSpiAdd + (equipped == null ? 0 : equipped.spiAdd);
+        return Math.max(1, baseMaxMp + equipMaxMpAdd + ng
+                + (equipped == null ? 0 : equipped.maxMpAdd)
+                + 4 * ingEff + spiEff);
+    }
+
+    /** 当前运功书（无修炼状态返回 null）。 */
+    public FacultyState.Book equippedNeigong() {
+        return faculty == null ? null : faculty.equipped();
+    }
+
+    /** 运功书 varprop stats 取值（无书/缺键 0；供 vitalUpdate 面板叠加）。 */
+    private static int eff(FacultyState.Book book, String key) {
+        Integer value = book == null ? null : book.effectStats.get(key);
+        return value == null ? 0 : value;
+    }
+
+    /** 运功书千分数键（DamageMul 族 ÷1000）。 */
+    private static float effMul(FacultyState.Book book, String key) {
+        Integer value = book == null ? null : book.effectStats.get(key);
+        return value == null ? 0f : value / 1000f;
+    }
+
+    /**
+     * 运功内功 BuffStore 槽 4（Go syncEquippedNeiGongBuff）：varprop 解析的
+     * BufferID→buff_new StaticData + BufferLevel，24h 租约。无效（未学/无 Buff 行）
+     * 清槽。装载后需补发 vitalUpdate 使 BufferInfo4 到端。切换内功（215）与登录时调用。
+     */
+    public void installRunningNeigongBuff() {
+        FacultyState.Book equipped = equippedNeigong();
+        if (equipped == null || equipped.buffId.isEmpty()
+                || equipped.buffStaticData <= 0 || equipped.buffLevel <= 0) {
+            clearBuffSlot(BUFF_SLOT_INNER_POWER);
+            return;
+        }
+        activateBuff(BUFF_SLOT_INNER_POWER, equipped.buffStaticData,
+                java.util.concurrent.TimeUnit.HOURS.toMillis(24),
+                equipped.buffId, equipped.buffLevel);
+    }
+
+    /** 无条件清空指定 Buff 槽（clearBuff 需 StaticData 匹配，切换目标无 Buff 行时用）。 */
+    public void clearBuffSlot(int slot) {
+        buffs.remove(slot);
     }
 
     /**
@@ -805,6 +880,8 @@ public final class PlayerActor {
         if (faculty != null) {
             target = faculty.targetBook();
         }
+        // 运功书（varprop 特效来源；与修炼目标书 target 可不同）
+        FacultyState.Book eq = equippedNeigong();
         String curNeigong = faculty != null ? faculty.curNeigong : BootstrapCurNeigong.CUR;
         int facultyPoint = faculty != null ? faculty.faculty : BootstrapCurNeigong.FACULTY;
         int facultyState = faculty != null ? faculty.facultyState : BootstrapCurNeigong.STATE;
@@ -823,6 +900,8 @@ public final class PlayerActor {
                 .f32(PropertyId.RUN_SPEED, runSpeed)
                 .f32(PropertyId.JUMP_SPEED, jumpSpeed)
                 .str(PropertyId.CUR_NEIGONG, curNeigong)
+                // 当前运功内功五行/属性 int（书行 WuXing 同源；客户端阴阳太极伴生显示）
+                .i32(PropertyId.CUR_NEIGONG_WU_XING, eq == null ? 0 : eq.wuXing)
                 .i32(PropertyId.FACULTY, facultyPoint)
                 .i32(PropertyId.FACULTY_STATE, facultyState)
                 .i32(PropertyId.FACULTY_STYLE, facultyStyle)
@@ -832,7 +911,48 @@ public final class PlayerActor {
                 .i32(PropertyId.FILL_SPEED, fillSpeed)
                 .i32(PropertyId.SP, sp)
                 .i32(PropertyId.POWER_VALUE, power)
-                .i32(PropertyId.MAX_POWER_VALUE, maxPower);
+                .i32(PropertyId.MAX_POWER_VALUE, maxPower)
+                // 内功层数（修炼目标书）+ 人物属性面板战斗块（新参考 exe 51 字段表，
+                // IDA 逆向钉死：五维/攻防 = 基础 + 装备累积层 + 运功内功 varprop + 经脉[Java 暂无=0]）
+                .i32(PropertyId.CUR_LEVEL, target == null ? 0 : target.level)
+                .i32(PropertyId.MAX_LEVEL, target == null ? 0 : target.maxLevel)
+                .i32(PropertyId.STR, str + equipStrAdd + (eq == null ? 0 : eq.strAdd))
+                .i32(PropertyId.STA, sta + equipStaAdd + (eq == null ? 0 : eq.staAdd))
+                .i32(PropertyId.DEX, dex + equipDexAdd + (eq == null ? 0 : eq.dexAdd))
+                .i32(PropertyId.ING, ing + equipIngAdd + (eq == null ? 0 : eq.ingAdd))
+                .i32(PropertyId.SPI, spi + equipSpiAdd + (eq == null ? 0 : eq.spiAdd))
+                .i32(PropertyId.MELEE_POWER, meleePower + equipMeleePowerAdd + eff(eq, "MeleePowerAdd"))
+                .i32(PropertyId.MAGIC_POWER, magicPower + equipMagicVa + eff(eq, "MagicPowerAdd"))
+                .i32(PropertyId.PHY_HIT, phyHit + equipPhyHit + eff(eq, "PhyHitAdd"))
+                .i32(PropertyId.MAGIC_HIT, magicHit + equipMagicHit + eff(eq, "MagicHitAdd"))
+                .i32(PropertyId.DODGE, dodge + equipDodge + eff(eq, "DodgeAdd"))
+                .i32(PropertyId.MAX_PARRY, maxParry)
+                .i32(PropertyId.PHY_DEF, phyDef + equipPhyDef + eff(eq, "PhyDefAdd"))
+                .i32(PropertyId.STI_DEF, stiDef + eff(eq, "StiDefAdd"))
+                .i32(PropertyId.JUJ_DEF, jujDef + eff(eq, "JujDefAdd"))
+                .i32(PropertyId.NEG_DEF, negDef + eff(eq, "NegDefAdd"))
+                .i32(PropertyId.MAS_DEF, masDef + eff(eq, "MasDefAdd"))
+                .i32(PropertyId.MIN_MELEE_DAMAGE, minMeleeDamage + equipMinMelee + eff(eq, "MinMeleeDamage"))
+                .i32(PropertyId.MAX_MELEE_DAMAGE, maxMeleeDamage + equipMaxMelee + eff(eq, "MaxMeleeDamage"))
+                .i32(PropertyId.MAX_HP_ADD, equipMaxHpAdd + (eq == null ? 0 : eq.maxHpAdd))
+                .i32(PropertyId.MAX_MP_ADD, equipMaxMpAdd + (eq == null ? 0 : eq.maxMpAdd))
+                .i32(PropertyId.MAX_PARRY_ADD, eq == null ? 0 : eq.maxParryAdd)
+                .i32(PropertyId.MIN_MAGIC_DEF_ADD, eq == null ? 0 : eq.minMagicDefAdd)
+                // exe 追加批：暗器伤害 + 五系伤害加成/倍率 + 招架概率（运功内功 varprop 透传，DamageMul=千分÷1000）
+                .i32(PropertyId.MAX_SHOT_DAMAGE, 0)
+                .i32(PropertyId.MIN_SHOT_DAMAGE, 0)
+                .i32(PropertyId.PHY_DAMAGE_ADD, eff(eq, "PhyDamageAdd"))
+                .i32(PropertyId.STI_DAMAGE_ADD, eff(eq, "StiDamageAdd"))
+                .i32(PropertyId.JUJ_DAMAGE_ADD, eff(eq, "JujDamageAdd"))
+                .i32(PropertyId.NEG_DAMAGE_ADD, eff(eq, "NegDamageAdd"))
+                .i32(PropertyId.MAS_DAMAGE_ADD, eff(eq, "MasDamageAdd"))
+                .f32(PropertyId.PHY_DAMAGE_MUL, effMul(eq, "PhyDamageMul"))
+                .f32(PropertyId.STI_DAMAGE_MUL, effMul(eq, "StiDamageMul"))
+                .f32(PropertyId.JUJ_DAMAGE_MUL, effMul(eq, "JujDamageMul"))
+                .f32(PropertyId.NEG_DAMAGE_MUL, effMul(eq, "NegDamageMul"))
+                .f32(PropertyId.MAS_DAMAGE_MUL, effMul(eq, "MasDamageMul"))
+                .i32(PropertyId.PHY_PARRY_PROB, 0)
+                .i32(PropertyId.PHY_PARRY_PROB_ADD, 0);
         return b.build();
     }
 
@@ -863,7 +983,8 @@ public final class PlayerActor {
         static final String CUR = "ng_wd_001";
         static final int FACULTY = 9_999_999;
         static final int STATE = 2;
-        static final int STYLE = 0;
+        // Go facultyStyleNormal=1（0 会让修炼面板停在 XML 默认态，2026-10-31 修正）
+        static final int STYLE = 1;
         static final String NAME = "ng_wd_001";
         static final int TOTAL = 273200;
         static final int FILL_SPEED = 200;

@@ -198,19 +198,21 @@ public final class BootstrapPackets {
 
     public record NeiGongBook(String configId, int staticData, int itemType, int level,
                               int maxLevel, long total, long power, long maxPower,
-                              String buffId, int buffStaticData, int buffLevel) {
+                              String buffId, int buffStaticData, int buffLevel, long fill,
+                              String school, int wuXing,
+                              int strAdd, int dexAdd, int ingAdd, int spiAdd, int staAdd) {
     }
 
     public static final List<NeiGongBook> STARTER_BOOKS = List.of(
             new NeiGongBook("ng_wd_001", 5, 1002, 30, 36, 273200, 4550, 4550,
-                    "buf_ng_wd_001", 5954, 3),
+                    "buf_ng_wd_001", 5954, 3, 0, "ng_wd", 5, 45, 13, 46, 13, 31),
             new NeiGongBook("ng_yh_001", 114, 1002, 30, 71, 579600, 8180, 8180,
-                    "buf_ng_yh_001", 13073, 3),
+                    "buf_ng_yh_001", 13073, 3, 0, "ng_yh", 0, 55, 70, 97, 67, 57),
             new NeiGongBook("ng_th_001", 113, 1002, 30, 71, 579600, 8180, 8180,
-                    "buf_ng_th_001", 13434, 3),
-            new NeiGongBook("ng_wd_002", 6, 1002, 1, 36, 700, 120, 120, "", 0, 0),
-            new NeiGongBook("ng_jh_001", 1, 1002, 1, 36, 700, 120, 120, "", 0, 0),
-            new NeiGongBook("ng_em_001", 8, 1002, 1, 36, 700, 120, 120, "", 0, 0));
+                    "buf_ng_th_001", 13434, 3, 0, "ng_th", 0, 66, 52, 103, 68, 56),
+            new NeiGongBook("ng_wd_002", 6, 1002, 1, 36, 700, 120, 120, "", 0, 0, 0, "ng_wd", 5, 0, 0, 0, 0, 0),
+            new NeiGongBook("ng_jh_001", 1, 1002, 1, 36, 700, 120, 120, "", 0, 0, 0, "ng_jh", 0, 0, 0, 0, 0, 0),
+            new NeiGongBook("ng_em_001", 8, 1002, 1, 36, 700, 120, 120, "", 0, 0, 0, "ng_em", 0, 0, 0, 0, 0, 0));
 
     /** View 43 容器 + 6 本初始内功（9 属性布局）。 */
     public static List<byte[]> neigongViewFrames() {
@@ -236,16 +238,25 @@ public final class BootstrapPackets {
                 continue;
             }
             slot++;
-            PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 9)
+            // 16 属性布局（对齐新参考 exe bookFrame 确名子集）：+School 门派代码串、
+            // +五维 Add（StrAdd/DexAdd/IngAdd/SpiAdd/StaAdd）、+WuXing 五行（阴阳太极伴生 int）
+            PacketWriter w = SkillPackets.viewAddHeader(SkillPackets.VIEW_NEIGONG, slot, 16)
                     .u16(SkillPackets.V_CONFIG_ID).string(book.configId())
                     .u16(PropertyId.STATIC_DATA).i32(book.staticData())
                     .u16(PropertyId.ITEM_TYPE).i32(book.itemType())
+                    .u16(PropertyId.SCHOOL).string(book.school())
                     .u16(PropertyId.LEVEL).u8(book.level())
                     .u16(PropertyId.MAX_LEVEL).i32(book.maxLevel())
-                    .u16(PropertyId.CUR_FILL_VALUE).i32(0)
+                    .u16(PropertyId.STR_ADD).i32(book.strAdd())
+                    .u16(PropertyId.DEX_ADD).i32(book.dexAdd())
+                    .u16(PropertyId.ING_ADD).i32(book.ingAdd())
+                    .u16(PropertyId.SPI_ADD).i32(book.spiAdd())
+                    .u16(PropertyId.STA_ADD).i32(book.staAdd())
+                    .u16(PropertyId.CUR_FILL_VALUE).i32((int) book.fill())
                     .u16(PropertyId.TOTAL_FILL_VALUE).i32((int) book.total())
                     .u16(PropertyId.POWER_VALUE).i32((int) book.power())
-                    .u16(PropertyId.MAX_POWER_VALUE).i32((int) book.maxPower());
+                    .u16(PropertyId.MAX_POWER_VALUE).i32((int) book.maxPower())
+                    .u16(PropertyId.WU_XING).i32(book.wuXing());
             frames.add(w.toByteArray());
         }
         return frames;

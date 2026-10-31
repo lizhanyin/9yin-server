@@ -63,6 +63,8 @@ public final class RoleFacultyStore {
             return null;
         }
         enrichFromCatalog(state);
+        // static_data 补齐后按当前等级回填 varprop 特效（五维/上限 Add + 运功 Buff）
+        state.refreshEffects(com.nineyin.game.NeigongEffectCatalog.instance());
         log.info("role faculty from db role={} books={} cur={} faculty={} state={} style={} fillSpeed={}",
                 roleId, state.books.size(), state.curNeigong, state.faculty,
                 state.facultyState, state.facultyStyle, state.fillSpeed);

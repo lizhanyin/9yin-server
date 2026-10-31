@@ -288,6 +288,11 @@ public final class SceneFlow {
         this.teamManager = teamManager;
     }
 
+    /** 队伍管理器（GM team 命令复用）。 */
+    public TeamManager teamManager() {
+        return teamManager;
+    }
+
     /** 控制效果目录（buff_static.StateType；构造器装载，失败容缺为空目录）。 */
     private com.nineyin.rule.ControlCatalog controlCatalog = new com.nineyin.rule.ControlCatalog();
 
@@ -300,6 +305,11 @@ public final class SceneFlow {
     /** 全服会话来源注入（NineyinServer 装配；缺省 null = 单会话模式互播关闭）。 */
     public void setSessionsSource(Supplier<Iterable<FxSession>> source) {
         this.sessionsSource = source;
+    }
+
+    /** 在线游戏会话快照（GM team 等跨玩家命令按名寻人用；未接线返回空）。 */
+    public Iterable<FxSession> sessions() {
+        return sessionsSource != null ? sessionsSource.get() : java.util.List.of();
     }
 
     /** 判断会话是否已就绪可收互播帧（同 world、NPC 已下发、非重进加载期）。 */

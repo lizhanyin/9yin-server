@@ -147,6 +147,27 @@ class GmActionsMenu2Test {
         assertNotNull(run("idle_stance_set"));
     }
 
+    @Test
+    void combatDummySpawnAndClear() {
+        assertTrue(run("spawn_combat_dummy").startsWith("已生成战斗假人"));
+        assertTrue(run("spawn_combat_dummy", "dummyHp", 30000).contains("血量=30000"));
+        assertEquals("已清除 2 只战斗假人", run("clear_combat_dummies"));
+        assertEquals("已清除 0 只战斗假人", run("clear_combat_dummies"));
+    }
+
+    @Test
+    void fightwordAndPopupProbesSendFrames() {
+        assertEquals("已发送伤害飘字测试 (ID24, 24680)", run("fightword_probe"));
+        assertNull(run("popup_gm_panel"));
+        assertEquals(2, framesSince(0));
+    }
+
+    @Test
+    void teamCommandRequiresWiring() {
+        // 本测试 GmActions 未接 TeamManager（构造传 null）→ 明确报错
+        assertTrue(run("team", "teamArgs", "create").contains("队伍系统未接线"));
+    }
+
     /** powerTitle 为私有静态；测试侧镜像一份分期边界（menu2 titleByPowerLevel）。 */
     static final class GmActionsPowerTitles {
         static String titleFor(int stage) {

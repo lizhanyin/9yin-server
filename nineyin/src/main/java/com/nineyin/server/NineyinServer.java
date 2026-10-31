@@ -187,7 +187,7 @@ public final class NineyinServer implements SummerApp {
         selectFlow.setSceneFlow(sceneFlow);   // PvP：选中远端玩家（坐标回填 + 真实血条）
         selectFlow.register(router);
         gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow,
-                sceneFlow.ninjiuzhi(), worldBossManager, titleStore);
+                sceneFlow.ninjiuzhi(), worldBossManager, titleStore, sceneFlow.teamManager());
     }
 
     public FxOpcodeRouter router() {

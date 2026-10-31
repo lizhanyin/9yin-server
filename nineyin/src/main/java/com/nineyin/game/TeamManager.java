@@ -98,6 +98,92 @@ public final class TeamManager {
         return null;
     }
 
+    /** GM invite：目标直接入我的队（已在别队先退；幂等）。返回 null=成功。 */
+    public synchronized String invite(long inviterRoleId, long targetRoleId, String targetName) {
+        Team t = teamOf(inviterRoleId);
+        if (t == null) {
+            return "你当前不在队伍中，先 create 建队";
+        }
+        Team other = teamOf(targetRoleId);
+        if (other == t) {
+            return null;
+        }
+        if (other != null) {
+            leave(targetRoleId);
+        }
+        t.members.add(new Member(targetRoleId, targetName));
+        save("invite");
+        return null;
+    }
+
+    /** GM join：我加入队长名下的队伍（已在别队先退）。返回 null=成功。 */
+    public synchronized String join(long captainRoleId, long roleId, String name) {
+        Team t = teamOf(captainRoleId);
+        if (t == null) {
+            return "找不到队长（对方没有队伍）";
+        }
+        Team mine = teamOf(roleId);
+        if (mine == t) {
+            return null;
+        }
+        if (mine != null) {
+            leave(roleId);
+        }
+        t.members.add(new Member(roleId, name));
+        save("join");
+        return null;
+    }
+
+    /** GM kick：队长移出成员（不能踢自己，踢自己请用 leave）。返回 null=成功。 */
+    public synchronized String kick(long captainRoleId, long targetRoleId, String targetName) {
+        Team t = teamOf(captainRoleId);
+        if (t == null || t.captainRoleId != captainRoleId) {
+            return "只有队长可以移出成员";
+        }
+        if (targetRoleId == captainRoleId) {
+            return "不能移出自己，请用 leave";
+        }
+        boolean removed = t.members.removeIf(m -> m.roleId() == targetRoleId);
+        if (!removed) {
+            return "队伍中没有 " + targetName;
+        }
+        save("kick");
+        return null;
+    }
+
+    /** GM captain：移交队长。返回 null=成功。 */
+    public synchronized String changeCaptain(long captainRoleId, long targetRoleId, String targetName) {
+        Team t = teamOf(captainRoleId);
+        if (t == null || t.captainRoleId != captainRoleId) {
+            return "只有队长可以移交队长";
+        }
+        boolean inTeam = t.members.stream().anyMatch(m -> m.roleId() == targetRoleId);
+        if (!inTeam) {
+            return "队伍中没有 " + targetName;
+        }
+        t.captainRoleId = targetRoleId;
+        t.captainName = targetName;
+        save("captain");
+        return null;
+    }
+
+    /** 队伍描述（menu2「队伍 %d：队长=%d 成员」对齐）。不在队返回 null。 */
+    public synchronized String describe(long roleId) {
+        Team t = teamOf(roleId);
+        if (t == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder("队伍 ").append(t.id).append("：队长=")
+                .append(t.captainName).append(" 成员 ");
+        for (int i = 0; i < t.members.size(); i++) {
+            if (i > 0) {
+                sb.append("、");
+            }
+            sb.append(t.members.get(i).name());
+        }
+        return sb.toString();
+    }
+
     public synchronized int count() {
         return teams.size();
     }

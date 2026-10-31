@@ -152,6 +152,8 @@ public final class GmActions {
     private final WorldBossManager worldBoss;
     /** 称号库（game_titles/role_titles；null=JSON 后端，称号动作回退会话内存）。 */
     private final com.nineyin.db.TitleStore titleStore;
+    /** 队伍（GM team 命令；null=未接线）。 */
+    private final TeamManager teamManager;
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher) {
         this(sceneManager, roleStore, switcher, null, null);
@@ -175,6 +177,12 @@ public final class GmActions {
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
                      SceneFlow sceneFlow, NinJiuZhi ninjiuzhi, WorldBossManager worldBoss,
                      com.nineyin.db.TitleStore titleStore) {
+        this(sceneManager, roleStore, switcher, sceneFlow, ninjiuzhi, worldBoss, titleStore, null);
+    }
+
+    public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
+                     SceneFlow sceneFlow, NinJiuZhi ninjiuzhi, WorldBossManager worldBoss,
+                     com.nineyin.db.TitleStore titleStore, TeamManager teamManager) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.switcher = switcher;
@@ -182,6 +190,7 @@ public final class GmActions {
         this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
         this.worldBoss = worldBoss;
         this.titleStore = titleStore;
+        this.teamManager = teamManager;
     }
 
     /** 执行一条命令；返回错误消息（null = 成功）。未知动作返回提示。 */
@@ -712,6 +721,81 @@ public final class GmActions {
                 fx.send(CustomPackets.intMessage(msgId, subType));
                 return "已发送 S2C 自定义消息 ID=" + msgId + " sub=" + subType;
             }
+            // ---------- menu2 面板动作第二批 A（战斗假人/队伍/快捷栏/探针，2026-10-31） ----------
+            case "spawn_combat_dummy" -> {  // 战斗假人：monster NPC（世界 BOSS 战斗链路），玩家面前 2.5m
+                if (st == null || st.world == null) {
+                    return "生成战斗假人失败：角色尚未进入场景";
+                }
+                String dummyName = cmd.strParam("dummyName");
+                if (dummyName.isBlank()) {
+                    dummyName = "战斗假人";
+                }
+                int dummyHp = cmd.intParam("dummyHp", 50000);
+                if (dummyHp <= 0) {
+                    dummyHp = 50000;
+                }
+                float dx = session.x + (float) (Math.sin(session.orient) * 2.5);
+                float dz = session.z + (float) (Math.cos(session.orient) * 2.5);
+                NpcInstance dummy = TwilightVerify.spawn(sceneManager, st.world,
+                        COMBAT_DUMMY_CONFIG, new float[]{dx, session.y, dz, session.orient},
+                        "gm_combat_dummy");
+                dummy.monster = true;
+                dummy.maxHp = dummyHp;
+                dummy.hp = dummyHp;
+                TwilightVerify.sendNpc(fx, st, sceneManager, dummy);
+                log.info("GM combat dummy config={} oid={} hp={} name={} damage={} skills={}",
+                        COMBAT_DUMMY_CONFIG, dummy.objectId, dummyHp, dummyName,
+                        cmd.intParam("dummyDamage", 0), cmd.strParam("dummySkills"));
+                return "已生成战斗假人（对象=" + dummy.objectId + " " + dummyName
+                        + " 血量=" + dummyHp + "）";
+            }
+            case "clear_combat_dummies" -> {  // 清除本会话生成的战斗假人
+                int n = 0;
+                if (st != null && st.world != null) {
+                    synchronized (st.world) {
+                        n = (int) st.world.npcs.stream()
+                                .filter(x -> "gm_combat_dummy".equals(x.tag)).count();
+                    }
+                }
+                TwilightVerify.despawnTagged(fx, st, "gm_combat_dummy");
+                return "已清除 " + n + " 只战斗假人";
+            }
+            case "team" -> {  // 队伍：teamArgs = "create|invite 名|join 队长名|leave|kick 名|captain 名|list"
+                if (teamManager == null) {
+                    return "队伍系统未接线";
+                }
+                return teamCommand(fx, session, cmd.strParam("teamArgs"));
+            }
+            case "save_shortcuts" -> {  // 快捷栏快照 → data/快捷栏位按键-{roleId}.json
+                var rows = actor.shortcuts();
+                try {
+                    java.nio.file.Path dir = java.nio.file.Path.of("data");
+                    java.nio.file.Files.createDirectories(dir);
+                    String file = "快捷栏位按键-" + (session.roleId > 0 ? session.roleId : session.roleName) + ".json";
+                    com.alibaba.fastjson.JSONArray arr = new com.alibaba.fastjson.JSONArray();
+                    for (var r : rows) {
+                        com.alibaba.fastjson.JSONObject o = new com.alibaba.fastjson.JSONObject(true);
+                        o.put("index", r.index());
+                        o.put("kind", r.kind());
+                        o.put("id", r.id());
+                        arr.add(o);
+                    }
+                    java.nio.file.Files.writeString(dir.resolve(file),
+                            arr.toJSONString(true), java.nio.charset.StandardCharsets.UTF_8);
+                    return "已保存 " + rows.size() + " 个快捷栏位到 data/" + file;
+                } catch (java.io.IOException e) {
+                    log.error("save shortcuts failed", e);
+                    return "保存快捷栏失败：" + e.getMessage();
+                }
+            }
+            case "fightword_probe" -> {  // 伤害飘字测试（menu2 writeFightFloat：custom 24 号）
+                fx.send(CustomPackets.intMessage(24, 1, 17, 1, 24680));
+                return "已发送伤害飘字测试 (ID24, 24680)";
+            }
+            case "popup_gm_panel" -> {  // 请求客户端弹出 GM 面板（menu2 writeGMReply：custom 377 "__gm_popup__"）
+                fx.send(CustomPackets.intMessage(377, 99, 1, "__gm_popup__"));
+                return null;
+            }
             default -> {
                 return "动作未实现: " + cmd.action();
             }
@@ -782,6 +866,9 @@ public final class GmActions {
     /** PK 模式名（对齐 menu2：和平/江湖/阵营/戕屠）。 */
     private static final String[] PK_MODE_NAMES = {"和平", "江湖", "阵营", "戕屠"};
 
+    /** 战斗假人 NPC 模板（monsternpc 表「机关木人」npc\monster026，人形可战斗）。 */
+    private static final String COMBAT_DUMMY_CONFIG = "monm080701";
+
     /** 实力等级→称号 config（对齐 menu2 titleByPowerLevel：≤5→title001 … >150→title027）。 */
     private static String powerTitle(int stage) {
         if (stage <= 5) {
@@ -797,6 +884,76 @@ public final class GmActions {
             return "title026";
         }
         return "title027";
+    }
+
+    /** team 子命令（对齐 menu2 gmTeamCommand 语义）：create|invite 名|join 队长名|leave|kick 名|captain 名|list。 */
+    private String teamCommand(FxSession fx, LoginSession session, String teamArgs) {
+        if (teamArgs == null || teamArgs.isBlank()) {
+            return "队伍命令：create | invite 玩家名 | join 队长名 | leave | kick 玩家名 | captain 玩家名 | list";
+        }
+        String[] parts = teamArgs.trim().split("\\s+", 2);
+        String sub = parts[0].toLowerCase();
+        String nameArg = parts.length > 1 ? parts[1].trim() : "";
+        long me = session.roleId;
+        String myName = session.roleName;
+        switch (sub) {
+            case "create" -> {
+                TeamManager.Team t = teamManager.create(me, myName);
+                return "你创建了队伍（" + t.id + "）";
+            }
+            case "list" -> {
+                String d = teamManager.describe(me);
+                return d != null ? d : "你当前不在队伍中";
+            }
+            case "leave" -> {
+                return teamManager.leave(me) ? "你离开了队伍" : "你当前不在队伍中";
+            }
+            case "invite", "kick", "captain", "join" -> {
+                if (nameArg.isEmpty()) {
+                    return sub + " 需要玩家名字";
+                }
+                LoginSession target = findOnlinePlayer(nameArg);
+                if (target == null) {
+                    return "找不到在线玩家 " + nameArg;
+                }
+                return switch (sub) {
+                    case "invite" -> {
+                        String err = teamManager.invite(me, target.roleId, target.roleName);
+                        yield err != null ? err : "已邀请 " + target.roleName
+                                + "（对方已直接入队）";
+                    }
+                    case "join" -> {
+                        String err = teamManager.join(target.roleId, me, myName);
+                        yield err != null ? err : "你加入了队伍（" + teamManager.describe(me) + "）";
+                    }
+                    case "kick" -> {
+                        String err = teamManager.kick(me, target.roleId, target.roleName);
+                        yield err != null ? err : "已将 " + target.roleName + " 移出队伍";
+                    }
+                    default -> {
+                        String err = teamManager.changeCaptain(me, target.roleId, target.roleName);
+                        yield err != null ? err : "已将队长移交给 " + target.roleName;
+                    }
+                };
+            }
+            default -> {
+                return "未知子命令 " + sub + "（create/invite/join/leave/kick/captain/list）";
+            }
+        }
+    }
+
+    /** 按角色名找在线会话（team 等跨玩家命令）。 */
+    private LoginSession findOnlinePlayer(String roleName) {
+        if (sceneFlow == null) {
+            return null;
+        }
+        for (com.nineyin.server.FxSession other : sceneFlow.sessions()) {
+            LoginSession peer = other.channel().attr(com.nineyin.login.LoginFlow.SESSION).get();
+            if (peer != null && peer.roleName.equals(roleName)) {
+                return peer;
+            }
+        }
+        return null;
     }
 
     private String sendState(FxSession fx, String action) {

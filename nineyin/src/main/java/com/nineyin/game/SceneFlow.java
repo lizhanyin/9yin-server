@@ -102,6 +102,8 @@ public final class SceneFlow {
     private com.nineyin.shop.ShopRepository shopRepository;
     /** 技能脚本宿主（on_cast/on_hit 运行期钩子 + 伤害公式分发；null = 全走 Java 默认管线）。 */
     private com.nineyin.script.ScriptHost scriptHost;
+    /** 内功特效运行时（scripts/neigong/*.lua 钩子触发与指令执行；null = 内功特效关闭）。 */
+    private NeigongRuntime neigong;
     private com.nineyin.script.CombatFormulaHost formulaHost;
 
     /** 每会话场景同步状态。 */
@@ -166,6 +168,9 @@ public final class SceneFlow {
         if (ai != null) {
             // NPC 技能命中玩家后的控制落账（§3.25；免疫位在 applyControlToPlayer 内消费）
             ai.setControlSink(this::applySkillControlToPlayer);
+            if (neigong != null) {
+                ai.setNeigongRuntime(neigong);
+            }
         }
         this.inventory = com.nineyin.db.RoleInventoryStore.from(roleStore);
         this.facultyStore = com.nineyin.db.RoleFacultyStore.from(roleStore);
@@ -204,10 +209,14 @@ public final class SceneFlow {
     }
 
     /** 注入商店表（NineyinServer 装配；启用 msgId 70 按消息内 shopId 解析）。 */
-    /** 注入脚本宿主（NineyinServer wire）：on_cast/on_hit 钩子 + 伤害公式分发。 */
+    /** 注入脚本宿主（NineyinServer wire）：on_cast/on_hit 钩子 + 伤害公式分发 + 内功特效。 */
     public void setScriptHost(com.nineyin.script.ScriptHost host) {
         this.scriptHost = host;
         this.formulaHost = new com.nineyin.script.CombatFormulaHost(host);
+        this.neigong = new NeigongRuntime(host);
+        if (ai != null) {
+            ai.setNeigongRuntime(neigong);
+        }
     }
 
     /** GM reload_scripts：重建脚本 state + 清技能定义缓存（进行中波次继续旧 Def）。 */
@@ -3207,6 +3216,11 @@ public final class SceneFlow {
             return new HitResult(0, false, 0);
         }
         int damage = hit.damage();
+        // 内功 on_attack 钩子：附加伤害并入本次扣血（同一血量批/死亡路径），回血/护盾就地结算
+        if (neigong != null) {
+            damage += neigong.onAttackLanded(fx, session.actor, npc, damage,
+                    hit.crit(), wave, waves, now);
+        }
         npc.hp = Math.max(0, npc.hp - damage);
         log.info("skill {} -> npc {} damage={} crit={} reductionPct={}",
                 def.id(), npc.configId, damage, hit.crit(),
@@ -3411,6 +3425,10 @@ public final class SceneFlow {
         }
         long now = System.currentTimeMillis();
         boolean changed = session.actor.tick(now);
+        // 内功特效：被动表重算 + 周期触发钩子（heal 变化并入 vitalUpdate 节流）
+        if (neigong != null && neigong.onTick(fx, session.actor, now)) {
+            changed = true;
+        }
         // Buff 到期剔除：补发 event-169 remove + 槽位清空帧（与 stageSkillBuffs 的 add 配对，
         // 修复参考服「skip add 仍发 remove」造成的客户端 buff 栏漂移）
         if (SEND_SKILL_BUFF_EVENTS) {

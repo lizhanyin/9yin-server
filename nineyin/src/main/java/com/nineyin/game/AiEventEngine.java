@@ -130,6 +130,8 @@ public final class AiEventEngine {
     private volatile ControlSink controlSink;
     /** 伤害公式分发（Lua formula.lua 优先，Java 回退）；null = 纯 Java 公式。 */
     private volatile com.nineyin.script.CombatFormulaHost formulas;
+    /** 内功特效运行时（玩家受击/招架钩子）；null = 内功特效关闭。 */
+    private volatile NeigongRuntime neigong;
 
     /** 战斗掷骰（未命中/暴击）；测试可注入固定种子保证断言确定。 */
     private Random rng = ThreadLocalRandom.current();
@@ -155,6 +157,11 @@ public final class AiEventEngine {
     /** 注入脚本公式宿主（NineyinServer wire；NPC 出招伤害同走 Lua formula.lua）。 */
     public void setScriptHost(com.nineyin.script.ScriptHost host) {
         this.formulas = new com.nineyin.script.CombatFormulaHost(host);
+    }
+
+    /** 注入内功特效运行时（SceneFlow wire；受击/招架钩子在 castSkill 落账前生效）。 */
+    public void setNeigongRuntime(NeigongRuntime neigong) {
+        this.neigong = neigong;
     }
 
     /** 测试注入固定随机源（战斗掷骰走它），保证血量断言确定。 */
@@ -531,16 +538,24 @@ public final class AiEventEngine {
             log.info("npc {} cast {} -> {} MISS", caster.configId, skillId, login.roleName);
             return;
         }
+        int parryEnduranceBefore = actor.parryEndurance;
         if (parrying) {
             boolean broke = actor.drainParry(atk.attack());
             log.info("player {} parries {} (skill {}) -> damage={} endurance={}{}",
                     login.roleName, caster.configId, skillId, hit.damage(), actor.parryEndurance,
                     broke ? " PARRY BROKEN" : "");
         }
-        boolean justDied = actor.applyDamage(hit.damage());
+        // 内功特效：招架平减/受击免伤/护盾/反弹在血量落账前生效（heal 已并入本次 vitalUpdate）
+        long now = System.currentTimeMillis();
+        int incoming = hit.damage();
+        if (neigong != null) {
+            incoming = neigong.adjustIncoming(target, actor, caster, incoming,
+                    hit.crit(), hit.parried(), parrying, parryEnduranceBefore, now);
+        }
+        boolean justDied = actor.applyDamage(incoming);
         target.send(actor.vitalUpdate());
         log.info("npc {} cast {} -> {} damage={} crit={} parried={} hp={}", caster.configId, skillId,
-                login.roleName, hit.damage(), hit.crit(), hit.parried(), actor.hp);
+                login.roleName, incoming, hit.crit(), hit.parried(), actor.hp);
         // 技能带控制时对玩家落账（招架挡下不落控制；免疫位在 SceneFlow 侧消费）
         if (!hit.parried() && skillId != null && controlSink != null) {
             controlSink.applyBySkill(actor, skillId, System.currentTimeMillis());

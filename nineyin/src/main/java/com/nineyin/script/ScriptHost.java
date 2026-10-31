@@ -46,6 +46,8 @@ public final class ScriptHost implements AutoCloseable {
     private Lua state;
     /** 技能模块（skillId → module table 的 calc/on_cast/on_hit 函数容器）。 */
     private final Map<String, LuaValue> skillModules = new LinkedHashMap<>();
+    /** 内功模块（buffId → module table 的 on_attack/on_victim/on_parry/on_tick/passive 函数容器）。 */
+    private final Map<String, LuaValue> neigongModules = new LinkedHashMap<>();
     /** 伤害公式模块的 calc 函数。 */
     private LuaValue formulaCalc;
     private Path scriptsRoot;
@@ -65,7 +67,8 @@ public final class ScriptHost implements AutoCloseable {
         for (Path dir = cwd; dir != null; dir = dir.getParent()) {
             Path candidate = dir.resolve("scripts");
             if (Files.isDirectory(candidate.resolve("skill"))
-                    || Files.isDirectory(candidate.resolve("combat"))) {
+                    || Files.isDirectory(candidate.resolve("combat"))
+                    || Files.isDirectory(candidate.resolve("neigong"))) {
                 return candidate;
             }
         }
@@ -77,6 +80,7 @@ public final class ScriptHost implements AutoCloseable {
         scriptsRoot = root;
         closeState();
         skillModules.clear();
+        neigongModules.clear();
         formulaCalc = null;
         lastLoadCount = 0;
         available = false;
@@ -118,10 +122,20 @@ public final class ScriptHost implements AutoCloseable {
                 log.error("script host: list {} failed: {}", skillRoot, e.toString());
             }
         }
+        Path neigongRoot = root.resolve("neigong");
+        if (Files.isDirectory(neigongRoot)) {
+            try (Stream<Path> files = Files.list(neigongRoot)) {
+                files.filter(p -> p.getFileName().toString().endsWith(".lua"))
+                        .sorted()
+                        .forEach(this::loadNeigongModule);
+            } catch (IOException e) {
+                log.error("script host: list {} failed: {}", neigongRoot, e.toString());
+            }
+        }
         available = state != null;
-        lastLoadCount = skillModules.size() + (formulaCalc != null ? 1 : 0);
-        log.info("script host loaded: root={} skills={} formula={}",
-                root, skillModules.size(), formulaCalc != null);
+        lastLoadCount = skillModules.size() + neigongModules.size() + (formulaCalc != null ? 1 : 0);
+        log.info("script host loaded: root={} skills={} neigong={} formula={}",
+                root, skillModules.size(), neigongModules.size(), formulaCalc != null);
     }
 
     /** 热重载（重建 Lua state + 重读全部脚本）。 */
@@ -132,6 +146,11 @@ public final class ScriptHost implements AutoCloseable {
     /** 技能脚本模块（无该技能脚本返回 null）。 */
     public synchronized LuaValue skillModule(String skillId) {
         return available ? skillModules.get(skillId) : null;
+    }
+
+    /** 内功脚本模块（无该内功脚本返回 null；键 = buffId，如 buf_ng_wd_001）。 */
+    public synchronized LuaValue neigongModule(String buffId) {
+        return available ? neigongModules.get(buffId) : null;
     }
 
     /** 伤害公式 calc 函数（无 formula.lua 返回 null）。 */
@@ -255,6 +274,7 @@ public final class ScriptHost implements AutoCloseable {
     public synchronized void close() {
         closeState();
         skillModules.clear();
+        neigongModules.clear();
         formulaCalc = null;
         available = false;
     }
@@ -295,6 +315,21 @@ public final class ScriptHost implements AutoCloseable {
             return;
         }
         skillModules.put(skillId, module);
+    }
+
+    /** 内功脚本装载（约定同技能脚本：local M = {} … return M；文件名 = buffId）。 */
+    private void loadNeigongModule(Path file) {
+        String name = file.getFileName().toString();
+        String buffId = name.substring(0, name.length() - ".lua".length());
+        LuaValue module = evalModule(file);
+        if (module == null) {
+            return;
+        }
+        if (module.type() != Lua.LuaType.TABLE) {
+            log.error("neigong script {} must return a module table; skipped", buffId);
+            return;
+        }
+        neigongModules.put(buffId, module);
     }
 
     /** eval 整个文件（模块约定：local M = {} … return M）；失败记 ERROR 并返回 null。 */

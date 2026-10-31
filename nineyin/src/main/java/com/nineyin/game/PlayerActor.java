@@ -112,6 +112,15 @@ public final class PlayerActor {
     public int parryEnduranceRecovery = 5;// 招架耐力每秒被动恢复
     public int blockRating = 50;          // 格挡值（Wiki：基础 50）
     public int internalConversion = 100;  // 化劲（近似基础 100 → 招架减半）
+
+    // ---------- 内功特效（scripts/neigong/*.lua 钩子的运行期载体） ----------
+    /** 运行内功脚本状态（buffId → Lua state table 快照；叠层/计数/下次触发时刻）。 */
+    public final Map<String, Map<String, Object>> neigongState = new LinkedHashMap<>();
+    /** 内功护盾池（多来源叠加为单池；受击时先于血量消耗）。 */
+    public int neigongAbsorb;
+    public long neigongAbsorbExpiresAt;
+    /** 内功常驻被动属性（NeigongRuntime 依当前运行内功重算；null = 无）。 */
+    public volatile com.nineyin.script.NeigongScriptBridge.PassiveStats neigongPassive;
     public int qinggongPoint = 150;
     public int maxQinggongPoint = 150;
     public int maxQinggongPointAdd;
@@ -343,24 +352,37 @@ public final class PlayerActor {
     /** 瘀血上限：最大血量的 30%，超出部分直接扣血量。 */
     static final double BRUISE_CAP_RATIO = 0.30;
 
-    /** 当前战斗属性档案（喂给 CombatFormulas）；装备词缀加成在此叠加（基础字段不动）。 */
+    /** 当前战斗属性档案（喂给 CombatFormulas）；装备词缀与内功被动在此叠加（基础字段不动）。 */
     public CombatStats combatStats() {
-        return new CombatStats(attack + equipPhyVa + equipMeleePowerAdd,
-                defense + equipPhyDef, pierce,
-                critDamageBonus, critDamageReduction, critRateBonus, critRateReduction,
-                accuracy + equipDexAdd + equipPhyHit, evasion + equipDodge,
+        var ng = neigongPassive;
+        int ngAttack = ng == null ? 0 : ng.attackAdd();
+        int ngDefense = ng == null ? 0 : ng.defenseAdd();
+        int ngPierce = ng == null ? 0 : ng.pierceAdd();
+        int ngAccuracy = ng == null ? 0 : ng.accuracyAdd();
+        int ngEvasion = ng == null ? 0 : ng.evasionAdd();
+        int ngBlock = ng == null ? 0 : ng.blockRatingAdd();
+        int ngReduction = ng == null ? 0 : ng.damageReductionAdd();
+        float ngCritRate = ng == null ? 0f : ng.critRateBonus();
+        float ngCritDamage = ng == null ? 0f : ng.critDamageBonus();
+        return new CombatStats(attack + equipPhyVa + equipMeleePowerAdd + ngAttack,
+                defense + equipPhyDef + ngDefense, pierce + ngPierce,
+                critDamageBonus + ngCritDamage, critDamageReduction,
+                critRateBonus + ngCritRate, critRateReduction,
+                accuracy + equipDexAdd + equipPhyHit + ngAccuracy, evasion + equipDodge + ngEvasion,
                 hitRateBonus, dodgeRateBonus,
-                damageReduction, blockRating, internalConversion,
+                damageReduction + ngReduction, blockRating + ngBlock, internalConversion,
                 critValue + equipStrAdd, resilience);
     }
 
-    /** 有效上限（基础 + 装备词缀；夹下限 1 防词缀负值归零）。 */
+    /** 有效上限（基础 + 装备词缀 + 内功被动；夹下限 1 防词缀负值归零）。 */
     public int maxHp() {
-        return Math.max(1, baseMaxHp + equipMaxHpAdd);
+        int ng = neigongPassive == null ? 0 : neigongPassive.maxHpAdd();
+        return Math.max(1, baseMaxHp + equipMaxHpAdd + ng);
     }
 
     public int maxMp() {
-        return Math.max(1, baseMaxMp + equipMaxMpAdd);
+        int ng = neigongPassive == null ? 0 : neigongPassive.maxMpAdd();
+        return Math.max(1, baseMaxMp + equipMaxMpAdd + ng);
     }
 
     /**
@@ -480,6 +502,81 @@ public final class PlayerActor {
         }
         parryEndurance = Math.max(0, parryEndurance - cost);
         return parryEndurance == 0;
+    }
+
+    // ---------- 内功特效运行载体 ----------
+
+    /** 授予内功护盾（叠加入单池；到期时间取更晚者）。 */
+    public void grantAbsorb(int amount, long lifeMs, long now) {
+        if (amount <= 0 || lifeMs <= 0) {
+            return;
+        }
+        long expires = now + lifeMs;
+        if (neigongAbsorb > 0 && neigongAbsorbExpiresAt > now) {
+            neigongAbsorb += amount;
+            neigongAbsorbExpiresAt = Math.max(neigongAbsorbExpiresAt, expires);
+        } else {
+            neigongAbsorb = amount;
+            neigongAbsorbExpiresAt = expires;
+        }
+    }
+
+    /** 当前可用护盾量（过期即清零）。 */
+    public int absorbRemaining(long now) {
+        if (neigongAbsorb <= 0 || neigongAbsorbExpiresAt <= now) {
+            neigongAbsorb = 0;
+            return 0;
+        }
+        return neigongAbsorb;
+    }
+
+    /** 护盾先行消耗：返回穿盾后仍需进血量层的伤害。 */
+    public int consumeAbsorb(int damage, long now) {
+        if (damage <= 0) {
+            return 0;
+        }
+        int pool = absorbRemaining(now);
+        if (pool <= 0) {
+            return damage;
+        }
+        int used = Math.min(pool, damage);
+        neigongAbsorb = pool - used;
+        return damage - used;
+    }
+
+    /** 回血（夹上限；返回实际回复量）。 */
+    public int restoreHp(int amount) {
+        if (amount <= 0 || hp <= 0) {
+            return 0;
+        }
+        int before = hp;
+        hp = Math.min(maxHp(), hp + amount);
+        return hp - before;
+    }
+
+    /** 回内力（夹上限；返回实际回复量）。 */
+    public int restoreMp(int amount) {
+        if (amount <= 0) {
+            return 0;
+        }
+        int before = mp;
+        mp = Math.min(maxMp(), mp + amount);
+        return mp - before;
+    }
+
+    /** 内功脚本状态快照（无则空表；返回副本，脚本侧改写不影响存量）。 */
+    public Map<String, Object> neigongStateOf(String buffId) {
+        Map<String, Object> state = neigongState.get(buffId);
+        return state == null ? Map.of() : new LinkedHashMap<>(state);
+    }
+
+    /** 整体替换内功脚本状态（null = 清除）。 */
+    public void setNeigongState(String buffId, Map<String, Object> state) {
+        if (state == null || state.isEmpty()) {
+            neigongState.remove(buffId);
+        } else {
+            neigongState.put(buffId, new LinkedHashMap<>(state));
+        }
     }
 
     /** 伤害进瘀血/血量层：25% 进瘀血（战斗中每秒消退 10 点），其余扣血量；返回是否刚死亡。 */

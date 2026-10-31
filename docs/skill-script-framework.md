@@ -175,6 +175,7 @@ end
 
 - BOSS AI 决策钩子（`AiEventEngine` 出招选择/转阶段）**未接入**——`ScriptHost`
   的调用分发已预留扩展位，届时按 on_think/on_select_skill 钩子同模式接入。
-- 轻功（216/217 独立 opcode）、内功（FacultyState）不在本框架内。
+- 轻功（216/217 独立 opcode）不在本框架内；内功特效已于 2026-10-31 接入，
+  契约见 [neigong-script-framework.md](neigong-script-framework.md)。
 - 运行目录与仓库分离部署时（cwd 无 `scripts/`），把 `scripts/` 拷到运行根或设
   `NINEYIN_SERVER_ROOT`。

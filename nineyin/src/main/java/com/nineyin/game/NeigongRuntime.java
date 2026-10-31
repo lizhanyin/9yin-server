@@ -41,6 +41,18 @@ public final class NeigongRuntime {
         this.scriptHost = scriptHost;
     }
 
+    /** 九阴志阶段供应（SceneFlow wire ninjiuzhi.stage()；缺省阶段 1 = 高档特效未开）。 */
+    private volatile java.util.function.IntSupplier storyStage = () -> 1;
+
+    public void setStoryStage(java.util.function.IntSupplier stage) {
+        this.storyStage = stage == null ? () -> 1 : stage;
+    }
+
+    private int storyStage() {
+        int stage = storyStage.getAsInt();
+        return Math.max(1, stage);
+    }
+
     /** 运行内功解析（无脚本/无宿主返回 null）。 */
     private record Running(String buffId, LuaValue module) {
     }
@@ -101,7 +113,7 @@ public final class NeigongRuntime {
             return 0;
         }
         BookLevel book = bookLevelOf(actor);
-        Map<String, Object> ctx = NeigongScriptBridge.attackContext(book.level(), book.maxLevel(),
+        Map<String, Object> ctx = NeigongScriptBridge.attackContext(book.level(), book.maxLevel(), storyStage(),
                 wave, waves, damage, crit, now,
                 actor.hp, actor.maxHp(), actor.mp, actor.maxMp(), actor.combatStats().attack(),
                 npc.objectId, npc.configId, npc.hp, npc.maxHp,
@@ -139,7 +151,7 @@ public final class NeigongRuntime {
         if (parryActive) {
             LuaValue fn = hook(ng.module(), "on_parry");
             if (fn != null) {
-                Map<String, Object> ctx = NeigongScriptBridge.parryContext(book.level(), book.maxLevel(),
+                Map<String, Object> ctx = NeigongScriptBridge.parryContext(book.level(), book.maxLevel(), storyStage(),
                         adjusted, crit, now, parryEndurance,
                         actor.hp, actor.maxHp(), actor.mp, actor.maxMp(),
                         attacker.objectId, attacker.configId,
@@ -163,7 +175,7 @@ public final class NeigongRuntime {
         }
         LuaValue fn = hook(ng.module(), "on_victim");
         if (fn != null) {
-            Map<String, Object> ctx = NeigongScriptBridge.victimContext(book.level(), book.maxLevel(),
+            Map<String, Object> ctx = NeigongScriptBridge.victimContext(book.level(), book.maxLevel(), storyStage(),
                     adjusted, crit, parried, actor.controlled(now), now,
                     actor.hp, actor.maxHp(), actor.mp, actor.maxMp(),
                     attacker.objectId, attacker.configId,
@@ -215,7 +227,7 @@ public final class NeigongRuntime {
         Object lastAt = state.get(STATE_LAST_AT);
         long sinceLast = lastAt instanceof Number n ? now - n.longValue() : -1;
         BookLevel book = bookLevelOf(actor);
-        Map<String, Object> ctx = NeigongScriptBridge.tickContext(book.level(), book.maxLevel(),
+        Map<String, Object> ctx = NeigongScriptBridge.tickContext(book.level(), book.maxLevel(), storyStage(),
                 now, sinceLast, actor.hp, actor.maxHp(), actor.mp, actor.maxMp(),
                 state, ThreadLocalRandom.current().nextDouble());
         NeigongScriptBridge.Instructions instr =
@@ -236,7 +248,7 @@ public final class NeigongRuntime {
             key = "";
         } else {
             BookLevel book = bookLevelOf(actor);
-            key = ng.buffId() + "|" + book.level();
+            key = ng.buffId() + "|" + book.level() + "|" + storyStage();
         }
         String cached = passiveKeys.get(actor);
         if (cached != null && cached.equals(key)) {
@@ -256,7 +268,7 @@ public final class NeigongRuntime {
             return;
         }
         BookLevel book = bookLevelOf(actor);
-        Map<String, Object> ctx = NeigongScriptBridge.passiveContext(book.level(), book.maxLevel());
+        Map<String, Object> ctx = NeigongScriptBridge.passiveContext(book.level(), book.maxLevel(), storyStage());
         NeigongScriptBridge.PassiveStats stats =
                 NeigongScriptBridge.parsePassive(ng.buffId(), scriptHost.callMap(fn, ctx));
         actor.neigongPassive = stats;

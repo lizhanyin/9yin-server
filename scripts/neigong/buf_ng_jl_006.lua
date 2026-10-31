@@ -20,7 +20,9 @@ M.DRAIN_HITS = 3
 local function tier_of(ctx)
   local mt = M.meta.max_tier
   local bl, bm = ctx.book_level or 1, ctx.book_max_level or mt
-  return math.max(1, math.min(mt, math.ceil(bl * mt / bm)))
+  -- 九阴志档位门：高层特效档位随全服九阴志阶段开放（阶段1→最高3档，每阶段+1；可调）
+  local cap = 3 + (ctx.story_stage or 1) - 1
+  return math.max(1, math.min(mt, math.ceil(bl * mt / bm), cap))
 end
 local function lv(ctx) return M.levels[tier_of(ctx)] or M.levels[M.meta.max_tier] end
 local function roll(ctx, p) return (ctx.rand and ctx.rand.r_proc or 1) < p end

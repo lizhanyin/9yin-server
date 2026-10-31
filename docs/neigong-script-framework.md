@@ -43,6 +43,12 @@ return M
   仅信息标注——钩子按需组合，与 category 不强绑定。
 - **层数档位映射在脚本侧**：ctx 携带书本修炼等级 `book_level`/`book_max_level`，
   脚本按 `meta.max_tier` 自行换算（Java 不读 meta）。
+- **九阴志档位门**：高层特效档位随全服九阴志阶段（`NinJiuZhi.stage()`，1..9=1内…6内）
+  开放。所有钩子 ctx 携带 `story_stage`；每个脚本的 `tier_of` 统一按
+  `cap = 3 + (story_stage - 1)` 钳制（阶段 1 → 最高 3 档，每阶段 +1，阶段 ≥ 6 全开）——
+  即清单中层 4+ 追加的高级特效子句（人和/生死同参/阴阳同流等）在九阴志推进前不生效。
+  钳制规则内联在脚本里，改曲线热更即调；`NeigongRuntime.setStoryStage` 由 SceneFlow
+  注入真实阶段（被动缓存键含阶段，阶段推进自动重算被动）。
 - **模块索引键推导**：运行书本 configId（`faculty.curNeigong`，如 `ng_wd_001`）
   → `"buf_" + 书本id`（与 `BootstrapPackets.STARTER_BOOKS` 的 NeiGongBook.buffId
   先例一致）。新手三门（两仪护心功/幻玉神功/碧波心经）接通即生效。

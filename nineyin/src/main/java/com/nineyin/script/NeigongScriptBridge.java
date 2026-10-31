@@ -92,7 +92,7 @@ public final class NeigongScriptBridge {
     //  脚本按 M.meta.max_tier 自行换算 tier = ceil(book_level * max_tier / book_max_level)。
 
     /** 攻击命中钩子输入（玩家技能/普攻波次命中 NPC 结算后；self.attack = 面板攻击）。 */
-    public static Map<String, Object> attackContext(int bookLevel, int bookMaxLevel,
+    public static Map<String, Object> attackContext(int bookLevel, int bookMaxLevel, int storyStage,
                                                     int wave, int waves,
                                                     double damage, boolean crit, long now,
                                                     int hp, int maxHp, int mp, int maxMp, int attack,
@@ -101,6 +101,7 @@ public final class NeigongScriptBridge {
                                                     Map<String, Object> state, double rProc) {
         Map<String, Object> ctx = new LinkedHashMap<>();
         putBook(ctx, bookLevel, bookMaxLevel);
+        ctx.put("story_stage", Math.max(1, storyStage));
         ctx.put("wave", wave);
         ctx.put("waves", waves);
         ctx.put("damage", damage);
@@ -120,7 +121,7 @@ public final class NeigongScriptBridge {
     }
 
     /** 受击钩子输入（NPC 攻击玩家、applyDamage 前；incoming = 公式结算后的来袭伤害）。 */
-    public static Map<String, Object> victimContext(int bookLevel, int bookMaxLevel,
+    public static Map<String, Object> victimContext(int bookLevel, int bookMaxLevel, int storyStage,
                                                     double incoming, boolean crit,
                                                     boolean parried, boolean controlled, long now,
                                                     int hp, int maxHp, int mp, int maxMp,
@@ -128,6 +129,7 @@ public final class NeigongScriptBridge {
                                                     Map<String, Object> state, double rProc) {
         Map<String, Object> ctx = new LinkedHashMap<>();
         putBook(ctx, bookLevel, bookMaxLevel);
+        ctx.put("story_stage", Math.max(1, storyStage));
         ctx.put("incoming", incoming);
         ctx.put("controlled", controlled);
         ctx.put("crit", crit);
@@ -140,13 +142,13 @@ public final class NeigongScriptBridge {
     }
 
     /** 招架钩子输入（玩家招架生效块内；parry_endurance 为招架前耐力）。 */
-    public static Map<String, Object> parryContext(int bookLevel, int bookMaxLevel,
+    public static Map<String, Object> parryContext(int bookLevel, int bookMaxLevel, int storyStage,
                                                    double incoming, boolean crit,
                                                    long now, int parryEndurance,
                                                    int hp, int maxHp, int mp, int maxMp,
                                                    long attackerOid, String attackerConfigId,
                                                    Map<String, Object> state, double rProc) {
-        Map<String, Object> ctx = victimContext(bookLevel, bookMaxLevel, incoming, crit,
+        Map<String, Object> ctx = victimContext(bookLevel, bookMaxLevel, storyStage, incoming, crit,
                 false, false, now,
                 hp, maxHp, mp, maxMp, attackerOid, attackerConfigId, state, rProc);
         ctx.put("parry_endurance", parryEndurance);
@@ -154,12 +156,13 @@ public final class NeigongScriptBridge {
     }
 
     /** 周期钩子输入（每秒 tick；since_last_ms = 距上次触发事件的毫秒数，首触发为 -1）。 */
-    public static Map<String, Object> tickContext(int bookLevel, int bookMaxLevel,
+    public static Map<String, Object> tickContext(int bookLevel, int bookMaxLevel, int storyStage,
                                                   long now, long sinceLastMs,
                                                   int hp, int maxHp, int mp, int maxMp,
                                                   Map<String, Object> state, double rProc) {
         Map<String, Object> ctx = new LinkedHashMap<>();
         putBook(ctx, bookLevel, bookMaxLevel);
+        ctx.put("story_stage", Math.max(1, storyStage));
         ctx.put("now", now);
         ctx.put("since_last_ms", sinceLastMs);
         ctx.put("self", selfMap(hp, maxHp, mp, maxMp));
@@ -168,9 +171,10 @@ public final class NeigongScriptBridge {
     }
 
     /** 被动表输入（M.passive(ctx)；层数映射同脚本侧约定）。 */
-    public static Map<String, Object> passiveContext(int bookLevel, int bookMaxLevel) {
+    public static Map<String, Object> passiveContext(int bookLevel, int bookMaxLevel, int storyStage) {
         Map<String, Object> ctx = new LinkedHashMap<>();
         putBook(ctx, bookLevel, bookMaxLevel);
+        ctx.put("story_stage", Math.max(1, storyStage));
         return ctx;
     }
 

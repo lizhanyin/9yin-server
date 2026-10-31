@@ -217,6 +217,61 @@ class NeigongScriptTest {
         }
     }
 
+    // ---------- 九阴志档位门 ----------
+
+    /** 档位门 fixture：4 档被动 attack_add = 10×档；on_attack 回传 story_stage 作回蓝。 */
+    private static final String STORY_FIXTURE = """
+            local M = {}
+            M.meta = { id = "buf_ng_t_story", name = "story", category = "passive", max_tier = 4 }
+            M.levels = { [1] = {v = 10}, [2] = {v = 20}, [3] = {v = 30}, [4] = {v = 40} }
+            local function tier_of(ctx)
+              local mt = M.meta.max_tier
+              local bl, bm = ctx.book_level or 1, ctx.book_max_level or mt
+              local cap = 3 + (ctx.story_stage or 1) - 1
+              return math.max(1, math.min(mt, math.ceil(bl * mt / bm), cap))
+            end
+            function M.passive(ctx)
+              return { attack_add = M.levels[tier_of(ctx)].v }
+            end
+            function M.on_attack(ctx)
+              return { mp_restore = ctx.story_stage or 0 }
+            end
+            return M
+            """;
+
+    @Test
+    void storyStageGatesHighTiers(@TempDir Path tmp) throws Exception {
+        Path neigongDir = tmp.resolve("neigong");
+        Files.createDirectories(neigongDir);
+        Files.writeString(neigongDir.resolve("buf_ng_t_story.lua"), STORY_FIXTURE);
+        try (ScriptHost host = new ScriptHost()) {
+            host.load(tmp);
+            assumeTrue(host.available());
+            NeigongRuntime rt = new NeigongRuntime(host);
+            PlayerActor actor = new PlayerActor();
+            FacultyState faculty = FacultyState.bootstrap();
+            faculty.curNeigong = "ng_t_story";   // 书本不在快照 → (1,1) → 未钳制档位 = 4
+            actor.faculty = faculty;
+            long now = System.currentTimeMillis();
+            // 阶段 1：高层特效档位（>3 档）未开放，钳到 3 档
+            rt.setStoryStage(() -> 1);
+            rt.refreshPassive(actor, now);
+            assertNotNull(actor.neigongPassive);
+            assertEquals(30, actor.neigongPassive.attackAdd(), "九阴志阶段1最高3档");
+            // 阶段 2：4 档开放（阶段推进重算被动）
+            rt.setStoryStage(() -> 2);
+            rt.refreshPassive(actor, now);
+            assertEquals(40, actor.neigongPassive.attackAdd(), "九阴志阶段2开放4档");
+            // 运行钩子 ctx 透传 story_stage：on_attack 回蓝 = 阶段值
+            NpcInstance npc = new NpcInstance();
+            npc.objectId = 30001;
+            npc.hp = npc.maxHp = 1000;
+            actor.mp = actor.maxMp() - 10;
+            rt.onAttackLanded(null, actor, npc, 10, false, 1, 1, now);
+            assertEquals(actor.maxMp() - 10 + 2, actor.mp, "story_stage 经指令生效（回蓝=阶段值）");
+        }
+    }
+
     // ---------- 仓库 138 门全量冒烟 ----------
 
     @Test

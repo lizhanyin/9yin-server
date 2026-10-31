@@ -214,6 +214,8 @@ public final class SceneFlow {
         this.scriptHost = host;
         this.formulaHost = new com.nineyin.script.CombatFormulaHost(host);
         this.neigong = new NeigongRuntime(host);
+        // 内功高层特效档位随九阴志阶段开放（stage 1..9；缺省 alwaysOpen = 阶段 1）
+        this.neigong.setStoryStage(() -> ninjiuzhi.stage());
         if (ai != null) {
             ai.setNeigongRuntime(neigong);
         }

@@ -462,11 +462,18 @@ public final class S2CPackets {
 
     public static byte[] playerAddObject(String name, java.util.List<String> appearance,
                                          float x, float y, float z, float orient) {
+        return playerAddObject(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, name, appearance, x, y, z, orient);
+    }
+
+    /** 远端玩家互播变体：同帧结构，仅 objectId/ownerId 参数化（本地玩家恒 1）。 */
+    public static byte[] playerAddObject(int objectId, int ownerId, String name,
+                                         java.util.List<String> appearance,
+                                         float x, float y, float z, float orient) {
         Appearance.RoleVisual visual = Appearance.resolveVisual(appearance);
         PacketWriter w = new PacketWriter();
         w.u8(0x0D)
-                .u32(PLAYER_OBJECT_ID)
-                .u32(PLAYER_OWNER_ID)
+                .u32(objectId)
+                .u32(ownerId)
                 .f32(x).f32(y).f32(z).f32(orient);
         // 头部固定 0x3F 字节（0x3D/0x3E 为属性数，最后回填），值从 0x3F 起追加
         int headerSize = 0x3F;

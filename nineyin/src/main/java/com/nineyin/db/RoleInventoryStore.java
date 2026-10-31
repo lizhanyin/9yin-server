@@ -44,6 +44,9 @@ public final class RoleInventoryStore {
     }
 
     private final HikariDataSource dataSource;
+    /** game_items.item_type 内存缓存（configId → type；-1 = 无此行）。 */
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer> itemTypeCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private RoleInventoryStore(HikariDataSource dataSource) {
         this.dataSource = dataSource;
@@ -281,6 +284,94 @@ public final class RoleInventoryStore {
                     roleId, slot, viewCategory, e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * 使用消耗背包物品（堆叠感知）：amount &gt; n 减量，≤n 整行删除。
+     * 返回消耗后剩余数量（0 = 行已删）；-1 = 行不存在/不足/失败。
+     */
+    public int consumeBagItem(long roleId, int slot, int viewCategory, int n) {
+        if (n < 1) {
+            return -1;
+        }
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                int amount;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT amount FROM role_bag_items "
+                                + "WHERE role_id = ? AND slot = ? AND view_id = ? FOR UPDATE")) {
+                    ps.setLong(1, roleId);
+                    ps.setInt(2, slot);
+                    ps.setInt(3, viewCategory);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return -1;
+                        }
+                        amount = rs.getInt(1);
+                    }
+                }
+                if (amount < n) {
+                    return -1;
+                }
+                if (amount - n <= 0) {
+                    try (PreparedStatement del = conn.prepareStatement(
+                            "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ? AND view_id = ?")) {
+                        del.setLong(1, roleId);
+                        del.setInt(2, slot);
+                        del.setInt(3, viewCategory);
+                        del.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement up = conn.prepareStatement(
+                            "UPDATE role_bag_items SET amount = ? "
+                                    + "WHERE role_id = ? AND slot = ? AND view_id = ?")) {
+                        up.setInt(1, amount - n);
+                        up.setLong(2, roleId);
+                        up.setInt(3, slot);
+                        up.setInt(4, viewCategory);
+                        up.executeUpdate();
+                    }
+                }
+                conn.commit();
+                return Math.max(0, amount - n);
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            log.warn("consumeBagItem(n) failed role={} slot={} view={}: {}",
+                    roleId, slot, viewCategory, e.getMessage());
+            return -1;
+        }
+    }
+
+    /** game_items.item_type 查询（内存缓存；无此 config 返回 -1）。 */
+    public int itemTypeOf(String configId) {
+        if (configId == null || configId.isBlank()) {
+            return -1;
+        }
+        Integer hit = itemTypeCache.get(configId);
+        if (hit != null) {
+            return hit;
+        }
+        int type = -1;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT item_type FROM game_items WHERE item_id = ?")) {
+            ps.setString(1, configId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    type = rs.getInt(1);
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("itemTypeOf failed config={}: {}", configId, e.getMessage());
+        }
+        itemTypeCache.put(configId, type);
+        return type;
     }
 
     /**

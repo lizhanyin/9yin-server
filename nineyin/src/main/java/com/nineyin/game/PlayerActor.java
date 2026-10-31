@@ -364,8 +364,8 @@ public final class PlayerActor {
         int ngReduction = ng == null ? 0 : ng.damageReductionAdd();
         float ngCritRate = ng == null ? 0f : ng.critRateBonus();
         float ngCritDamage = ng == null ? 0f : ng.critDamageBonus();
-        return new CombatStats(attack + equipPhyVa + equipMeleePowerAdd + ngAttack,
-                defense + equipPhyDef + ngDefense, pierce + ngPierce,
+        return new CombatStats(attack + equipPhyVa + equipMeleePowerAdd + ngAttack + tempAttackAdd(),
+                defense + equipPhyDef + ngDefense + tempDefenseAdd(), pierce + ngPierce,
                 critDamageBonus + ngCritDamage, critDamageReduction,
                 critRateBonus + ngCritRate, critRateReduction,
                 accuracy + equipDexAdd + equipPhyHit + ngAccuracy, evasion + equipDodge + ngEvasion,
@@ -374,10 +374,10 @@ public final class PlayerActor {
                 critValue + equipStrAdd, resilience);
     }
 
-    /** 有效上限（基础 + 装备词缀 + 内功被动；夹下限 1 防词缀负值归零）。 */
+    /** 有效上限（基础 + 装备词缀 + 内功被动 + 限时道具属性；夹下限 1 防词缀负值归零）。 */
     public int maxHp() {
         int ng = neigongPassive == null ? 0 : neigongPassive.maxHpAdd();
-        return Math.max(1, baseMaxHp + equipMaxHpAdd + ng);
+        return Math.max(1, baseMaxHp + equipMaxHpAdd + ng + tempMaxHpAdd());
     }
 
     public int maxMp() {
@@ -598,11 +598,82 @@ public final class PlayerActor {
         logicState = LOGIC_STATE_NORMAL;
     }
 
+    // ---------- 限时道具属性（temp_stat） ----------
+
+    /** 限时属性来源（source = 物品 configId；同源替换，到期自清）。 */
+    public static final class TempStat {
+        public final String source;
+        public final int attackAdd;
+        public final int defenseAdd;
+        public final int maxHpAdd;
+        public final long untilMs;
+
+        public TempStat(String source, int attackAdd, int defenseAdd, int maxHpAdd, long untilMs) {
+            this.source = source;
+            this.attackAdd = attackAdd;
+            this.defenseAdd = defenseAdd;
+            this.maxHpAdd = maxHpAdd;
+            this.untilMs = untilMs;
+        }
+    }
+
+    /** 生效中的限时属性（scripts/item 的 temp_stat 指令落账处）。 */
+    public final java.util.concurrent.ConcurrentHashMap<String, TempStat> tempStats =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 应用限时属性（同源替换）；返回是否引发上限变化（调用方补发 vitalUpdate）。 */
+    public boolean applyTempStat(String source, int attackAdd, int defenseAdd,
+                                 int maxHpAdd, long lifeMs, long nowMs) {
+        if (source == null || source.isBlank() || lifeMs <= 0) {
+            return false;
+        }
+        int oldMaxHp = maxHp();
+        tempStats.put(source, new TempStat(source, attackAdd, defenseAdd, maxHpAdd,
+                nowMs + lifeMs));
+        return maxHp() != oldMaxHp;
+    }
+
+    /** 清理过期限时属性（tick 每秒调用；返回是否有变化）。 */
+    public boolean expireTempStats(long nowMs) {
+        boolean changed = false;
+        for (TempStat t : tempStats.values()) {
+            if (t.untilMs <= nowMs && tempStats.remove(t.source) != null) {
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    public int tempAttackAdd() {
+        int sum = 0;
+        for (TempStat t : tempStats.values()) {
+            sum += t.attackAdd;
+        }
+        return sum;
+    }
+
+    public int tempDefenseAdd() {
+        int sum = 0;
+        for (TempStat t : tempStats.values()) {
+            sum += t.defenseAdd;
+        }
+        return sum;
+    }
+
+    public int tempMaxHpAdd() {
+        int sum = 0;
+        for (TempStat t : tempStats.values()) {
+            sum += t.maxHpAdd;
+        }
+        return sum;
+    }
+
     // ---------- tick（每秒） ----------
 
     /** 返回是否有状态变化（调用方据此发 vitalUpdate）。 */
     public boolean tick(long nowMs) {
         boolean changed = pruneBuffs(nowMs);
+        changed |= expireTempStats(nowMs);
         if (logicState == LOGIC_STATE_SITCROSS) {
             int hpRate = Math.max(0, (maxHp() + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);
             int mpRate = Math.max(0, (maxMp() + SITCROSS_FULL_SECONDS - 1) / SITCROSS_FULL_SECONDS);

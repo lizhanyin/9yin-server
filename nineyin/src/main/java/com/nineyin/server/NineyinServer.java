@@ -125,6 +125,8 @@ public final class NineyinServer implements SummerApp {
         sceneFlow.setScriptHost(scriptHost);
         sceneFlow.setShopRepository(shopRepository);
         sceneFlow.setWuxueLevelInfo(levelCurves);
+        // 玩家互播：注入全服会话来源（同场景遍历；生命周期与 sessions 列表一致）
+        sceneFlow.setSessionsSource(() -> sessions);
         // 邮箱（data/mail.json，与参考服 Go mailStore 同构共享）
         sceneFlow.setMailStore(com.nineyin.game.MailStore.load(Path.of("data")));
         // 组队（data/teams.json，与参考服 Go teamStore 同构共享）
@@ -302,6 +304,8 @@ public final class NineyinServer implements SummerApp {
                 }
                 LoginSession login = session.channel().attr(LoginFlow.SESSION).get();
                 if (login != null) {
+                    // 玩家互播：断线离场，同场景同伴收 0x0E removeObject(oid)
+                    sceneFlow.announcePlayerLeft(login);
                     roleStore.updateLocation(login.accountKey, login.x, login.y, login.z, login.orient);
                 }
                 roleStore.flush();

@@ -26,6 +26,16 @@ public final class LoginSession {
     public float z;
     public float orient;
 
+    /**
+     * 玩家互播 objectId（SceneFlow 进场景时分配，500001 起避开 NPC 静态段 10001+
+     * 与动态段 900001+）。仅用于**其他会话**看到的本玩家；自己看自己恒
+     * PLAYER_OBJECT_ID=1（客户端自机渲染/输入绑定依赖）。
+     */
+    public int playerObjectId;
+
+    /** GM spawn_dummy 注入的假玩家 oid（despawn_dummy 清理用）。 */
+    public final java.util.List<Integer> dummyOids = new java.util.ArrayList<>();
+
     public boolean uiBootstrapped;
     public int timeSeq;
     public final long bootSteadyMs = System.nanoTime() / 1_000_000L;

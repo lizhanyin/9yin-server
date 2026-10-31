@@ -245,6 +245,64 @@ class ScriptHostTest {
         }
     }
 
+    /** 道具脚本域（scripts/item/*.lua）：@TempDir fixture 的 on_use 端到端（ctx 注入 → 指令解析）。 */
+    @Test
+    void itemScriptOnUseEndToEnd(@TempDir Path tmp) throws Exception {
+        Path itemDir = tmp.resolve("item");
+        Files.createDirectories(itemDir);
+        Files.writeString(itemDir.resolve("item_t_fix.lua"), """
+                local M = {}
+                M.meta = { id = "item_t_fix", name = "fixture" }
+                function M.on_use(ctx)
+                  return {
+                    heal_hp = 120,
+                    temp_stat = { attack_add = 25, defense_add = 0, max_hp_add = 0,
+                                  life_ms = 3600000 },
+                    consume = ctx.amount > 1,
+                  }
+                end
+                return M
+                """);
+        try (ScriptHost host = new ScriptHost()) {
+            host.load(tmp);
+            assumeTrue(host.available(), "native Lua 不可用（加载失败）");
+            LuaValue module = host.itemModule("item_t_fix");
+            assertNotNull(module, "item/ 目录应被扫描装载");
+            LuaValue fn = module.get("on_use");
+            assertNotNull(fn);
+            // amount=1 → consume=false（脚本可读 ctx.amount 分支）
+            Map<String, Object> ctx = ItemScriptBridge.useContext(
+                    "item_t_fix", 1, 1000L, 50, 100, 20, 50, 0, 0.25, 0.5);
+            Object out = host.callMap(fn, ctx);
+            ItemScriptBridge.Instructions instr = ItemScriptBridge.parseInstructions("item_t_fix", out);
+            assertNotNull(instr);
+            assertEquals(120, instr.healHp());
+            assertEquals(25, instr.tempStat().attackAdd());
+            assertFalse(instr.consume(), "amount=1 时脚本声明不消耗");
+            // amount=3 → consume=true
+            ctx = ItemScriptBridge.useContext("item_t_fix", 3, 1000L, 50, 100, 20, 50, 0, 0.25, 0.5);
+            out = host.callMap(fn, ctx);
+            instr = ItemScriptBridge.parseInstructions("item_t_fix", out);
+            assertTrue(instr.consume());
+        }
+    }
+
+    /** 仓库根 scripts/item 样例脚本冒烟（仓库根不可见时跳过）。 */
+    @Test
+    void repoItemScriptsSmoke() {
+        Path root = scriptsRoot();
+        assumeTrue(root != null && Files.isDirectory(root.resolve("item")),
+                "仓库 scripts/item 不可见，跳过");
+        try (ScriptHost host = new ScriptHost()) {
+            host.load(root);
+            assumeTrue(host.available());
+            for (String id : List.of("yaopin_sc_1001", "useitemhs_dy_06",
+                    "box_chinajoy_2026_giftbox")) {
+                assertNotNull(host.itemModule(id), "样例脚本应装载: " + id);
+            }
+        }
+    }
+
     /** 仓库根 scripts/（surefire cwd=nineyin/，向上查找命中 9yin-server/scripts）。 */
     private static Path scriptsRoot() {
         return ScriptHost.locateScriptsRoot();

@@ -48,6 +48,8 @@ public final class ScriptHost implements AutoCloseable {
     private final Map<String, LuaValue> skillModules = new LinkedHashMap<>();
     /** 内功模块（buffId → module table 的 on_attack/on_victim/on_parry/on_tick/passive 函数容器）。 */
     private final Map<String, LuaValue> neigongModules = new LinkedHashMap<>();
+    /** 道具模块（configId → module table 的 on_use 函数容器）。 */
+    private final Map<String, LuaValue> itemModules = new LinkedHashMap<>();
     /** 伤害公式模块的 calc 函数。 */
     private LuaValue formulaCalc;
     private Path scriptsRoot;
@@ -68,7 +70,8 @@ public final class ScriptHost implements AutoCloseable {
             Path candidate = dir.resolve("scripts");
             if (Files.isDirectory(candidate.resolve("skill"))
                     || Files.isDirectory(candidate.resolve("combat"))
-                    || Files.isDirectory(candidate.resolve("neigong"))) {
+                    || Files.isDirectory(candidate.resolve("neigong"))
+                    || Files.isDirectory(candidate.resolve("item"))) {
                 return candidate;
             }
         }
@@ -81,6 +84,7 @@ public final class ScriptHost implements AutoCloseable {
         closeState();
         skillModules.clear();
         neigongModules.clear();
+        itemModules.clear();
         formulaCalc = null;
         lastLoadCount = 0;
         available = false;
@@ -132,10 +136,21 @@ public final class ScriptHost implements AutoCloseable {
                 log.error("script host: list {} failed: {}", neigongRoot, e.toString());
             }
         }
+        Path itemRoot = root.resolve("item");
+        if (Files.isDirectory(itemRoot)) {
+            try (Stream<Path> files = Files.list(itemRoot)) {
+                files.filter(p -> p.getFileName().toString().endsWith(".lua"))
+                        .sorted()
+                        .forEach(this::loadItemModule);
+            } catch (IOException e) {
+                log.error("script host: list {} failed: {}", itemRoot, e.toString());
+            }
+        }
         available = state != null;
-        lastLoadCount = skillModules.size() + neigongModules.size() + (formulaCalc != null ? 1 : 0);
-        log.info("script host loaded: root={} skills={} neigong={} formula={}",
-                root, skillModules.size(), neigongModules.size(), formulaCalc != null);
+        lastLoadCount = skillModules.size() + neigongModules.size() + itemModules.size()
+                + (formulaCalc != null ? 1 : 0);
+        log.info("script host loaded: root={} skills={} neigong={} items={} formula={}",
+                root, skillModules.size(), neigongModules.size(), itemModules.size(), formulaCalc != null);
     }
 
     /** 热重载（重建 Lua state + 重读全部脚本）。 */
@@ -151,6 +166,11 @@ public final class ScriptHost implements AutoCloseable {
     /** 内功脚本模块（无该内功脚本返回 null；键 = buffId，如 buf_ng_wd_001）。 */
     public synchronized LuaValue neigongModule(String buffId) {
         return available ? neigongModules.get(buffId) : null;
+    }
+
+    /** 道具脚本模块（无该道具脚本返回 null；键 = 物品 configId，如 yaopin_sc_1001）。 */
+    public synchronized LuaValue itemModule(String configId) {
+        return available ? itemModules.get(configId) : null;
     }
 
     /** 伤害公式 calc 函数（无 formula.lua 返回 null）。 */
@@ -330,6 +350,21 @@ public final class ScriptHost implements AutoCloseable {
             return;
         }
         neigongModules.put(buffId, module);
+    }
+
+    /** 道具脚本装载（文件名去 .lua = configId，如 scripts/item/yaopin_sc_1001.lua）。 */
+    private void loadItemModule(Path file) {
+        String name = file.getFileName().toString();
+        String configId = name.substring(0, name.length() - ".lua".length());
+        LuaValue module = evalModule(file);
+        if (module == null) {
+            return;
+        }
+        if (module.type() != Lua.LuaType.TABLE) {
+            log.error("item script {} must return a module table; skipped", configId);
+            return;
+        }
+        itemModules.put(configId, module);
     }
 
     /** eval 整个文件（模块约定：local M = {} … return M）；失败记 ERROR 并返回 null。 */

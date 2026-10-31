@@ -20,6 +20,8 @@ import com.nineyin.scene.SceneWorld;
 import com.nineyin.server.FxC2SHandler;
 import com.nineyin.server.FxOpcodeRouter;
 import com.nineyin.server.FxSession;
+
+import java.util.function.Supplier;
 import com.nineyin.server.GameScheduler;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
@@ -98,6 +100,13 @@ public final class SceneFlow {
     private final PropPackCatalog propPacks;
     /** 装备特效目录（equip_special_effect_pack + buff 三表，§3.17 链路）。 */
     private final com.nineyin.rule.EquipEffectCatalog equipEffects;
+    /** 道具使用目录（giftbox/item_use_skill INI 回退层；scripts/item/*.lua 优先）。 */
+    private final ItemUseCatalog itemUse;
+    /** 掉落奖励包（drops_mvp.json；开包权重抽取，随机数 Java 预掷）。 */
+    private final DropPacks dropPacks;
+    /** 开包随机源（生产 ThreadLocalRandom；测试可确定化的注入点在 roll 参数）。 */
+    private final java.util.function.DoubleSupplier dropRand =
+            () -> java.util.concurrent.ThreadLocalRandom.current().nextDouble();
     /** 商店表（msgId 70 真机 5 值布局按 shopId 解析；null = 仅会话快照）。 */
     private com.nineyin.shop.ShopRepository shopRepository;
     /** 技能脚本宿主（on_cast/on_hit 运行期钩子 + 伤害公式分发；null = 全走 Java 默认管线）。 */
@@ -105,6 +114,11 @@ public final class SceneFlow {
     /** 内功特效运行时（scripts/neigong/*.lua 钩子触发与指令执行；null = 内功特效关闭）。 */
     private NeigongRuntime neigong;
     private com.nineyin.script.CombatFormulaHost formulaHost;
+    /** 全服会话来源（NineyinServer 装配；玩家互播遍历同场景会话；null = 单会话模式互播关闭）。 */
+    private Supplier<Iterable<FxSession>> sessionsSource;
+    /** 玩家互播 objectId 分配器：500001 起避开 NPC 静态段（10001+）与动态段（900001+）。 */
+    private static final java.util.concurrent.atomic.AtomicInteger PLAYER_OID_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger(500001);
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -133,8 +147,14 @@ public final class SceneFlow {
         public boolean progressGranted;
         // 轻量战斗（历史节流字段已由技能锁/CD 取代）
         public long lastPortalMs;
+        // 互播位置转发节流（0x0A 位置包 → serverLocation(oid)）
+        public long lastPeerPosMs;
+        // 已互播的玩家 oid（sendSceneNpcs 重入时防重复 add 帧；与 sentIds 同步清理）
+        public final Set<Integer> announcedPeerOids = new HashSet<>();
         // 每秒 tick
         public long lastVitalMs;
+        // 道具使用节流（useItem 800ms 防连点）
+        public long lastItemUseMs;
         // 修炼快照上次落库（即时/周期冲刷共用）
         public long lastFacultyFlushMs;
     }
@@ -183,6 +203,9 @@ public final class SceneFlow {
                 : new ChargeShopCatalog();
         this.propPacks = PropPackCatalog.load(
                 sceneManager.shareRoot().resolve("modifypack").resolve("proppack.ini"));
+        this.itemUse = ItemUseCatalog.load(sceneManager.shareRoot());
+        this.dropPacks = DropPacks.load(
+                sceneManager.shareRoot().resolve("drop").resolve("drops_mvp.json"));
         this.equipEffects = new com.nineyin.rule.EquipEffectCatalog();
         this.equipEffects.load(sceneManager.shareRoot());
         this.controlCatalog = new com.nineyin.rule.ControlCatalog();
@@ -263,6 +286,131 @@ public final class SceneFlow {
         this.controlCatalog = controlCatalog;
     }
 
+    // ---------- 玩家互播（同场景会话间外观/位置帧转发） ----------
+
+    /** 全服会话来源注入（NineyinServer 装配；缺省 null = 单会话模式互播关闭）。 */
+    public void setSessionsSource(Supplier<Iterable<FxSession>> source) {
+        this.sessionsSource = source;
+    }
+
+    /** 判断会话是否已就绪可收互播帧（同 world、NPC 已下发、非重进加载期）。 */
+    private boolean peerReady(LoginSession peer) {
+        if (peer == null || peer.fx == null || peer.playerObjectId == 0 || peer.actor == null) {
+            return false;
+        }
+        SceneState st = peer.fx.channel().attr(STATE).get();
+        return st != null && st.world != null && st.npcsSent && !st.awaitingReentryReady;
+    }
+
+    /**
+     * 会话进入场景完成（sendSceneNpcs 尾部调用）：双向互播——
+     * ① 其余同场景会话收到本玩家的 playerAddObject(oid)+serverLocation(oid)；
+     * ② 本玩家收到已在场景其他玩家的同款两帧（自机恒 oid=1，他人用其分配 oid）。
+     */
+    private void announcePeerPlayers(FxSession fx, LoginSession session) {
+        if (sessionsSource == null || session.playerObjectId == 0) {
+            return;
+        }
+        SceneState st = stateOf(fx);
+        byte[] selfAdd = null;
+        byte[] selfLoc = null;
+        for (FxSession other : sessionsSource.get()) {
+            if (other == fx) {
+                continue;
+            }
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (!peerReady(peer) || peer.playerObjectId == session.playerObjectId) {
+                continue;
+            }
+            SceneState peerSt = stateOf(other);
+            if (peerSt.world != st.world) {
+                continue;
+            }
+            // 幂等：GM 重发 NPC（sendSceneNpcs 复用）不得重复互播 add 帧
+            boolean iKnowPeer = st.announcedPeerOids.contains(peer.playerObjectId);
+            boolean peerKnowsMe = peerSt.announcedPeerOids.contains(session.playerObjectId);
+            if (iKnowPeer && peerKnowsMe) {
+                continue;
+            }
+            if (selfAdd == null) {
+                selfAdd = S2CPackets.playerAddObject(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID,
+                        session.roleName, session.appearance, session.x, session.y, session.z, session.orient);
+                selfLoc = S2CPackets.serverLocation(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID,
+                        session.x, session.y, session.z, session.orient);
+            }
+            if (!peerKnowsMe) {
+                other.send(selfAdd);
+                other.send(selfLoc);
+                peerSt.announcedPeerOids.add(session.playerObjectId);
+            }
+            if (!iKnowPeer) {
+                fx.send(S2CPackets.playerAddObject(peer.playerObjectId, S2CPackets.PLAYER_OWNER_ID,
+                        peer.roleName, peer.appearance, peer.x, peer.y, peer.z, peer.orient));
+                fx.send(S2CPackets.serverLocation(peer.playerObjectId, S2CPackets.PLAYER_OWNER_ID,
+                        peer.x, peer.y, peer.z, peer.orient));
+                st.announcedPeerOids.add(peer.playerObjectId);
+            }
+        }
+        if (selfAdd != null) {
+            log.info("peer visibility: player {} (oid={}) mutual with scene peers",
+                    session.roleName, session.playerObjectId);
+        }
+    }
+
+    /** 本玩家离开场景（切图/断线）：其余同场景会话收 0x0E removeObject(oid)。 */
+    public void announcePlayerLeft(LoginSession session) {
+        if (sessionsSource == null || session == null || session.playerObjectId == 0 || session.fx == null) {
+            return;
+        }
+        SceneState st = session.fx.channel().attr(STATE).get();
+        if (st == null || st.world == null) {
+            return;
+        }
+        byte[] remove = S2CPackets.removeObject(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID);
+        for (FxSession other : sessionsSource.get()) {
+            if (other == session.fx) {
+                continue;
+            }
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (peer == null || peer.playerObjectId == session.playerObjectId) {
+                continue;
+            }
+            SceneState peerSt = other.channel().attr(STATE).get();
+            if (peerSt == null || peerSt.world != st.world || peerSt.awaitingReentryReady) {
+                continue;
+            }
+            other.send(remove);
+        }
+    }
+
+    /** 0x0A 位置包互播转发：150ms 节流，同场景其余会话收 serverLocation(oid)。 */
+    private void relayPeerPosition(FxSession fx, LoginSession session, SceneState st,
+                                   float x, float y, float z, float orient, long now) {
+        if (sessionsSource == null || session.playerObjectId == 0) {
+            return;
+        }
+        if (now - st.lastPeerPosMs < 150) {
+            return;
+        }
+        st.lastPeerPosMs = now;
+        byte[] loc = S2CPackets.serverLocation(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID,
+                x, y, z, orient);
+        for (FxSession other : sessionsSource.get()) {
+            if (other == fx) {
+                continue;
+            }
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (!peerReady(peer)) {
+                continue;
+            }
+            SceneState peerSt = other.channel().attr(STATE).get();
+            if (peerSt.world != st.world) {
+                continue;
+            }
+            other.send(loc);
+        }
+    }
+
     public void register(FxOpcodeRouter router) {
         router.register(OP_ACTIVITY, this::onActivity);
         router.register(OP_PING, this::onPing);
@@ -287,7 +435,12 @@ public final class SceneFlow {
     public void sendSceneNpcs(LoginSession session) {
         FxSession fx = session.fx;
         SceneState st = stateOf(fx);
+        // 切图重入：旧场景同伴先收 0x0E 移除帧（断线路径走 NineyinServer.onDisconnected）
+        if (st.world != null && st.npcsSent) {
+            announcePlayerLeft(session);
+        }
         st.sentIds.clear();
+        st.announcedPeerOids.clear();
         st.world = sceneManager.world(session.spawnResource);
         st.world.tick(System.currentTimeMillis());
         // 装备词缀加成（库存在 onChooseRole 已下发，此处 liveEquipped 就绪；进场景属性批走有效值）
@@ -314,6 +467,11 @@ public final class SceneFlow {
         st.lastNpcX = session.x;
         st.lastNpcZ = session.z;
         st.npcsSent = true;
+        // 玩家互播：首进场景分配 oid（会话内稳定），向同场景同伴双向同步外观/位置
+        if (session.playerObjectId == 0) {
+            session.playerObjectId = PLAYER_OID_SEQ.getAndIncrement();
+        }
+        announcePeerPlayers(fx, session);
         // 邮箱行（记录 17 RecvLetterRec）：进场景推送该角色全部邮件（对齐 publishSystemMailRecords）
         if (session.roleId != 0) {
             List<MailStore.Mail> mails = mailStore.list(session.roleId);
@@ -433,6 +591,8 @@ public final class SceneFlow {
                 st.lastPosSaveMs = now;
                 roleStore.updateLocation(session.accountKey, mx, my, mz, mo);
             }
+            // 玩家互播：位置转发（150ms 节流，同场景其余会话收 serverLocation(oid)）
+            relayPeerPosition(fx, session, st, mx, my, mz, mo, now);
             // 选中目标超出 28m 自动清除
             SelectFlow.autoClearIfNeeded(fx, session, st);
             // 传送门 proximity 触发
@@ -1098,7 +1258,8 @@ public final class SceneFlow {
             return;
         }
         if (equipTypeOf(item.configId()).isEmpty()) {
-            log.info("right-click equip {} reject: not wearable", item.configId());
+            // 不可穿戴 → 道具使用效果链（scripts/item 优先，INI 回退）
+            useItem(fx, session, item, view);
             return;
         }
         String uid = InventoryPackets.uniqueId(session.roleId, "bag", slot);
@@ -1630,6 +1791,138 @@ public final class SceneFlow {
      *
      * @return null 成功；否则给 GM 面板的失败原因
      */
+    /**
+     * 道具使用效果核心（msg31 不可穿戴分支）：
+     * scripts/item/&lt;configId&gt;.lua 的 on_use 优先 → INI 回退
+     * （giftbox.ini 开包 / item_use_skill_static 回血阶梯）→ 均无则保持原日志行为。
+     * 落账：效果先行（给物品容量感知、回血/回蓝、限时属性），成功后消耗 1 个
+     * （堆叠感知）并回背包帧对；会话级 800ms 使用节流防连点。
+     */
+    private void useItem(FxSession fx, LoginSession session,
+                         com.nineyin.db.RoleInventoryStore.Bagged item, int view) {
+        PlayerActor actor = session.actor;
+        if (actor == null || inventory == null || session.roleId == 0) {
+            return;
+        }
+        SceneState st = stateOf(fx);
+        long now = System.currentTimeMillis();
+        if (now - st.lastItemUseMs < 800) {
+            return;
+        }
+        // ① 效果解析：Lua 脚本优先
+        com.nineyin.script.ItemScriptBridge.Instructions instr = null;
+        if (scriptHost != null) {
+            party.iroiro.luajava.value.LuaValue module = scriptHost.itemModule(item.configId());
+            if (module != null) {
+                party.iroiro.luajava.value.LuaValue fn = module.get("on_use");
+                if (fn != null && fn.type() == party.iroiro.luajava.Lua.LuaType.FUNCTION) {
+                    Object out = scriptHost.callMap(fn, com.nineyin.script.ItemScriptBridge.useContext(
+                            item.configId(), item.amount(), now,
+                            actor.hp, actor.maxHp(), actor.mp, actor.maxMp(), actor.silver,
+                            dropRand.getAsDouble(), dropRand.getAsDouble()));
+                    instr = com.nineyin.script.ItemScriptBridge.parseInstructions(item.configId(), out);
+                }
+            }
+        }
+        // ② INI 回退：礼包开包 / 使用技能回血
+        List<com.nineyin.script.ItemScriptBridge.GrantItem> grants = null;
+        int healHp = instr != null ? instr.healHp() : 0;
+        int healMp = instr != null ? instr.healMp() : 0;
+        var tempStat = instr != null ? instr.tempStat() : null;
+        if (instr != null) {
+            if (instr.openBox() != null) {
+                grants = dropPacks.roll(instr.openBox().dropId(), instr.openBox().rolls(), dropRand);
+            } else if (instr.grantItems() != null) {
+                grants = instr.grantItems();
+            }
+        } else {
+            int itemType = inventory.itemTypeOf(item.configId());
+            var entry = itemUse.resolve(item.configId(), itemType);
+            if (entry == null) {
+                log.info("item use {}: no script and no INI entry (item_type={})",
+                        item.configId(), itemType);
+                return;
+            }
+            switch (entry.kind()) {
+                case BOX -> {
+                    grants = dropPacks.roll(entry.dropId(), 1, dropRand);
+                    if (grants.isEmpty()) {
+                        log.info("item use {}: drop pack {} empty/missing", item.configId(),
+                                entry.dropId());
+                        return;
+                    }
+                }
+                case USE_SKILL -> {
+                    healHp = ItemUseCatalog.fallbackHealHp(entry.skillLevel());
+                    healMp = ItemUseCatalog.fallbackHealMp(entry.skillLevel());
+                }
+            }
+        }
+        if (healHp <= 0 && healMp <= 0 && grants == null && tempStat == null) {
+            log.info("item use {}: instructions empty", item.configId());
+            return;
+        }
+        st.lastItemUseMs = now;
+        // ③ 效果落账：给物品（容量感知，满则中断）
+        List<String> grantedIds = new ArrayList<>();
+        if (grants != null) {
+            for (var g : grants) {
+                String fail = giveItem(fx, session, g.configId(), g.amount());
+                if (fail != null) {
+                    log.info("item use {}: grant {} failed: {}", item.configId(), g.configId(), fail);
+                    break;
+                }
+                grantedIds.add(g.configId() + "x" + g.amount());
+            }
+        }
+        // ④ 回血/回蓝 + 限时属性
+        boolean vitalChanged = false;
+        if (healHp > 0 && actor.hp < actor.maxHp()) {
+            actor.hp = Math.min(actor.maxHp(), actor.hp + healHp);
+            vitalChanged = true;
+        }
+        if (healMp > 0 && actor.mp < actor.maxMp()) {
+            actor.mp = Math.min(actor.maxMp(), actor.mp + healMp);
+            vitalChanged = true;
+        }
+        if (tempStat != null) {
+            vitalChanged |= actor.applyTempStat(item.configId(), tempStat.attackAdd(),
+                    tempStat.defenseAdd(), tempStat.maxHpAdd(), tempStat.lifeMs(), now);
+        }
+        if (vitalChanged) {
+            fx.send(actor.vitalUpdate());
+        }
+        // ⑤ 消耗 1 个（脚本 consume=false 则跳过；如二次使用卸下类）+ 背包帧对
+        boolean consume = instr == null || instr.consume();
+        if (consume) {
+            int remaining = inventory.consumeBagItem(session.roleId, item.slot(), item.viewId(), 1);
+            if (remaining >= 0) {
+                fx.send(InventoryPackets.viewRemove(view, item.slot()));
+                if (remaining > 0) {
+                    var left = new com.nineyin.db.RoleInventoryStore.Bagged(
+                            item.slot(), item.configId(), item.itemType(), remaining,
+                            item.viewId(), "");
+                    fx.send(InventoryPackets.bagViewAdd(left,
+                            InventoryPackets.uniqueId(session.roleId, "bag", item.slot()), view));
+                    session.liveBagged.remove(item);
+                    session.liveBagged.add(left);
+                } else {
+                    session.liveBagged.remove(item);
+                }
+                int mirror = InventoryPackets.mirrorOf(view);
+                if (mirror != 0) {
+                    fx.send(InventoryPackets.viewRemove(mirror, item.slot()));
+                }
+            } else {
+                log.info("item use {}: consume failed (row missing/changed)", item.configId());
+            }
+        }
+        log.info("item use {} consumed={} healHp={} healMp={} granted={} tempStat={}",
+                item.configId(), consume, healHp, healMp, grantedIds,
+                tempStat != null ? "atk+" + tempStat.attackAdd() + "/" + (tempStat.lifeMs() / 1000)
+                        + "s" : "none");
+    }
+
     public String giveItem(FxSession fx, LoginSession session, String configId, int amount) {
         if (inventory == null || session.actor == null || session.liveBagged == null) {
             return "库存系统未接线";

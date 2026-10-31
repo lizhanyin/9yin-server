@@ -25,6 +25,10 @@ public final class GmActions {
 
     private static final Logger log = LoggerFactory.getLogger(GmActions.class);
 
+    /** GM 假玩家 oid 段：800001 起（玩家互播 500001+、NPC 静态 10001+/动态 900001+ 之外）。 */
+    private static final java.util.concurrent.atomic.AtomicInteger DUMMY_OID_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger(800001);
+
     /** 门派预设（白名单，对齐 Go gmFactionPresets）。 */
     public record FactionPreset(String label, String faction) {
     }
@@ -223,6 +227,32 @@ public final class GmActions {
                     return "库存系统未接线";
                 }
                 return sceneFlow.giveItem(fx, session, config, amount <= 0 ? 1 : amount);
+            }
+            case "spawn_dummy" -> {
+                // 玩家互播目验（单客户端）：注入假玩家 add+location 帧（oid 800001 段）；
+                // 前端可带 dummyHp → 补发 HP(464)/MaxHP(577) 属性帧
+                int oid = DUMMY_OID_SEQ.getAndIncrement();
+                int hp = cmd.intParam("dummyHp", 0);
+                float dx = session.x + 3f;
+                float dz = session.z + 3f;
+                session.dummyOids.add(oid);
+                fx.send(S2CPackets.playerAddObject(oid, S2CPackets.PLAYER_OWNER_ID,
+                        "木桩侠" + (oid - 800000), session.appearance, dx, session.y, dz, session.orient));
+                fx.send(S2CPackets.serverLocation(oid, S2CPackets.PLAYER_OWNER_ID,
+                        dx, session.y, dz, session.orient));
+                if (hp > 0) {
+                    fx.send(S2CPackets.objectPropertyInt(oid, S2CPackets.PLAYER_OWNER_ID, 577, hp));
+                    fx.send(S2CPackets.objectPropertyInt(oid, S2CPackets.PLAYER_OWNER_ID, 464, hp));
+                }
+                return "dummy oid=" + oid + (hp > 0 ? " hp=" + hp : "");
+            }
+            case "despawn_dummy" -> {
+                for (int oid : session.dummyOids) {
+                    fx.send(S2CPackets.removeObject(oid, S2CPackets.PLAYER_OWNER_ID));
+                }
+                int n = session.dummyOids.size();
+                session.dummyOids.clear();
+                return "removed " + n;
             }
             case "set_sp" -> {
                 actor.sp = clamp(cmd.intParam("sp", 0), 0, PlayerActor.MAX_SP);

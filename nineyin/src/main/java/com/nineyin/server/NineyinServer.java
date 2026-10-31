@@ -175,7 +175,9 @@ public final class NineyinServer implements SummerApp {
         });
         loginFlow.register(router);
         sceneFlow.register(router);
-        new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher()).register(router);
+        SelectFlow selectFlow = new SelectFlow(sceneManager, shopRepository, sceneFlow.switcher());
+        selectFlow.setSceneFlow(sceneFlow);   // PvP：选中远端玩家（坐标回填 + 真实血条）
+        selectFlow.register(router);
         gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow,
                 sceneFlow.ninjiuzhi(), worldBossManager);
     }

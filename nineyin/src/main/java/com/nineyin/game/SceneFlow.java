@@ -107,6 +107,12 @@ public final class SceneFlow {
     /** 开包随机源（生产 ThreadLocalRandom；测试可确定化的注入点在 roll 参数）。 */
     private final java.util.function.DoubleSupplier dropRand =
             () -> java.util.concurrent.ThreadLocalRandom.current().nextDouble();
+    /** PvP 战斗掷骰（未命中/暴击）；测试注入固定种子（照 AiEventEngine.useRngForTest）。 */
+    private java.util.Random combatRng = java.util.concurrent.ThreadLocalRandom.current();
+
+    void useCombatRngForTest(java.util.Random fixed) {
+        this.combatRng = fixed;
+    }
     /** 商店表（msgId 70 真机 5 值布局按 shopId 解析；null = 仅会话快照）。 */
     private com.nineyin.shop.ShopRepository shopRepository;
     /** 技能脚本宿主（on_cast/on_hit 运行期钩子 + 伤害公式分发；null = 全走 Java 默认管线）。 */
@@ -3069,29 +3075,59 @@ public final class SceneFlow {
         int targetOid = S2CPackets.PLAYER_OBJECT_ID;
         int targetOwner = S2CPackets.PLAYER_OWNER_ID;
         NpcInstance selected = null;
+        int playerTargetOid = 0;    // PvP：选中远端玩家时非 0（与 NPC 目标互斥）
         if (def.requiresTarget()) {
             selected = selectedLivingTarget(st);
             if (selected == null) {
-                log.info("reject skill id={} without living selected target", skillId);
-                return;
-            }
-            // 施法距离门（attack_targetshape.ini TargetShapePkg）：20% 容差内放行
-            // （参考服实测 dist 8.5>8.0 即被硬拒，无容差导致贴脸连按全部被吞）。
-            if (def.targetRangeMeters() > 0) {
-                float dx = selected.x - session.x;
-                float dz = selected.z - session.z;
-                double dist = Math.sqrt(dx * dx + dz * dz);
-                double max = def.targetRangeMeters() * RANGE_GATE_TOLERANCE;
-                if (dist > max) {
-                    log.info("reject skill id={}: target out of range ({}m > {}m)",
-                            skillId,
-                            String.format(Locale.ROOT, "%.1f", dist),
-                            String.format(Locale.ROOT, "%.1f", max));
+                // PvP 分支：选中目标是远端玩家（oid 500001+，npcById 必查不到）
+                PlayerTarget pt = resolvePlayerTargetByOid(st, st.selectedOid);
+                if (pt == null) {
+                    log.info("reject skill id={} without living selected target", skillId);
                     return;
                 }
+                // PK 门（tips_pkmode 语义）：和平模式不可攻击玩家；对方开保护亦拒
+                String gate = pvpGateMessage(session, pt.session());
+                if (gate != null) {
+                    log.info("reject pvp skill id={}: {}", skillId, gate);
+                    fx.send(S2CPackets.worldInfo(0, gate));
+                    return;
+                }
+                // 距离门：victim 实时坐标（服务器侧权威值，无互播节流延迟）
+                if (def.targetRangeMeters() > 0) {
+                    float dx = pt.session().x - session.x;
+                    float dz = pt.session().z - session.z;
+                    double dist = Math.sqrt(dx * dx + dz * dz);
+                    double max = def.targetRangeMeters() * RANGE_GATE_TOLERANCE;
+                    if (dist > max) {
+                        log.info("reject pvp skill id={}: player target out of range ({}m > {}m)",
+                                skillId,
+                                String.format(Locale.ROOT, "%.1f", dist),
+                                String.format(Locale.ROOT, "%.1f", max));
+                        return;
+                    }
+                }
+                playerTargetOid = pt.session().playerObjectId;
+                targetOid = playerTargetOid;
+                targetOwner = S2CPackets.PLAYER_OWNER_ID;
+            } else {
+                // 施法距离门（attack_targetshape.ini TargetShapePkg）：20% 容差内放行
+                // （参考服实测 dist 8.5>8.0 即被硬拒，无容差导致贴脸连按全部被吞）。
+                if (def.targetRangeMeters() > 0) {
+                    float dx = selected.x - session.x;
+                    float dz = selected.z - session.z;
+                    double dist = Math.sqrt(dx * dx + dz * dz);
+                    double max = def.targetRangeMeters() * RANGE_GATE_TOLERANCE;
+                    if (dist > max) {
+                        log.info("reject skill id={}: target out of range ({}m > {}m)",
+                                skillId,
+                                String.format(Locale.ROOT, "%.1f", dist),
+                                String.format(Locale.ROOT, "%.1f", max));
+                        return;
+                    }
+                }
+                targetOid = selected.objectId;
+                targetOwner = selected.ownerId;
             }
-            targetOid = selected.objectId;
-            targetOwner = selected.ownerId;
         }
         long now = System.currentTimeMillis();
         String reject = beginSkillUse(actor, def, targetOid, targetOwner, now);
@@ -3110,6 +3146,12 @@ public final class SceneFlow {
             relayPeerCombatVitals(fx, session);
             scheduleFollowupActions(fx, def);
         }
+        // PvP 出招帧：msg20 形态（施法者=攻方 oid，target=受方 oid），同伴看打人动画
+        if (playerTargetOid != 0 && session.playerObjectId != 0 && st.world != null) {
+            broadcastToWorld(st.world, nativeSkillAction(session.playerObjectId,
+                    S2CPackets.PLAYER_OWNER_ID, skillId, playerTargetOid,
+                    S2CPackets.PLAYER_OWNER_ID), fx);
+        }
         int damageDealt = 0;
         int targetCount = 0;
         int lootTotal = 0;
@@ -3122,6 +3164,7 @@ public final class SceneFlow {
         long cadenceMs = Math.max(1, def.totalActionDurationMs() / waves);
         long seq = actor.castSeq;
         final NpcInstance waveTarget = selected;
+        final int pvpTargetOid = playerTargetOid;
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() != SkillCatalog.EffectKind.DAMAGE || effect.amount() <= 0) {
                 continue;
@@ -3130,7 +3173,9 @@ public final class SceneFlow {
                 continue;   // 自身技无目标结算（对齐参考实现的 damage switch 无 SELF 分支）
             }
             lastSettle = def.targetMode() == SkillCatalog.TargetMode.SELECTED
-                    ? settleSelected(fx, session, st, def, selected, now, waveRatio, 0, waves)
+                    ? (pvpTargetOid != 0
+                        ? settleSelectedPlayer(fx, session, st, def, pvpTargetOid, now, waveRatio, 0, waves)
+                        : settleSelected(fx, session, st, def, selected, now, waveRatio, 0, waves))
                     : settleArea(fx, session, st, def, selected, msg, now, waveRatio, 0, waves);
             damageSettled = true;
             damageDealt += lastSettle.damage();
@@ -3143,8 +3188,11 @@ public final class SceneFlow {
                         return;   // 新施法/死亡使旧波次作废
                     }
                     SettleSummary s = def.targetMode() == SkillCatalog.TargetMode.SELECTED
-                            ? settleSelected(fx, session, st, def, waveTarget,
-                                    System.currentTimeMillis(), waveRatio, waveIdx, waves)
+                            ? (pvpTargetOid != 0
+                                ? settleSelectedPlayer(fx, session, st, def, pvpTargetOid,
+                                        System.currentTimeMillis(), waveRatio, waveIdx, waves)
+                                : settleSelected(fx, session, st, def, waveTarget,
+                                        System.currentTimeMillis(), waveRatio, waveIdx, waves))
                             : settleArea(fx, session, st, def, waveTarget, msg,
                                     System.currentTimeMillis(), waveRatio, waveIdx, waves);
                     if (s.loot() > 0) {
@@ -3155,6 +3203,19 @@ public final class SceneFlow {
         }
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() == SkillCatalog.EffectKind.TARGET_CONTROL) {
+                // PvP：控制直接落受方玩家（伤害路径控制已并入 settlePlayerHit 后同段；
+                // 纯控制技在此按 oid 重解析）
+                if (pvpTargetOid != 0) {
+                    PlayerTarget pt = resolvePlayerTargetByOid(st, pvpTargetOid);
+                    if (pt != null) {
+                        int stateType = controlCatalog.stateTypeOf(effect.buff().staticData());
+                        if (stateType != 0) {
+                            applyControlToPlayer(pt.session().actor, stateType,
+                                    Math.max(500, effect.buff().lifetimeMs()), now);
+                        }
+                    }
+                    continue;
+                }
                 // 纯控制技（无伤害结算）目标独立解析：单体取选中目标、区域走几何过滤，
                 // 否则控制永远落空（参考服日志全部 targets=0 的根因之一）。
                 SettleSummary controlSettle = lastSettle;
@@ -3476,6 +3537,59 @@ public final class SceneFlow {
         return npc != null && !npc.dead && npc.hp > 0 ? npc : null;
     }
 
+    // ---------- PvP：远端玩家目标（oid 区间判据——owner 无法区分玩家/NPC） ----------
+
+    /** 玩家互播 oid 段：500001..900000（NPC 静态 10001+/动态 900001+ 之外）。 */
+    static boolean isPlayerOid(int oid) {
+        return oid >= 500001 && oid < 900001;
+    }
+
+    /** 解析出的远端玩家目标（会话 + 运行时）。 */
+    record PlayerTarget(FxSession fx, LoginSession session) {
+    }
+
+    /**
+     * 选中远端玩家（SelectFlow 回调）：回填实时坐标（28m 自动清除生效，
+     * 修复选中玩家后坐标恒 0 永不清除的问题）+ 单播 peerCombatUpdate
+     * 补正出场帧的假血量（1000/100%）。
+     */
+    void onPlayerSelected(FxSession fx, SceneState st, int oid) {
+        PlayerTarget pt = resolvePlayerTargetByOid(st, oid);
+        if (pt == null) {
+            return;
+        }
+        st.selectedX = pt.session().x;
+        st.selectedZ = pt.session().z;
+        fx.send(pt.session().actor.peerCombatUpdate(oid, S2CPackets.PLAYER_OWNER_ID));
+        log.info("Select player target={} ({}) hp={}/{} pos=({},{})",
+                oid, pt.session().roleName, pt.session().actor.hp, pt.session().actor.maxHp(),
+                String.format(Locale.ROOT, "%.1f", pt.session().x),
+                String.format(Locale.ROOT, "%.1f", pt.session().z));
+    }
+
+    /**
+     * 按 oid 反查同场景存活玩家（PvP 目标解析/波次重解析共用）。
+     * 判据：playerObjectId 匹配 + 同 world + actor 存活——位置/血量实时。
+     */
+    PlayerTarget resolvePlayerTargetByOid(SceneState st, int oid) {
+        if (sessionsSource == null || !isPlayerOid(oid)) {
+            return null;
+        }
+        for (FxSession other : sessionsSource.get()) {
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (peer == null || peer.playerObjectId != oid || peer.actor == null
+                    || peer.actor.hp <= 0) {
+                continue;
+            }
+            SceneState peerSt = other.channel().attr(STATE).get();
+            if (peerSt == null || peerSt.world == null || peerSt.world != st.world) {
+                continue;
+            }
+            return new PlayerTarget(other, peer);
+        }
+        return null;
+    }
+
     /** 效果结算汇总：实际伤害 / 命中目标数 / 击杀掉落（碎银）/ 被击中的 NPC（控制结算用）。 */
     record SettleSummary(int damage, int targets, int loot, List<NpcInstance> npcs) {
     }
@@ -3495,6 +3609,117 @@ public final class SceneFlow {
         }
         return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, hit.loot(),
                 hit.landed() ? List.of(selected) : List.of());
+    }
+
+    // ---------- PvP 结算（第三批） ----------
+
+    /** PvP 死亡复活延迟（对齐 AiEventEngine.PLAYER_REVIVE_MS）。 */
+    private static final long PVP_REVIVE_MS = 8000;
+
+    /**
+     * PK 门（tips_pkmode 语义，文本抽取 docs/text-extract/rules-and-data.md §7）：
+     * 和平模式（0）不可攻击玩家；对方开 PK 保护亦拒。返回用户提示文本，null = 放行。
+     */
+    static String pvpGateMessage(LoginSession attacker, LoginSession victim) {
+        if (attacker.pkMode == 0) {
+            return "和平模式下无法攻击其他侠士，请先切换攻击模式";
+        }
+        if (victim.pkProtectOn) {
+            return "对方处于保护状态，无法攻击";
+        }
+        return null;
+    }
+
+    /**
+     * PvP 单体结算（SELECTED 玩家目标）：每波按 oid 重解析（位置/存活实时），
+     * 目标死亡/切图后波次空结算。包可见：PvpSettlementTest 直接断言。
+     */
+    SettleSummary settleSelectedPlayer(FxSession fx, LoginSession session, SceneState st,
+                                       SkillCatalog.Definition def, int victimOid,
+                                       long now, double ratio, int wave, int waves) {
+        PlayerTarget pt = resolvePlayerTargetByOid(st, victimOid);
+        if (pt == null) {
+            return new SettleSummary(0, 0, 0, List.of());
+        }
+        HitResult hit = settlePlayerHit(fx, session, st, pt, def, now, ratio, wave, waves);
+        if (wave > 0) {
+            log.info("skill {} wave {}/{} -> player {} damage={}", def.id(), wave + 1, waves,
+                    pt.session().roleName, hit.damage());
+        }
+        return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, 0, List.of());
+    }
+
+    /**
+     * PvP 命中结算（玩家 vs 玩家，双方全属性 combatStats）：
+     * 招架判定/耐力消耗 → 公式（formulaHost 分发）→ 内功受击钩子（含反弹落攻击者）
+     * → applyDamage 瘀血分层 → 生命帧双发 → 死亡复活调度。
+     */
+    private HitResult settlePlayerHit(FxSession fx, LoginSession session, SceneState st,
+                                      PlayerTarget pt, SkillCatalog.Definition def,
+                                      long now, double ratio, int wave, int waves) {
+        PlayerActor attacker = session.actor;
+        PlayerActor victim = pt.session().actor;
+        if (victim.hp <= 0) {
+            return new HitResult(0, false, 0);   // 竞态复查（波次间隔内死亡）
+        }
+        boolean parrying = victim.parrying && victim.parryEndurance > 0;
+        int parryEnduranceBefore = victim.parryEndurance;
+        if (parrying) {
+            boolean broke = victim.drainParry(attacker.combatStats().attack());
+            log.info("pvp player {} parries {} (skill {}) endurance={}{}",
+                    pt.session().roleName, session.roleName, def.id(), victim.parryEndurance,
+                    broke ? " PARRY BROKEN" : "");
+        }
+        CombatFormulas.DamageResult hit = formulaHost != null
+                ? formulaHost.calc(attacker.combatStats(), victim.combatStats(), ratio,
+                        combatRng, parrying)
+                : CombatFormulas.calc(attacker.combatStats(), victim.combatStats(), ratio,
+                        combatRng, parrying);
+        if (hit.miss()) {
+            log.info("pvp skill {} -> player {} MISS", def.id(), pt.session().roleName);
+            return new HitResult(0, false, 0);
+        }
+        int incoming = hit.damage();
+        if (neigong != null) {
+            final long stamp = now;
+            incoming = neigong.adjustIncomingPlayer(pt.fx(), victim,
+                    session.playerObjectId, session.roleName,
+                    incoming, hit.crit(), hit.parried(), parrying, parryEnduranceBefore, now,
+                    (buffId, reflect) -> {
+                        // 反弹落攻击者：直接进伤害管线（瘀血/死亡/帧同构）
+                        if (attacker.hp > 0) {
+                            log.info("neigong {} reflect {} -> player {}", buffId,
+                                    reflect.amount(), session.roleName);
+                            damagePlayer(new PlayerTarget(fx, session), reflect.amount(),
+                                    "pvp reflect", stamp);
+                        }
+                    });
+        }
+        damagePlayer(pt, incoming, "pvp", now);
+        log.info("pvp skill {} {} -> {} damage={} crit={} parried={} hp={}/{}", def.id(),
+                session.roleName, pt.session().roleName, incoming, hit.crit(), hit.parried(),
+                victim.hp, victim.maxHp());
+        return new HitResult(incoming, true, 0);
+    }
+
+    /**
+     * 对玩家落伤害（PvP 命中/内功反弹共用）：vitalUpdate 双发（自机 + 同场景 peer）
+     * + 死亡 8s 复活调度（复活帧同样双发）。
+     */
+    private void damagePlayer(PlayerTarget pt, int amount, String cause, long now) {
+        PlayerActor victim = pt.session().actor;
+        boolean died = victim.applyDamage(amount);
+        pt.fx().send(victim.vitalUpdate());
+        relayPeerCombatVitals(pt.fx(), pt.session());
+        if (died) {
+            log.info("player {} defeated ({})", pt.session().roleName, cause);
+            GameScheduler.schedule(PVP_REVIVE_MS, () -> {
+                victim.revive();
+                pt.fx().send(victim.vitalUpdate());
+                relayPeerCombatVitals(pt.fx(), pt.session());
+                log.info("player {} revived", pt.session().roleName);
+            });
+        }
     }
 
     /** 区域伤害效果结算（圆/扇/矩形/目标区域；每波重扫目标，日志与参考服同构）。 */

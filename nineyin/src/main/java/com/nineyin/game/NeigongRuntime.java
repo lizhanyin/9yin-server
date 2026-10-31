@@ -151,6 +151,30 @@ public final class NeigongRuntime {
     public int adjustIncoming(FxSession fx, PlayerActor actor, NpcInstance attacker,
                               int incoming, boolean crit, boolean parried,
                               boolean parryActive, int parryEndurance, long now) {
+        return adjustIncomingCore(fx, actor, attacker.objectId, attacker.configId,
+                incoming, crit, parried, parryActive, parryEndurance, now,
+                (buffId, reflect) -> reflectToNpc(buffId, attacker, reflect));
+    }
+
+    /**
+     * PvP 变体：攻击者为玩家（oid + 名字），反弹伤害交 reflectSink
+     * （调用方落攻击者并同步生命帧，见 SceneFlow.settlePlayerHit）。
+     */
+    public int adjustIncomingPlayer(FxSession fx, PlayerActor actor, int attackerOid,
+                                    String attackerName, int incoming, boolean crit,
+                                    boolean parried, boolean parryActive, int parryEndurance,
+                                    long now,
+                                    java.util.function.BiConsumer<String, NeigongScriptBridge.DamageInstr> reflectSink) {
+        return adjustIncomingCore(fx, actor, attackerOid, attackerName,
+                incoming, crit, parried, parryActive, parryEndurance, now, reflectSink);
+    }
+
+    /** 受击/招架调整核心（attacker 以 oid+configId 泛化；反弹走 sink）。 */
+    private int adjustIncomingCore(FxSession fx, PlayerActor actor, int attackerOid,
+                                   String attackerConfigId, int incoming, boolean crit,
+                                   boolean parried, boolean parryActive, int parryEndurance,
+                                   long now,
+                                   java.util.function.BiConsumer<String, NeigongScriptBridge.DamageInstr> reflectSink) {
         int adjusted = incoming;
         Running ng = running(actor);
         if (ng == null) {
@@ -163,7 +187,7 @@ public final class NeigongRuntime {
                 Map<String, Object> ctx = NeigongScriptBridge.parryContext(book.level(), book.maxLevel(), storyStage(),
                         adjusted, crit, now, parryEndurance,
                         actor.hp, actor.maxHp(), actor.mp, actor.maxMp(),
-                        attacker.objectId, attacker.configId,
+                        attackerOid, attackerConfigId,
                         actor.neigongStateOf(ng.buffId()), ThreadLocalRandom.current().nextDouble());
                 NeigongScriptBridge.Instructions instr =
                         NeigongScriptBridge.parseInstructions(ng.buffId(), scriptHost.callMap(fn, ctx));
@@ -176,8 +200,8 @@ public final class NeigongRuntime {
                         log.info("neigong {} on_parry flat -{} -> incoming {}", ng.buffId(), flat, adjusted);
                     }
                     executeSelf(fx, actor, ng.buffId(), instr, now);
-                    if (instr.reflect() != null) {
-                        reflectToNpc(ng.buffId(), attacker, instr.reflect());
+                    if (instr.reflect() != null && reflectSink != null) {
+                        reflectSink.accept(ng.buffId(), instr.reflect());
                     }
                 }
             }
@@ -187,7 +211,7 @@ public final class NeigongRuntime {
             Map<String, Object> ctx = NeigongScriptBridge.victimContext(book.level(), book.maxLevel(), storyStage(),
                     adjusted, crit, parried, actor.controlled(now), now,
                     actor.hp, actor.maxHp(), actor.mp, actor.maxMp(),
-                    attacker.objectId, attacker.configId,
+                    attackerOid, attackerConfigId,
                     actor.neigongStateOf(ng.buffId()), ThreadLocalRandom.current().nextDouble());
             NeigongScriptBridge.Instructions instr =
                     NeigongScriptBridge.parseInstructions(ng.buffId(), scriptHost.callMap(fn, ctx));
@@ -198,8 +222,8 @@ public final class NeigongRuntime {
                             ng.buffId(), String.format("%.0f", instr.reducePct() * 100), adjusted);
                 }
                 executeSelf(fx, actor, ng.buffId(), instr, now);
-                if (instr.reflect() != null) {
-                    reflectToNpc(ng.buffId(), attacker, instr.reflect());
+                if (instr.reflect() != null && reflectSink != null) {
+                    reflectSink.accept(ng.buffId(), instr.reflect());
                 }
             }
         }

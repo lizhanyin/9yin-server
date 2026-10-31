@@ -41,11 +41,17 @@ public final class SelectFlow {
     private final SceneManager sceneManager;
     private final ShopRepository shopRepository;
     private final SceneSwitcher switcher;
+    /** 玩家互播目标选中协助（SceneFlow 注入；null = 无 PvP 选中支持）。 */
+    private SceneFlow sceneFlow;
 
     public SelectFlow(SceneManager sceneManager, ShopRepository shopRepository, SceneSwitcher switcher) {
         this.sceneManager = sceneManager;
         this.shopRepository = shopRepository;
         this.switcher = switcher;
+    }
+
+    public void setSceneFlow(SceneFlow sceneFlow) {
+        this.sceneFlow = sceneFlow;
     }
 
     public void register(FxOpcodeRouter router) {
@@ -156,6 +162,9 @@ public final class SelectFlow {
         if (npc != null) {
             st.selectedX = npc.x;
             st.selectedZ = npc.z;
+        } else if (sceneFlow != null && SceneFlow.isPlayerOid(oid)) {
+            // PvP：选中远端玩家——回填实时坐标（28m 自动清除生效）+ 单播真实血条
+            sceneFlow.onPlayerSelected(fx, st, oid);
         }
         // 可玩服务（商店/仓库）→ 帧对话菜单；暮色验证 tagged NPC 与副本宝箱强制出专用菜单
         List<Integer> marks = playableMarks(npc);

@@ -81,6 +81,7 @@ class SkillCatalogTest {
                 Level=1
                 Consume=15608
                 HitShapePkg=1
+                TargetShapePkg=7
                 CoolDownTime=15000
                 DamageCalculate=23033
                 """, GBK);
@@ -100,6 +101,12 @@ class SkillCatalogTest {
                 HitShape=0
                 HitShapePara1=0
                 HitShapePara2=0
+                """, GBK);
+        Files.writeString(skill.resolve("attack_targetshape.ini"), """
+                [7]
+                TargetShape=1
+                TargetShapePara1=0
+                TargetShapePara2=6
                 """, GBK);
         Files.writeString(skill.resolve("buff_new.ini"), """
                 [buf_test_self]
@@ -168,6 +175,10 @@ class SkillCatalogTest {
         assertTrue(atk.requiresTarget());
         assertEquals(SkillCatalog.TargetMode.SELECTED, atk.targetMode());
         assertEquals(15000, atk.publicCdMs(), "无 AddCoolDownTime → 回退个人 CD");
+
+        // 施法射程（attack_targetshape.ini）：TargetShape=1 圆形 → Para2；无 pkg → 0 不设门
+        assertEquals(6f, atk.targetRangeMeters(), "TargetShapePkg=7 → 半径 6 米");
+        assertEquals(0f, self.targetRangeMeters(), "test_self 无 TargetShapePkg → 不校验");
 
         assertNull(catalog.definition("test_bad_script", 1));
         assertNull(catalog.definition("no_such_skill", 1));

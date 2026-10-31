@@ -75,14 +75,14 @@
 | 工作项 | Vagrant | 本项目 | 完成度 | 现状与缺口 |
 |---|---|---|---|---|
 | `damage` 武学与伤害 | mostly 85% | 🟨 | 65% | ✅ `CombatFormulas` 社区逆向公式全套（防御对数曲线/命中闪避/暴击暴伤/破防/招架/平减/瘀血双层），玩家打怪 + BOSS 打玩家双链路，`CombatFormulasTest` 16 项锚定。缺：`skillRatio(skillId)` 恒 1.0（红/蓝/绿倍率参数未接）、无装备/内功/等级加成 |
-| `skill-effects` 技能效果、buff 与 debuff | mostly 84% | 🟨 | 20% | ✅ 玩家 24 个原生 buff 槽 + 到期修剪（`PlayerActor.activateBuff/pruneBuffs`）；NPC 侧 `BuffCatalog` 发视觉帧。缺：**buff 无任何数值效果**（BuffCatalog 注释自认"属性加成后续接入"），无 DoT/定身/减速等技能效果，无技能冷却/耗蓝/施法距离/多目标 |
+| `skill-effects` 技能效果、buff 与 debuff | mostly 84% | 🟨 | 30% | ✅ 玩家 24 个原生 buff 槽 + 到期修剪（`PlayerActor.activateBuff/pruneBuffs`），技能 buff 激活/到期发 event-169 add/remove 配对帧；施法距离门（TargetShapePkg，20% 容差）；NPC 侧 `BuffCatalog` 发视觉帧。缺：**buff 无任何数值效果**（BuffCatalog 注释自认"属性加成后续接入"），无 DoT/定身/减速等技能效果 |
 | `inners` 内功 | mostly 88% | 🟨 | 10% | 仅静态假种子面板（BootstrapCurNeigong `ng_wd_001` 太极心法30级，FACULTY=9999999）；无学习/修炼/运功/进阶。修为属性（797）只同步不产生 |
 | `meridians` 经脉 | mostly 83% | ⬜ | 0% | 无实现；`game_meridians` 表 + 经脉.json GM 目录就绪 |
-| `parry-cc` 招架、闪避与控制 | mostly 80% | 🟨 | 40% | ✅ 招架开关/耐力消耗/破招/公式减免（`handleActiveParry`/`drainParry`/`parryMultiplier`），命中闪避在公式内。缺：无眩晕/击倒/封锁等控制链，无怒气（SP）技能消耗闭环 |
+| `parry-cc` 招架、闪避与控制 | mostly 80% | 🟨 | 55% | ✅ 招架开关/耐力消耗/破招/公式减免（`handleActiveParry`/`drainParry`/`parryMultiplier`），命中闪避在公式内；控制链已接（TARGET_CONTROL 按命中落账 + 纯控制技独立解析 + NPC→玩家 `ControlSink` 接线 + 受控拒施放/跳过出招）。缺：控制表现帧（客户端视觉）、免疫位仅钉死眩晕族、无怒气（SP）技能消耗闭环 |
 | `arrays` 阵法 | mostly 70% | ⬜ | 0% | 无实现 |
 | `manuals-dolls` 兵录与玉偶 | mostly 80% | ⬜ | 0% | 无实现；`role_binglu`（兵录 12 槽）表设计与导入器就绪 |
 | `pvp-rules` PvP 规则（PK 值/狂/杀） | mostly 80% | ⬜ | 0% | 无实现；PK 值仅在存档 extra 原键透传 |
-| `boss-mechanics` BOSS 机制 | progress 75% | 🟨 | 50% | ✅ `AiEventEngine` 数据驱动事件机（四表 ini）、BOSS 出招轮转（3 秒一招）、拼音大招 260/120 加倍、30% 血阶段喊话+大招、嗜血回血、召唤/掉宝箱（OpEvent 25/70）、难度与评价档条件、`lastAttacker` 仇恨。缺：无仇恨表（单目标覆盖）、世界 BOSS 不在 BOSS_PACKAGES 内**不会还手**、副本波次进度只能 GM 推进、原服务器 Lua 已丢失全靠攻略近似 |
+| `boss-mechanics` BOSS 机制 | progress 75% | 🟨 | 50% | ✅ `AiEventEngine` 数据驱动事件机（四表 ini）、BOSS 出招轮转（3 秒一招）、拼音大招 260/120 加倍、30% 血阶段喊话+大招、嗜血回血、召唤/掉宝箱（OpEvent 25/70）、难度与评价档条件、`lastAttacker` 仇恨；普通 monster 已有普攻（战斗窗口 2s 一击、攻击缺省 20 对齐参考服、贴身 4m 距离门、受控/招架/闪避复用通用结算）。缺：无仇恨表（单目标覆盖）、无追击（超距只等下一拍）、副本波次进度只能 GM 推进、原服务器 Lua 已丢失全靠攻略近似 |
 
 ## 3. Schools & factions 门派与阵营（Vagrant 81%，7 项）
 

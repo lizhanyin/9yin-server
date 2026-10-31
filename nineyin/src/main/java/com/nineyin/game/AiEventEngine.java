@@ -70,6 +70,14 @@ public final class AiEventEngine {
         }
     }
 
+    /**
+     * 玩家侧控制落账回调：NPC 技能命中玩家后，由 SceneFlow 按技能目录解析
+     * TARGET_CONTROL 效果并落账（含装备免疫位消费）。返回是否实际受控。
+     */
+    public interface ControlSink {
+        boolean applyBySkill(PlayerActor actor, String skillId, long now);
+    }
+
     /** 每场景（世界对象为键，resetWorld 重建后自动换新状态）的 AI 状态。 */
     private static final class WorldState {
         long lastPumpMs;
@@ -101,6 +109,10 @@ public final class AiEventEngine {
     /** 嗜血被动：大招命中回 1000（WushuWiki：被格挡也回）。 */
     private static final int XIXUE_HEAL = 1000;
     private static final long PLAYER_REVIVE_MS = TimeUnit.SECONDS.toMillis(8);
+    /** 普通怪普攻近似（参考服实测：2s 一击、普攻伤害 20、贴身 4m 内才出手）。 */
+    private static final long MONSTER_ATTACK_INTERVAL_MS = TimeUnit.SECONDS.toMillis(2);
+    private static final int DEFAULT_MONSTER_ATTACK = 20;
+    private static final float MONSTER_ATTACK_REACH = 4f;
 
     private final AiRuleData rules;
     private final NpcTemplateRepository templates;
@@ -109,6 +121,8 @@ public final class AiEventEngine {
             Collections.synchronizedMap(new java.util.WeakHashMap<>());
     private volatile Broadcaster broadcaster = (w, n) -> {
     };
+
+    private volatile ControlSink controlSink;
 
     /** 战斗掷骰（未命中/暴击）；测试可注入固定种子保证断言确定。 */
     private Random rng = ThreadLocalRandom.current();
@@ -125,6 +139,10 @@ public final class AiEventEngine {
 
     public void setBroadcaster(Broadcaster broadcaster) {
         this.broadcaster = broadcaster;
+    }
+
+    public void setControlSink(ControlSink controlSink) {
+        this.controlSink = controlSink;
     }
 
     /** 测试注入固定随机源（战斗掷骰走它），保证血量断言确定。 */
@@ -154,10 +172,10 @@ public final class AiEventEngine {
         }
     }
 
-    /** 战斗管线回调：NPC 受击（仇恨目标 = 攻击者会话）。 */
+    /** 战斗管线回调：NPC 受击（仇恨目标 = 攻击者会话；BOSS 与普通 monster 均记录）。 */
     public void onNpcDamaged(SceneWorld world, NpcInstance npc, FxSession attacker, long now) {
         npc.lastCombatMs = now;
-        if (!isBoundBoss(npc.configId)) {
+        if (!isBoundBoss(npc.configId) && !npc.monster) {
             return;
         }
         WorldState ws = worlds.computeIfAbsent(world, k -> new WorldState());
@@ -178,6 +196,11 @@ public final class AiEventEngine {
             for (NpcInstance n : List.copyOf(world.npcs)) {
                 AiPackage pkg = packageOf(n);
                 if (pkg == null) {
+                    // 无 AI 包的普通怪：战斗窗口内走普攻循环（无出生/周期/阶段事件）
+                    if (n.monster) {
+                        monsterAttack(world, n,
+                                ws.npcs.computeIfAbsent(n.objectId, k -> new NpcState()), now);
+                    }
                     continue;
                 }
                 NpcState ns = ws.npcs.computeIfAbsent(n.objectId, k -> new NpcState());
@@ -393,10 +416,14 @@ public final class AiEventEngine {
     /** 对仇恨目标释放技能：动作帧广播 + CombatFormulas 结算（未命中/招架/防御减免/暴击）
      *  + 招架耐力消耗（按攻击力）+ 嗜血回血 + 死亡缓复活。 */
     private void castSkill(SceneWorld world, NpcInstance boss, NpcState ns, String skillId) {
-        if (boss.controlled(System.currentTimeMillis())) {
-            log.info("boss {} cast {} skipped (controlled stateType={} remaining={}ms)",
-                    boss.configId, skillId, boss.controlStateType,
-                    boss.controlledUntilMs - System.currentTimeMillis());
+        castSkill(world, boss, ns, skillId, bossStats(boss, skillId));
+    }
+
+    /** 普通怪普攻：战斗窗口内对仇恨目标按 MONSTER_ATTACK_INTERVAL_MS 出手（无追击，
+     *  超出 MONSTER_ATTACK_REACH 不打）；模板带技能时轮转广播动作帧，否则纯结算。 */
+    private void monsterAttack(SceneWorld world, NpcInstance npc, NpcState ns, long now) {
+        if (now - npc.lastCombatMs >= COMBAT_WINDOW_MS
+                || now - ns.lastAttackMs < MONSTER_ATTACK_INTERVAL_MS) {
             return;
         }
         FxSession target = ns.lastAttacker;
@@ -407,36 +434,76 @@ public final class AiEventEngine {
         if (login == null || login.actor == null || login.actor.hp <= 0) {
             return;
         }
-        if (world != null) {
-            broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(boss.objectId, boss.ownerId,
+        float dx = login.x - npc.x;
+        float dz = login.z - npc.z;
+        if (dx * dx + dz * dz > MONSTER_ATTACK_REACH * MONSTER_ATTACK_REACH) {
+            return;
+        }
+        List<NpcTemplate.SkillRef> skills = templates.lookup(npc.configId).skills();
+        String skillId = skills.isEmpty() ? null
+                : skills.get(ns.rotationIdx++ % skills.size()).id();
+        castSkill(world, npc, ns, skillId, monsterStats(npc));
+        ns.lastAttackMs = now;
+    }
+
+    /** 普通怪攻击档案：模板 attack 列优先，缺省 20（参考服 monv/lifeanimal 实测普攻 20）。 */
+    private static CombatStats monsterStats(NpcInstance npc) {
+        int attack = npc.attack > 0 ? npc.attack : DEFAULT_MONSTER_ATTACK;
+        return new CombatStats(attack, npc.defense, 0, 0f, 0f, 0f, 0f,
+                npc.accuracy, 0, 0f, 0f, 0, 0, DEFAULT_INTERNAL_CONVERSION, 0, 0);
+    }
+
+    /** 通用出招结算（BOSS/普通怪共用）：skillId=null 表示无动作帧的普攻。 */
+    private void castSkill(SceneWorld world, NpcInstance caster, NpcState ns,
+                           String skillId, CombatStats atk) {
+        if (caster.controlled(System.currentTimeMillis())) {
+            log.info("npc {} cast {} skipped (controlled stateType={} remaining={}ms)",
+                    caster.configId, skillId, caster.controlStateType,
+                    caster.controlledUntilMs - System.currentTimeMillis());
+            return;
+        }
+        FxSession target = ns.lastAttacker;
+        if (target == null) {
+            return;
+        }
+        LoginSession login = target.channel().attr(LoginFlow.SESSION).get();
+        if (login == null || login.actor == null || login.actor.hp <= 0) {
+            return;
+        }
+        if (skillId != null && world != null) {
+            broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(caster.objectId, caster.ownerId,
                     skillId, S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID));
         }
-        CombatStats atk = bossStats(boss, skillId);
         PlayerActor actor = login.actor;
         boolean parrying = actor.parrying && actor.parryEndurance > 0;
         CombatFormulas.DamageResult hit = CombatFormulas.calc(
                 atk, actor.combatStats(), 1.0, rng, parrying);
         if (hit.miss()) {
-            log.info("boss {} cast {} -> {} MISS", boss.configId, skillId, login.roleName);
+            log.info("npc {} cast {} -> {} MISS", caster.configId, skillId, login.roleName);
             return;
         }
         if (parrying) {
             boolean broke = actor.drainParry(atk.attack());
             log.info("player {} parries {} (skill {}) -> damage={} endurance={}{}",
-                    login.roleName, boss.configId, skillId, hit.damage(), actor.parryEndurance,
+                    login.roleName, caster.configId, skillId, hit.damage(), actor.parryEndurance,
                     broke ? " PARRY BROKEN" : "");
         }
         boolean justDied = actor.applyDamage(hit.damage());
         target.send(actor.vitalUpdate());
-        log.info("boss {} cast {} -> {} damage={} crit={} parried={} hp={}", boss.configId, skillId,
+        log.info("npc {} cast {} -> {} damage={} crit={} parried={} hp={}", caster.configId, skillId,
                 login.roleName, hit.damage(), hit.crit(), hit.parried(), actor.hp);
-        if (isBigSkill(skillId) && boss.buffs.stream().anyMatch(b -> b.contains("xixue"))) {
-            boss.hp = Math.min(boss.maxHp, boss.hp + XIXUE_HEAL);
-            sendBossHp(target, boss);
+        // 技能带控制时对玩家落账（招架挡下不落控制；免疫位在 SceneFlow 侧消费）
+        if (!hit.parried() && skillId != null && controlSink != null) {
+            controlSink.applyBySkill(actor, skillId, System.currentTimeMillis());
+        }
+        if (skillId != null && isBigSkill(skillId)
+                && caster.buffs.stream().anyMatch(b -> b.contains("xixue"))) {
+            caster.hp = Math.min(caster.maxHp, caster.hp + XIXUE_HEAL);
+            sendBossHp(target, caster);
         }
         if (justDied) {
             log.info("player {} defeated by {} (skill {}), revive in {}ms",
-                    login.roleName, boss.configId, skillId, PLAYER_REVIVE_MS);
+                    login.roleName, caster.configId, skillId, PLAYER_REVIVE_MS);
             GameScheduler.schedule(PLAYER_REVIVE_MS, () -> {
                 login.actor.revive();
                 target.send(login.actor.vitalUpdate());

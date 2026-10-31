@@ -89,6 +89,7 @@ public final class SkillCatalog {
                              int mpCost, int spCost, int qgCost, int baseDamage,
                              boolean requiresTarget, TargetMode targetMode,
                              float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
+                             float targetRangeMeters,
                              String actionName, long actionDurationMs,
                              List<Segment> followupActions, List<Effect> effects) {
 
@@ -191,6 +192,7 @@ public final class SkillCatalog {
     private final Map<String, List<String[]>> consume = new LinkedHashMap<>();
     private final Map<String, List<String[]>> damage = new LinkedHashMap<>();
     private final Map<String, List<String[]>> hitShape = new LinkedHashMap<>();
+    private final Map<String, List<String[]>> targetShape = new LinkedHashMap<>();
     private final Map<String, List<String[]>> actions = new LinkedHashMap<>();
     private final Map<String, List<String[]>> buffNew = new LinkedHashMap<>();
     private final Map<String, List<String[]>> buffStatic = new LinkedHashMap<>();
@@ -214,6 +216,7 @@ public final class SkillCatalog {
         loadOptional(consume, skillRoot.resolve("skill_consume.ini"), "skill_consume.ini");
         loadOptional(damage, skillRoot.resolve("damage_calculate.ini"), "damage_calculate.ini");
         loadOptional(hitShape, skillRoot.resolve("attack_hitshape.ini"), "attack_hitshape.ini");
+        loadOptional(targetShape, skillRoot.resolve("attack_targetshape.ini"), "attack_targetshape.ini");
         loadOptional(buffNew, skillRoot.resolve("buff_new.ini"), "buff_new.ini");
         loadOptional(buffStatic, skillRoot.resolve("buff_static.ini"), "buff_static.ini");
         loadOptional(buffVar, skillRoot.resolve("buff_varprop.ini"), "buff_varprop.ini");
@@ -369,6 +372,8 @@ public final class SkillCatalog {
         boolean isDamage = intValue(staticFields, "IsDamage") != 0;
         List<String[]> hitShapeFields = hitShape.get(sectionKey(intValue(varProp, "HitShapePkg")));
         TargetShape shape = compileTargetMode(hitShapeFields, isDamage);
+        float targetRange = compileTargetRange(
+                targetShape.get(sectionKey(intValue(varProp, "TargetShapePkg"))));
         Timeline timeline = compileActions(actions.get(id));
         if (timeline.actionName().isEmpty()) {
             throw new CompileError(id + " has no player action timeline");
@@ -412,7 +417,7 @@ public final class SkillCatalog {
                 intValue(consumeFields, "AConsumeQGP"), baseDamage,
                 shape.mode() == TargetMode.SELECTED || shape.mode() == TargetMode.SELECTED_AREA,
                 shape.mode(), shape.radius(), floatValue(varProp, "HeightDiff"),
-                shape.sectorAngle(), shape.areaWidth(),
+                shape.sectorAngle(), shape.areaWidth(), targetRange,
                 timeline.actionName(), timeline.durationMs(),
                 timeline.followups(), Collections.unmodifiableList(effects));
     }
@@ -473,6 +478,18 @@ public final class SkillCatalog {
             case 4, 12 -> new TargetShape(TargetMode.CASTER_RECTANGLE, para2, 0, para1);
             default -> new TargetShape(TargetMode.SELECTED, 0, 0, 0);
         };
+    }
+
+    /**
+     * attack_targetshape.ini：TargetShape=1（以自己为圆心半径 N 米选取目标）时
+     * TargetShapePara2 即施法射程（参考服 range gate 的 max 值来源：3/4/6/8/15/20/25 米）；
+     * 0=非远程（以自己为目标）与其余形状暂不设门（返回 0 不校验）。
+     */
+    private static float compileTargetRange(List<String[]> fields) {
+        if (fields == null || intValue(fields, "TargetShape") != 1) {
+            return 0f;
+        }
+        return Math.max(0f, floatValue(fields, "TargetShapePara2"));
     }
 
     private record Timeline(String actionName, long durationMs, List<Segment> followups) {

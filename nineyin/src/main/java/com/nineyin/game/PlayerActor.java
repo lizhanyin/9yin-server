@@ -63,6 +63,10 @@ public final class PlayerActor {
         }
     }
 
+    /** 到期被剔除的 Buff（event-169 remove 配对用：槽位 + 身份，供表现层补发移除帧）。 */
+    public record ExpiredBuff(int slot, int staticData, String configId) {
+    }
+
     public String name = "";
     public String faction = "";
 
@@ -161,6 +165,9 @@ public final class PlayerActor {
     private final Map<Integer, ActiveBuff> buffs = new LinkedHashMap<>();
     private final List<Shortcut> shortcuts = new ArrayList<>();
     private final Set<String> activeQingGong = new HashSet<>();
+    /** pruneBuffs 剔除队列（等表现层取走发 event-169 remove；参考服 add/remove 严格配对）。 */
+    private final List<ExpiredBuff> expiredBuffQueue =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
 
     // ---------- Buff ----------
 
@@ -525,10 +532,22 @@ public final class PlayerActor {
         for (Map.Entry<Integer, ActiveBuff> e : new HashMap<>(buffs).entrySet()) {
             if (e.getValue().expiresMs <= nowMs) {
                 buffs.remove(e.getKey());
+                expiredBuffQueue.add(new ExpiredBuff(e.getKey(),
+                        e.getValue().staticData, e.getValue().configId));
                 changed = true;
             }
         }
         return changed;
+    }
+
+    /** 取走并清空到期剔除队列（调用方负责逐条发 event-169 remove）。 */
+    public List<ExpiredBuff> drainExpiredBuffs() {
+        if (expiredBuffQueue.isEmpty()) {
+            return List.of();
+        }
+        List<ExpiredBuff> drained = List.copyOf(expiredBuffQueue);
+        expiredBuffQueue.clear();
+        return drained;
     }
 
     // ---------- 快捷键 ----------

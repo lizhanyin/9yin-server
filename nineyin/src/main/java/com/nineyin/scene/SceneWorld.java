@@ -146,10 +146,16 @@ public final class SceneWorld {
             float d2 = dx * dx + dz * dz;
             if (d2 <= r2 && (filter == null || filter.test(n))) {
                 hits.add(n);
-                if (hits.size() >= maxCount) {
-                    break;
-                }
             }
+        }
+        // 截断前按距离升序：避免遍历顺序把更近的目标挤出 maxCount（area 结算上限 64）
+        hits.sort(java.util.Comparator.<NpcInstance>comparingDouble(n -> {
+            float dx = n.x - px;
+            float dz = n.z - pz;
+            return (double) dx * dx + (double) dz * dz;
+        }));
+        if (hits.size() > maxCount) {
+            hits.subList(maxCount, hits.size()).clear();
         }
         return hits;
     }

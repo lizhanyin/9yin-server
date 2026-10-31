@@ -129,6 +129,76 @@ class AiEventEngineTest {
         assertEquals(1000 - 45 - 195, login.actor.hp);
     }
 
+    /**
+     * 普通怪普攻（无 AI 包 monster）：战斗窗口内 2s 间隔出招、攻击缺省 20；
+     * 间隔内不出手；受控跳过；超出 4m 攻击距离不出手。
+     */
+    @Test
+    void monsterBasicAttackDamagesPlayerOnInterval() {
+        NpcInstance mon = bossNpc("mon_plain_001");   // 无 AI 包、无模板技能 → 纯普攻
+        world.addDynamic(mon);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 10;
+        login.z = -19;                                // 距怪 1m（贴身）
+        engine.useRngForTest(new Random(42));
+        engine.onNpcDamaged(world, mon, fx, 4000L);
+        engine.pump(world, 4000L);                    // 首拍立即普攻（damage=20：扣血 15 + 瘀血 5）
+        assertEquals(1000 - 15, login.actor.hp, "普攻 20：75% 扣血");
+        assertEquals(5, login.actor.hitHp, "25% 进瘀血层");
+        int afterFirst = login.actor.hp;
+        engine.pump(world, 5000L);                    // 距上次 1s < 2s：不出手
+        assertEquals(afterFirst, login.actor.hp, "间隔内不得重复出手");
+        engine.pump(world, 7000L);                    // 距上次 3s ≥ 2s：再次普攻
+        assertEquals(1000 - 30, login.actor.hp, "第二击扣血");
+    }
+
+    @Test
+    void monsterOutOfReachDoesNotAttack() {
+        NpcInstance mon = bossNpc("mon_far_001");
+        world.addDynamic(mon);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 0;
+        login.z = 0;                                  // 怪在 (10,-20)：距离 ≈22.4m
+        engine.useRngForTest(new Random(42));
+        engine.onNpcDamaged(world, mon, fx, 4000L);
+        engine.pump(world, 4000L);
+        engine.pump(world, 7000L);
+        assertEquals(1000, login.actor.hp, "超出攻击距离不得出手");
+    }
+
+    @Test
+    void controlledMonsterSkipsAttack() {
+        NpcInstance mon = bossNpc("mon_ctrl_001");
+        mon.controlledUntilMs = Long.MAX_VALUE;
+        world.addDynamic(mon);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 10;
+        login.z = -19;
+        engine.useRngForTest(new Random(42));
+        engine.onNpcDamaged(world, mon, fx, 4000L);
+        engine.pump(world, 4000L);
+        assertEquals(1000, login.actor.hp, "受控怪不出手");
+    }
+
+    /** 控制回调接线：BOSS 技命中玩家（未被招架）后 ControlSink 收到 skillId。 */
+    @Test
+    void controlSinkInvokedOnNpcSkillHit() {
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        engine.useRngForTest(new Random(42));
+        List<String> invoked = new java.util.ArrayList<>();
+        engine.setControlSink((actor, skillId, now) -> {
+            invoked.add(skillId);
+            return true;
+        });
+        engine.onNpcDamaged(world, boss, fx, 4000L);
+        engine.pump(world, 4000L);   // 常规技 _01 命中 → sink 调用一次
+        assertEquals(List.of("clone003_hsj_01"), invoked);
+    }
+
     @Test
     void regenBuffHealsDuringCombat() {
         FxSession fx = attachPlayer();

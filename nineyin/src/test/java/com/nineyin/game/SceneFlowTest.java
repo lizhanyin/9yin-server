@@ -139,6 +139,21 @@ class SceneFlowTest {
                 StaticData=900003
                 script=SkillNormal
                 ItemType=1000
+
+                [test_range]
+                StaticData=900004
+                script=SkillNormal
+                ItemType=1000
+
+                [test_aoe_ctrl]
+                StaticData=900005
+                script=SkillNormal
+                ItemType=1000
+
+                [test_cc_only]
+                StaticData=900006
+                script=SkillNormal
+                ItemType=1000
                 """, GBK);
         Files.writeString(skill.resolve("skill_static.ini"), """
                 [900001]
@@ -164,6 +179,30 @@ class SceneFlowTest {
                 CoolDownTeam=50268
                 IsDamage=1
                 TaoLu=test
+
+                [900004]
+                MinVarPropNo=800031
+                MaxVarPropNo=800035
+                CoolDownCategory=12449
+                CoolDownTeam=50269
+                IsDamage=1
+                TaoLu=test
+
+                [900005]
+                MinVarPropNo=800041
+                MaxVarPropNo=800045
+                CoolDownCategory=12450
+                CoolDownTeam=50269
+                IsDamage=1
+                TaoLu=test
+
+                [900006]
+                MinVarPropNo=800051
+                MaxVarPropNo=800055
+                CoolDownCategory=12451
+                CoolDownTeam=50269
+                IsDamage=1
+                TaoLu=test
                 """, GBK);
         Files.writeString(skill.resolve("skill_normal_varprop.ini"), """
                 [800001]
@@ -185,6 +224,27 @@ class SceneFlowTest {
                 HitShapePkg=1
                 CoolDownTime=15000
                 DamageCalculate=23033
+
+                [800031]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                TargetShapePkg=7
+                CoolDownTime=15000
+                DamageCalculate=23033
+
+                [800041]
+                Level=1
+                Consume=15608
+                HitShapePkg=2
+                CoolDownTime=15000
+                DamageCalculate=23033
+
+                [800051]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                CoolDownTime=15000
                 """, GBK);
         Files.writeString(skill.resolve("skill_consume.ini"), """
                 [15608]
@@ -201,6 +261,17 @@ class SceneFlowTest {
                 HitShape=0
                 HitShapePara1=0
                 HitShapePara2=0
+
+                [2]
+                HitShape=1
+                HitShapePara1=0
+                HitShapePara2=3
+                """, GBK);
+        Files.writeString(skill.resolve("attack_targetshape.ini"), """
+                [7]
+                TargetShape=1
+                TargetShapePara1=0
+                TargetShapePara2=6
                 """, GBK);
         Files.writeString(skill.resolve("buff_new.ini"), """
                 [buf_test_self]
@@ -209,6 +280,14 @@ class SceneFlowTest {
 
                 [buf_test_ctrl]
                 StaticData=15106
+                LifeTime=3000
+
+                [buf_test_aoe_ctrl]
+                StaticData=15107
+                LifeTime=3000
+
+                [buf_test_cc_only]
+                StaticData=15108
                 LifeTime=3000
                 """, GBK);
         Files.writeString(skill.resolve("buff_static.ini"), """
@@ -222,6 +301,18 @@ class SceneFlowTest {
                 StateType=1
                 MinVarPropNo=296923
                 MaxVarPropNo=296923
+
+                [15107]
+                IsDamage=1
+                StateType=1
+                MinVarPropNo=296933
+                MaxVarPropNo=296933
+
+                [15108]
+                IsDamage=1
+                StateType=2
+                MinVarPropNo=296943
+                MaxVarPropNo=296943
                 """, GBK);
         Files.writeString(skill.resolve("buff_varprop.ini"), """
                 [296913]
@@ -229,6 +320,14 @@ class SceneFlowTest {
                 LifeTime=5000
 
                 [296923]
+                Level=1
+                LifeTime=3000
+
+                [296933]
+                Level=1
+                LifeTime=3000
+
+                [296943]
                 Level=1
                 LifeTime=3000
                 """, GBK);
@@ -253,6 +352,27 @@ class SceneFlowTest {
                 level=1
                 maxlevel=1
                 coolDown=0
+
+                [test_range]
+                staticData=900004
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
+
+                [test_aoe_ctrl]
+                staticData=900005
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
+
+                [test_cc_only]
+                staticData=900006
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
                 """, GBK);
         Path action = tempDir.resolve("ini/action");
         Files.createDirectories(action);
@@ -266,6 +386,15 @@ class SceneFlowTest {
 
                 [test_ctrl]
                 1=ctrl_act;0;43;-1;-1;1
+
+                [test_range]
+                1=range_act;0;43;-1;-1;1
+
+                [test_aoe_ctrl]
+                1=aoe_act;0;43;-1;-1;1
+
+                [test_cc_only]
+                1=cc_act;0;43;-1;-1;1
                 """, GBK);
     }
 
@@ -645,6 +774,8 @@ class SceneFlowTest {
         }
         org.junit.jupiter.api.Assertions.assertNotNull(target, "fixture 战斗怪必须存在");
         st.selectedOid = target.objectId;
+        // 命中确定性：默认 accuracy=0 有 10% 未命中率，命中掷骰走 ThreadLocalRandom
+        login.actor.accuracy = 400;
 
         // 控制技命中：NPC 进入受控态（StateType=1，3s）
         long before = System.currentTimeMillis();
@@ -678,6 +809,144 @@ class SceneFlowTest {
                 .u8(2).i32(211)
                 .u8(6).u32(b.length + 1).raw(b).u8(0)
                 .toByteArray();
+    }
+
+    private void fullLogin() {
+        send(loginPacket());
+        drainOutbound();
+        send(createRolePacket());
+        drainOutbound();
+        send(new byte[]{0x04});
+        drainOutbound();
+        send(new byte[]{0x09});
+        drainOutbound();
+    }
+
+    private NpcInstance npcByConfig(SceneFlow.SceneState st, String configId) {
+        synchronized (st.world) {
+            for (NpcInstance n : st.world.npcs) {
+                if (configId.equals(n.configId) && !n.dead) {
+                    return n;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 0x1E msg169 帧匹配（endFlag 0=add / 1=remove + 名称子串）。 */
+    private static byte[] findBuff169(List<byte[]> frames, int endFlag, String name) {
+        for (byte[] f : frames) {
+            if (op(f) != 0x1E || leU32(f, 4) != 169 || f.length < 13) {
+                continue;
+            }
+            if ((f[8] & 0xFF) == 2 && leU32(f, 9) == endFlag && containsUtf8(f, name)) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 区域控制只落实际命中的目标：test_aoe_ctrl（caster 圆形半径 3 + TARGET_CONTROL），
+     * 站桩 NPC npc_qd_001 在半径内 → 受控；mon_test_001（距 34m）在半径外 → 不受控。
+     */
+    @Test
+    void areaControlSkipsOutOfRangeTargets() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        SceneFlow.SceneState st = sceneFlow.stateOf(login.fx);
+        NpcInstance near = npcByConfig(st, "npc_qd_001");
+        NpcInstance far = npcByConfig(st, "mon_test_001");
+        org.junit.jupiter.api.Assertions.assertNotNull(near);
+        org.junit.jupiter.api.Assertions.assertNotNull(far);
+        login.actor.accuracy = 400;   // 命中确定性（默认 10% 未命中率）
+
+        send(useSkill("test_aoe_ctrl"));
+        drainOutbound();
+        assertTrue(near.controlled(System.currentTimeMillis() + 500), "半径内 NPC 应受控");
+        assertEquals(1, near.controlStateType);
+        assertFalse(far.controlled(System.currentTimeMillis()), "半径外 NPC 不得受控");
+    }
+
+    /** 纯控制技（无 DAMAGE 效果）目标独立解析：选中目标仍被控（StateType=2）。 */
+    @Test
+    void controlOnlySkillControlsSelectedTarget() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        SceneFlow.SceneState st = sceneFlow.stateOf(login.fx);
+        NpcInstance target = npcByConfig(st, "mon_test_001");
+        org.junit.jupiter.api.Assertions.assertNotNull(target);
+        st.selectedOid = target.objectId;
+
+        send(useSkill("test_cc_only"));
+        drainOutbound();
+        assertTrue(target.controlled(System.currentTimeMillis() + 500), "纯控制技应落到选中目标");
+        assertEquals(2, target.controlStateType);
+    }
+
+    /** 施法距离门：test_range 射程 6m（容差 ×1.2=7.2m）；17.8m 拒绝（无技能帧/不扣蓝），贴身放行。 */
+    @Test
+    void rangeGateRejectsFarTargetWithTolerance() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        SceneFlow.SceneState st = sceneFlow.stateOf(login.fx);
+        NpcInstance target = npcByConfig(st, "npc_qd_001");
+        org.junit.jupiter.api.Assertions.assertNotNull(target);
+        st.selectedOid = target.objectId;
+
+        // 玩家移到 (885,760)：距 npc_qd_001(874,746) ≈ 17.8m > 7.2m → 拒绝
+        send(movePacket(885, 1, 760, 0));
+        drainOutbound();
+        int mpBefore = login.actor.mp;
+        send(useSkill("test_range"));
+        List<byte[]> rejected = drainOutbound();
+        assertTrue(rejected.stream().noneMatch(f -> op(f) == 0x11 || op(f) == 0x10),
+                "超距施放不得发出技能帧");
+        assertEquals(mpBefore, login.actor.mp, "超距拒绝不扣蓝");
+
+        // 贴身（默认出生点距目标 ≈1.1m）→ 放行
+        send(movePacket(875, 1, 747, 0));
+        drainOutbound();
+        send(useSkill("test_range"));
+        List<byte[]> accepted = drainOutbound();
+        assertTrue(accepted.stream().anyMatch(f -> op(f) == 0x11), "射程内应放行（cooldown 行）");
+    }
+
+    /** 技能 Buff 169 配对：cast → add 帧（endFlag=0）；到期剔除 → remove 帧（endFlag=1）+ 槽清空。 */
+    @Test
+    void skillBuffRaises169AddAndExpiryRemove() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+
+        send(useSkill("test_self"));
+        List<byte[]> cast = drainOutbound();
+        byte[] add = findBuff169(cast, 0, "buf_test_self");
+        org.junit.jupiter.api.Assertions.assertNotNull(add, "cast 应发 169 add 帧");
+
+        // 5s 生命到期：tick 快进 10s 剔除，再经 SceneFlow.tick 补发 remove
+        login.uiBootstrapped = true;
+        login.actor.tick(System.currentTimeMillis() + 10_000);
+        sceneFlow.tick(login.fx, login);
+        List<byte[]> expired = drainOutbound();
+        byte[] remove = findBuff169(expired, 1, "buf_test_self");
+        org.junit.jupiter.api.Assertions.assertNotNull(remove, "到期应发 169 remove 帧");
+        assertTrue(login.actor.drainExpiredBuffs().isEmpty(), "剔除队列已排空");
+    }
+
+    /** NPC 技能控制接线（ControlSink 的 SceneFlow 侧）：按目录解析 TARGET_CONTROL 落到玩家。 */
+    @Test
+    void npcSkillControlLandsOnPlayer() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        assertTrue(sceneFlow.applySkillControlToPlayer(login.actor, "test_ctrl",
+                System.currentTimeMillis()));
+        assertTrue(login.actor.controlled(System.currentTimeMillis() + 500), "NPC 控制技应控住玩家");
+        assertEquals(1, login.actor.controlStateType);
+        // 未收录技能：不落账
+        login.actor.controlledUntilMs = 0;
+        assertFalse(sceneFlow.applySkillControlToPlayer(login.actor, "no_such_skill",
+                System.currentTimeMillis()));
+        assertFalse(login.actor.controlled(System.currentTimeMillis()));
     }
 
     /** 211 校验链与释放：未学习拒绝 → 自 buff 技完整链（CD 行/vital/State/扣蓝）→ CD 内拒绝 → 需目标无选中拒绝。 */

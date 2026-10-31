@@ -209,7 +209,10 @@ Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 
   首选槽→同 ConfigID 复用→11..24 空闲槽分配（红霸体/架势轮换 overlay 已接）；
   total_action 后清 CurSkill*（仅匹配本次技能，旧定时器不误清）并回 stand。
 - **未对齐项（后续轮）**：skill_use_limit 武器门控（包表已装载、按技能的绑定键未钉死）、
-  施法距离/空中校验（Java 无 airborne 状态，需先接轻功悬空态）、区域多跳 split/cadence
+  ~~施法距离校验~~（已接：varprop `TargetShapePkg` → `attack_targetshape.ini`，TargetShape=1
+  圆形 Para2 即射程——真实数据 pkg 6/9/16/17 → 5/8/15/20m，与 exe range gate max 值一致；
+  Java 侧加 20% 容差修正参考服 `dist 8.5>8.0` 式硬拒；airborne 校验仍缺，需先接轻功悬空态）、
+  区域多跳 split/cadence
   （拆分公式未钉死，现单跳 split=1）、[skill-save] 学习进度持久化、
   ~~`learned skill count %d exceeds u16 view capacity` 的全量 View 推送~~
   （**第十六轮已实现整推**，见 §3.16）。

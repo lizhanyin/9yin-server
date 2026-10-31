@@ -61,6 +61,7 @@ public final class NpcTemplateRepository {
             int scriptCol = -1, actionCol = -1, weaponCol = -1;
             int shopCol = -1, depotCol = -1, doorPkgCol = -1, transferCol = -1, springCol = -1;
             int skillCol = -1, openRangeCol = -1, openActionCol = -1, delayCol = -1;
+            int npcTypeCol = -1, selStateCol = -1, cursorCol = -1;
             String data = new String(Files.readAllBytes(path), GBK);
             for (String line : data.split("\n")) {
                 if (line.isEmpty() || line.charAt(0) == '#' || line.charAt(0) == '/') {
@@ -92,6 +93,9 @@ public final class NpcTemplateRepository {
                             case "OpenRange", "openrange" -> openRangeCol = i;
                             case "OpenAction", "openaction" -> openActionCol = i;
                             case "DelayTime", "delaytime" -> delayCol = i;
+                            case "NpcType", "npctype" -> npcTypeCol = i;
+                            case "SelectState", "selectstate" -> selStateCol = i;
+                            case "CursorShape", "cursorshape" -> cursorCol = i;
                             default -> {
                             }
                         }
@@ -118,6 +122,9 @@ public final class NpcTemplateRepository {
                         cell(cols, doorPkgCol), cell(cols, transferCol),
                         parseFloatOr(cell(cols, springCol), 0f),
                         parseSkills(cell(cols, skillCol)),
+                        parseIntOr(cell(cols, npcTypeCol), 0),
+                        parseIntOr(cell(cols, selStateCol), 0),
+                        parseIntOr(cell(cols, cursorCol), 0),
                         parseBox(cell(cols, openRangeCol),
                                 cell(cols, openActionCol), cell(cols, delayCol)));
                 templates.putIfAbsent(id, info);

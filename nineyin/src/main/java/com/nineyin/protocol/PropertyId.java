@@ -48,6 +48,7 @@ public final class PropertyId {
     public static final int AUTO_SELECT_OBJECT = 414;
     public static final int CAPITAL_TYPE0 = 415;   // i64（金币）
     public static final int CAPITAL_TYPE1 = 416;   // i64（碎银）
+    public static final int CAPITAL_TYPE2 = 417;   // i64（官银 guanYin，GM set_guanyin）
     public static final int MODIFY_SKILL_LOCK_TIME = 221;
     public static final int PK_MODE = 436;         // short：0=和平 1=善恶 2=杀戮（msgId=291 切换）
     public static final int CUR_SKILL_ID = 459;    // string
@@ -115,6 +116,29 @@ public final class PropertyId {
      * 注意新参考 exe 自己的表整体偏移 +1（471/474），帧索引必须与本服下发的表一致。 */
     public static final int IN_PARRY = 470;         // 格挡中（右键 54/主动 218 同步）
     public static final int IN_MANUAL_PARRY = 473;  // 手动格挡中
+
+    /** GM 面板动作所需属性（名字按 menu2 参考服换算到本服 0x09 表 index；
+     * menu2 exe 的属性表与本服表是两个版本，数字不可直抄，见 docs/gm-menu2-actions.md）。 */
+    public static final int TITLE_ID = 359;         // i32（当前佩戴称号）
+    public static final int HAS_LEARN_EXT_SKILL = 434; // u8（set_pk_mode 附带）
+    public static final int JUSTICE = 320;          // i32 善
+    public static final int EVIL = 321;             // i32 恶
+    public static final int FREE_BASE = 322;        // i32 基础狂邪
+    public static final int CHARACTER_FLAG = 318;   // i32 性格标记
+    public static final int CHARACTER_VALUE = 319;  // i32 性格值
+    public static final int POWER_LEVEL = 210;      // i32 实力等级
+    public static final int STR = 484;              // i32 臂力
+    public static final int ING = 485;              // i32 内息
+    public static final int DEX = 486;              // i32 身法
+    public static final int SPI = 487;              // i32 罡气
+    public static final int STA = 488;              // i32 体魄
+    public static final int ENE = 704;              // i32 体力
+    public static final int MAX_ENE = 705;          // i32 体力上限
+    public static final int RESUME_ENE = 706;       // i32 体力恢复
+    public static final int SAT = 707;              // i32 饱食
+    public static final int MAX_SAT = 708;          // i32 饱食上限
+    public static final int DRUNK_LEVEL = 722;      // i32 酒量
+    public static final int PK_VALUE = 426;         // i32 杀戮
 
     /** BufferInfo 槽位属性索引（1..24）。 */
     public static int bufferInfoSlot(int slot) {

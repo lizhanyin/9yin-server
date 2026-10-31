@@ -70,6 +70,8 @@ public final class NineyinServer implements SummerApp {
     private final FxOpcodeRouter router;
     private final ShopRepository shopRepository;
     private final GmActions gmActions;
+    /** 称号库（MySQL 后端；null=JSON 后端）。 */
+    private final com.nineyin.db.TitleStore titleStore;
     private final SceneFlow sceneFlow;
     private final WorldBossManager worldBossManager;
     private final List<FxSession> sessions = new CopyOnWriteArrayList<>();
@@ -89,7 +91,13 @@ public final class NineyinServer implements SummerApp {
         this.sceneManager = new SceneManager();
         this.router = new FxOpcodeRouter();
         Path shareRoot = SceneManager.locateShareRoot();
-        this.gmServer = new GmHttpServer(gmHub, GmCatalog.create(shareRoot));
+        GmCatalog gmCatalog = GmCatalog.create(shareRoot);
+        this.titleStore = com.nineyin.db.TitleStore.from(roleStore);
+        if (titleStore != null) {
+            // 称号目录权威源 = MySQL game_titles（查询失败回退 data/称号数据.json）
+            gmCatalog.setTitlesSource(titleStore::catalogJson);
+        }
+        this.gmServer = new GmHttpServer(gmHub, gmCatalog);
         NinJiuZhi ninjiuzhi = NinJiuZhi.load(Path.of("data"));
         ninjiuzhi.addListener(this::broadcastNinJiuZhiStage);
 
@@ -179,7 +187,7 @@ public final class NineyinServer implements SummerApp {
         selectFlow.setSceneFlow(sceneFlow);   // PvP：选中远端玩家（坐标回填 + 真实血条）
         selectFlow.register(router);
         gmActions = new GmActions(sceneManager, roleStore, sceneFlow.switcher(), sceneFlow,
-                sceneFlow.ninjiuzhi(), worldBossManager);
+                sceneFlow.ninjiuzhi(), worldBossManager, titleStore);
     }
 
     public FxOpcodeRouter router() {
@@ -354,6 +362,7 @@ public final class NineyinServer implements SummerApp {
                     long elapsed = System.nanoTime() / 1_000_000L - login.bootSteadyMs;
                     fx.send(S2CPackets.timeSync((int) (elapsed & 0xFFFFFFFFL), login.timeSeq++));
                     fx.send(S2CPackets.objectPropertyInt(PropertyId.TIME_TICK, minutes));
+                    restoreWornTitle(fx, login);
                 }
                 Long id = fx.channel().attr(GM_SESSION_ID).get();
                 if (id != null) {
@@ -428,6 +437,21 @@ public final class NineyinServer implements SummerApp {
     }
 
     /** 消费 GM 命令：kick/minimal_login 与 GmActions 动作集（资源/传送/门派/协议探针）。 */
+    /** 重登恢复佩戴称号：首个 uiBootstrapped tick 查 role_titles(is_worn=1) 下发 TitleID。 */
+    private void restoreWornTitle(FxSession fx, LoginSession login) {
+        if (login.titleRestored || titleStore == null || login.roleId <= 0) {
+            return;
+        }
+        login.titleRestored = true;
+        Integer worn = titleStore.worn(login.roleId);
+        if (worn != null && worn > 0) {
+            login.wornTitleId = worn;
+            fx.send(S2CPackets.playerBatch()
+                    .i32(PropertyId.TITLE_ID, worn).build());
+            log.info("title restored role={} titleId={}", login.roleId, worn);
+        }
+    }
+
     private void consumeGmCommands(long id, FxSession fx) {
         GmCommand cmd;
         while ((cmd = gmHub.tryPop(id)) != null) {

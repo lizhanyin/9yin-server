@@ -60,6 +60,12 @@ public final class LoginSession {
     /** 本会话已出现的 custom msgId（监控：未识别消息首次出现打 INFO）。 */
     public final java.util.Set<Integer> seenCustomMsgIds = new java.util.HashSet<>();
 
+    /** GM 称号（grant_title 入列、wear_title 佩戴校验；会话内存，TitleID=359 即时下发）。 */
+    public final java.util.List<Integer> grantedTitles = new java.util.ArrayList<>();
+    public int wornTitleId;
+    /** 重登佩戴称号已恢复（clock tick 首个 uiBootstrapped 后下发一次）。 */
+    public boolean titleRestored;
+
     /** 权威玩家状态（选角时创建）。 */
     public PlayerActor actor;
 

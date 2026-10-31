@@ -348,6 +348,15 @@ public final class LoginFlow {
         // 权威状态全量同步（血蓝/轻功点/怒气/碎银/重力速度/内功面板字段）
         if (s.actor != null) {
             fx.send(s.actor.vitalUpdate());
+            // 格挡态复位（InParry/InManualParry=0 + BufferInfo11 清空）：跨服/重连客户端
+            // 可能带着旧会话"已格挡"认知（engage 未 release 即断线），此后只发松开(1)
+            // 等确认、永不再发按下(0)。入场权威推 0 让客户端状态机回 idle
+            // （2026-10-31 晚 141 release / 0 engage 死锁；配合 54 游离 release 确认双保险）。
+            fx.send(S2CPackets.objectProperties(S2CPackets.PLAYER_OBJECT_ID,
+                    S2CPackets.PLAYER_OWNER_ID,
+                    S2CPackets.PropVal.of(PropertyId.IN_PARRY, 0),
+                    S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, 0),
+                    S2CPackets.PropVal.text(PropertyId.bufferInfoSlot(11), "")));
         }
         if (st != null) {
             st.qinggongGranted = true;

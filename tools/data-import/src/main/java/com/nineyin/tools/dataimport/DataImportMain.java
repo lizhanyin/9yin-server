@@ -10,9 +10,11 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 数据导入工具入口。
@@ -28,6 +30,9 @@ import java.util.Map;
  *   apply-schema      建库并执行全部建表脚本（accounts/roles 基表 + 45 张数据表）
  *   import list       列出全部导入器
  *   import all        依序执行全部导入（roles 引导 → 配置表 → 角色数据）
+ *   import config     仅配置导入器（game_ / server_ / teams / gm_permissions 全量重建，
+ *                     不触碰 role_ 角色数据——库已在用时的安全补数方式）
+ *   import role-data  仅角色数据导入器（会重写 role_ 表，慎用）
  *   import &lt;name&gt;     执行单个导入器（见 import list）
  * </pre>
  *
@@ -98,6 +103,13 @@ public final class DataImportMain {
         List<Importer> toRun = new ArrayList<>();
         if ("all".equals(rest.get(0))) {
             toRun.addAll(registry.values());
+        } else if ("config".equals(rest.get(0)) || "role-data".equals(rest.get(0))) {
+            boolean configOnly = "config".equals(rest.get(0));
+            for (Importer im : registry.values()) {
+                if (configOnly == isConfigImporter(im)) {
+                    toRun.add(im);
+                }
+            }
         } else {
             for (String name : rest) {
                 Importer im = registry.get(name);
@@ -134,9 +146,23 @@ public final class DataImportMain {
         System.out.printf("全部完成（%d 个导入器）%n", toRun.size());
     }
 
+    /** 配置导入器名单（import config / import role-data 组命令的过滤依据）。 */
+    private static final Set<String> CONFIG_IMPORTER_NAMES = buildConfigNames();
+
+    private static Set<String> buildConfigNames() {
+        Set<String> names = new HashSet<>();
+        for (Importer im : com.nineyin.tools.dataimport.importer.ConfigImporters.all()) {
+            names.add(im.name());
+        }
+        return Set.copyOf(names);
+    }
+
+    private static boolean isConfigImporter(Importer im) {
+        return CONFIG_IMPORTER_NAMES.contains(im.name());
+    }
+
     /** 导入器注册表：roles 引导在最前（角色数据依赖它），其后配置表、角色数据。 */
-    private static Map<String, Importer> registry() {
-        Map<String, Importer> map = new LinkedHashMap<>();
+    private static Map<String, Importer> registry() {        Map<String, Importer> map = new LinkedHashMap<>();
         Importer roles = new RolesImporter();
         map.put(roles.name(), roles);
         for (Importer im : com.nineyin.tools.dataimport.importer.ConfigImporters.all()) {
@@ -169,7 +195,7 @@ public final class DataImportMain {
     private static void usageAndExit(String reason) {
         System.err.println(reason);
         System.err.println("用法: data-import [-dsn user:pass@tcp(host:port)/dbname] [-data 目录] "
-                + "<apply-schema | import list | import all | import <name>>");
+                + "<apply-schema | import list | import all | import config | import role-data | import <name>>");
         System.exit(2);
     }
 

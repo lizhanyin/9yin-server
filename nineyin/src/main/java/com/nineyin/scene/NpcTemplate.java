@@ -8,6 +8,8 @@ import java.util.List;
  * 业务字段（门路由与商店/仓库菜单来源），模板缺省时由 creator 实例属性覆盖。
  * skills 来自 table@SkillRec（"skillId,level,?;..."，BOSS 出招表）；
  * box 来自宝箱表 OpenRange/OpenAction/DelayTime（开箱距离/动作/读条）。
+ * npcType/selectState/cursorShape 为交互语义列（boxnpc 等功能表：NpcType=161、
+ * SelectState=9、CursorShape=28 → 客户端点击走采集开箱而非对话）。
  * attack/defense/accuracy/evasion 为战斗属性列（表缺列时为 0，走运行时默认值）。
  */
 public record NpcTemplate(String configId, String resource, String name,
@@ -18,6 +20,7 @@ public record NpcTemplate(String configId, String resource, String name,
                           String doorPackageId, String playerTransferPosition,
                           float springRange,
                           List<SkillRef> skills,
+                          int npcType, int selectState, int cursorShape,
                           BoxInfo box) {
 
     /** 单条技能引用（table@SkillRec 一段）。 */
@@ -29,5 +32,5 @@ public record NpcTemplate(String configId, String resource, String name,
     }
 
     public static final NpcTemplate MISSING = new NpcTemplate("", "", "", "", "", "", 0, 0, 0, 0, 0, 0,
-            "", "", "", "", 0f, List.of(), null);
+            "", "", "", "", 0f, List.of(), 0, 0, 0, null);
 }

@@ -168,4 +168,20 @@ public final class CustomPackets {
             fx.send(frame);
         }
     }
+
+    /** 0x1A 气泡/聊天（空终止+频道，对齐 menu2 serverSpeechNullTerm）：
+     * 0x1A | u32 oid | u32 channel | UTF-16LE 文本 | u16 0。 */
+    public static byte[] speechNullTerm(int objectId, int channel, String text) {
+        byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return new PacketWriter().u8(0x1A).u32(objectId).u32(channel)
+                .raw(bytes).u16(0).toByteArray();
+    }
+
+    /** 0x1A 旧版气泡（长度前缀，对齐 menu2 serverSpeech）：
+     * 0x1A | u32 oid | u32 字节长(含终止) | UTF-16LE 文本 | u16 0。 */
+    public static byte[] speechLenPrefix(int objectId, String text) {
+        byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+        return new PacketWriter().u8(0x1A).u32(objectId).u32(bytes.length + 2)
+                .raw(bytes).u16(0).toByteArray();
+    }
 }

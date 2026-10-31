@@ -1286,8 +1286,15 @@ class SceneFlowTest {
         LoginSession login = channel.attr(LoginFlow.SESSION).get();
 
         // 54 右键格挡：int64 0=按下/1=松开；状态变化回 0x1E msg169 BuffInParry + 0x10 InParry(470)，
-        // 重复包（客户端 500ms 重发等确认/松开连发 2-3 个 1）去重不回帧（2026-10-31 exe 逆向）
+        // 重复 engage 去重不回帧；游离 release（服务端本就非格挡态）必须回 release 确认帧
+        // ——跨服/重连客户端带着旧会话"已格挡"认知时只发 1 等确认、永不再发按下(0)
+        // （2026-10-31 晚实抓 141 release / 0 engage 死锁）。
         assertFalse(login.actor.parrying);
+        send(custom().u16(2).u8(2).i32(54).u8(3).i64(1).toByteArray());
+        List<byte[]> strayFrames = drainOutbound();
+        assertTrue(strayFrames.stream().anyMatch(f -> op(f) == 0x10 && f.length > 17
+                        && leU16(f, 12) == 470 && f[14] == 0),
+                "stray release acked with 0x10 InParry(470)=0 (client state resync)");
         send(custom().u16(2).u8(2).i32(54).u8(3).i64(0).toByteArray());
         List<byte[]> engageFrames = drainOutbound();
         assertTrue(login.actor.parrying, "54 arg=0 engages parry");
@@ -1307,8 +1314,16 @@ class SceneFlowTest {
                         && leU16(f, 12) == 470 && f[14] == 0),
                 "release pushes 0x10 InParry(470)=0");
         send(custom().u16(2).u8(2).i32(54).u8(3).i64(1).toByteArray());
-        assertTrue(drainOutbound().stream().noneMatch(f -> op(f) == 0x1E || op(f) == 0x10),
-                "client double-sends release; deduped, no parry frames");
+        List<byte[]> dupReleaseFrames = drainOutbound();
+        assertTrue(dupReleaseFrames.stream().anyMatch(f -> op(f) == 0x10 && f.length > 17
+                        && leU16(f, 12) == 470 && f[14] == 0),
+                "duplicate release acked with InParry(470)=0 (idempotent resync)");
+        // 0x1E 布局：[3]=tag2 [4..7]=msgId169 [8]=tag2 [9]=end 标志——游离确认只发 end=1，不再 add
+        assertTrue(dupReleaseFrames.stream()
+                        .filter(f -> op(f) == 0x1E && f.length > 9
+                                && f[3] == 2 && leU32(f, 4) == 169)
+                        .allMatch(f -> f[9] == 1),
+                "duplicate release ack carries 169 end only (no buff re-add)");
         send(custom().u16(2).u8(2).i32(54).u8(3).i64(0).toByteArray());
         drainOutbound();
         assertTrue(login.actor.parrying, "re-engage after release works");

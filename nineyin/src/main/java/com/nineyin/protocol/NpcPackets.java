@@ -45,11 +45,19 @@ public final class NpcPackets {
         count++; w.u16(468).i32(n.maxHp > 0 ? (int) ((long) n.hp * 100 / n.maxHp) : 100);  // HPRatio
         count++; w.u16(577).i32(n.maxHp > 0 ? n.maxHp : 1000);                             // MaxHP
         count++; w.u16(464).i32(n.maxHp > 0 ? n.hp : 1000);                                // HP
-        count++; w.u16(1557).i32(n.monster ? 1 : 0);                // NpcType
+        // 交互语义（模板表 NpcType/SelectState/CursorShape 列）：宝箱等功能 NPC
+        // （boxnpc：NpcType=161/SelectState=9/CursorShape=28）客户端按这些值走
+        // 采集开箱交互，缺省回退 monster?1:0 + SelectState=0（普通可对话 NPC）。
+        int npcType = tmpl.npcType() > 0 ? tmpl.npcType() : (n.monster ? 1 : 0);
+        count++; w.u16(1557).i32(npcType);                          // NpcType
         count++;
         w.u16(178);
         S2CPackets.appendUcs2(w, display);                          // Name（宽字符）
-        count++; w.u16(1559).u8(0);                                 // SelectState
+        count++; w.u16(1559).u8(tmpl.selectState());                // SelectState（boxnpc=9 采集）
+        if (tmpl.cursorShape() > 0) {
+            count++;
+            w.u16(1560).u8(tmpl.cursorShape());                     // CursorShape（boxnpc=28）
+        }
         count++; w.u16(265).i32(0);                                 // CantBeSelect = 可选中
         if (!weapon.isEmpty()) {
             count++;

@@ -56,6 +56,8 @@ public final class GmCatalog {
     private volatile JSONArray mounts;
     private volatile JSONObject reputeStatus;
     private volatile JSONArray titles;
+    /** 称号目录外部数据源（MySQL game_titles；返回 null 表示不可用，回退 data/称号数据.json）。 */
+    private volatile java.util.function.Supplier<JSONArray> titlesSource;
     private volatile JSONArray weather;
     private volatile JSONArray bots;
     private volatile JSONObject originStatus;
@@ -636,35 +638,53 @@ public final class GmCatalog {
     }
 
     // ------------------------------------------------------------------
-    // /api/titles —— data/称号数据.json
+    // /api/titles —— MySQL game_titles（titlesSource 注入）→ 回退 data/称号数据.json
     // ------------------------------------------------------------------
+
+    /** 注入 DB 数据源（NineyinServer 启动时接 TitleStore::catalogJson）；注入即失效旧缓存。 */
+    public void setTitlesSource(java.util.function.Supplier<JSONArray> source) {
+        this.titlesSource = source;
+        this.titles = null;
+    }
 
     public JSONArray titles() {
         JSONArray t = titles;
         if (t == null) {
             synchronized (this) {
                 if (titles == null) {
-                    JSONArray out = new JSONArray();
-                    JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("称号数据.json"));
-                    JSONObject catalog = root != null ? root.getJSONObject("catalog") : null;
-                    JSONArray list = catalog != null ? catalog.getJSONArray("titles") : null;
-                    if (list != null) {
-                        for (Object o : list) {
-                            if (o instanceof JSONObject title) {
-                                JSONObject r = new JSONObject(true);
-                                r.put("id", title.getIntValue("id"));
-                                r.put("name", orEmpty(title.getString("name")));
-                                r.put("type", title.getIntValue("type"));
-                                out.add(r);
-                            }
+                    java.util.function.Supplier<JSONArray> src = titlesSource;
+                    if (src != null) {
+                        JSONArray fromDb = src.get();
+                        if (fromDb != null) {
+                            titles = fromDb;
+                            return titles;
                         }
                     }
-                    titles = out;
+                    titles = readTitlesFromJson();
                 }
                 return titles;
             }
         }
         return t;
+    }
+
+    private JSONArray readTitlesFromJson() {
+        JSONArray out = new JSONArray();
+        JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("称号数据.json"));
+        JSONObject catalog = root != null ? root.getJSONObject("catalog") : null;
+        JSONArray list = catalog != null ? catalog.getJSONArray("titles") : null;
+        if (list != null) {
+            for (Object o : list) {
+                if (o instanceof JSONObject title) {
+                    JSONObject r = new JSONObject(true);
+                    r.put("id", title.getIntValue("id"));
+                    r.put("name", orEmpty(title.getString("name")));
+                    r.put("type", title.getIntValue("type"));
+                    out.add(r);
+                }
+            }
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------

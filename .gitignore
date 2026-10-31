@@ -10,6 +10,7 @@ tools/smoke/__pycache__
 tools/smoke/go_capture*
 tools/smoke/*frames.txt
 nineyin/logs
+tmp-analysis
 -----
 
 *.ctxt

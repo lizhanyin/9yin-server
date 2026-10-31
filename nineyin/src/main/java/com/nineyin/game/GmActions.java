@@ -150,6 +150,8 @@ public final class GmActions {
     private final SceneFlow sceneFlow;
     private final NinJiuZhi ninjiuzhi;
     private final WorldBossManager worldBoss;
+    /** 称号库（game_titles/role_titles；null=JSON 后端，称号动作回退会话内存）。 */
+    private final com.nineyin.db.TitleStore titleStore;
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher) {
         this(sceneManager, roleStore, switcher, null, null);
@@ -167,12 +169,19 @@ public final class GmActions {
 
     public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
                      SceneFlow sceneFlow, NinJiuZhi ninjiuzhi, WorldBossManager worldBoss) {
+        this(sceneManager, roleStore, switcher, sceneFlow, ninjiuzhi, worldBoss, null);
+    }
+
+    public GmActions(SceneManager sceneManager, RoleStore roleStore, SceneSwitcher switcher,
+                     SceneFlow sceneFlow, NinJiuZhi ninjiuzhi, WorldBossManager worldBoss,
+                     com.nineyin.db.TitleStore titleStore) {
         this.sceneManager = sceneManager;
         this.roleStore = roleStore;
         this.switcher = switcher;
         this.sceneFlow = sceneFlow;
         this.ninjiuzhi = ninjiuzhi != null ? ninjiuzhi : NinJiuZhi.alwaysOpen();
         this.worldBoss = worldBoss;
+        this.titleStore = titleStore;
     }
 
     /** 执行一条命令；返回错误消息（null = 成功）。未知动作返回提示。 */
@@ -497,6 +506,212 @@ public final class GmActions {
                 fx.send(S2CPackets.worldInfo(0, ninjiuzhi.status()));
                 return null;
             }
+            // ---------- menu2 面板动作补齐（第一批：属性/称号/气泡/物品/宝箱/探针，
+            // 帧语义逆向自 9yin-game-native-menu2.exe，属性 ID 按名字换算本服表，见 docs/gm-menu2-actions.md） ----------
+            case "set_guanyin" -> {  // 官银 CapitalType2=417
+                long guanYin = cmd.params().getLongValue("guanYin");
+                actor.guanYin = Math.max(0, guanYin);
+                fx.send(S2CPackets.playerBatch()
+                        .i64(PropertyId.CAPITAL_TYPE2, actor.guanYin).build());
+                return null;
+            }
+            case "set_vitals" -> {  // 体力/饱食/杀戮/酒量（maxEneAdd/maxSatAdd 本服表无同名属性，忽略）
+                S2CPackets.Batch b = S2CPackets.playerBatch();
+                int n = 0;
+                int v;
+                if ((v = cmd.intParam("ene", -1)) >= 0) { b.i32(PropertyId.ENE, v); n++; }
+                if ((v = cmd.intParam("maxEne", -1)) >= 0) { b.i32(PropertyId.MAX_ENE, v); n++; }
+                if ((v = cmd.intParam("resumeEne", -1)) >= 0) { b.i32(PropertyId.RESUME_ENE, v); n++; }
+                if ((v = cmd.intParam("sat", -1)) >= 0) { b.i32(PropertyId.SAT, v); n++; }
+                if ((v = cmd.intParam("maxSat", -1)) >= 0) { b.i32(PropertyId.MAX_SAT, v); n++; }
+                if ((v = cmd.intParam("drunkLevel", -1)) >= 0) { b.i32(PropertyId.DRUNK_LEVEL, v); n++; }
+                if ((v = cmd.intParam("pkValue", -1)) >= 0) { b.i32(PropertyId.PK_VALUE, v); n++; }
+                if (n == 0) {
+                    return "未提供任何数值（ene/maxEne/resumeEne/sat/maxSat/drunkLevel/pkValue）";
+                }
+                fx.send(b.build());
+                return null;
+            }
+            case "set_alignment" -> {  // 善/恶/基础狂邪
+                S2CPackets.Batch b = S2CPackets.playerBatch();
+                int n = 0;
+                int v;
+                if ((v = cmd.intParam("justice", -1)) >= 0) { b.i32(PropertyId.JUSTICE, v); n++; }
+                if ((v = cmd.intParam("evil", -1)) >= 0) { b.i32(PropertyId.EVIL, v); n++; }
+                if ((v = cmd.intParam("freeBase", -1)) >= 0) { b.i32(PropertyId.FREE_BASE, v); n++; }
+                if (n == 0) {
+                    return "未提供 justice/evil/freeBase";
+                }
+                fx.send(b.build());
+                return null;
+            }
+            case "set_five_attributes" -> {  // 五维（臂力/体魄/身法/内息/罡气；-1 不改）
+                S2CPackets.Batch b = S2CPackets.playerBatch();
+                int n = 0;
+                int v;
+                if ((v = cmd.intParam("attrStr", -1)) >= 0) { b.i32(PropertyId.STR, v); n++; }
+                if ((v = cmd.intParam("attrSta", -1)) >= 0) { b.i32(PropertyId.STA, v); n++; }
+                if ((v = cmd.intParam("attrDex", -1)) >= 0) { b.i32(PropertyId.DEX, v); n++; }
+                if ((v = cmd.intParam("attrIng", -1)) >= 0) { b.i32(PropertyId.ING, v); n++; }
+                if ((v = cmd.intParam("attrSpi", -1)) >= 0) { b.i32(PropertyId.SPI, v); n++; }
+                if (n == 0) {
+                    return "修改五维失败：未提供五维数值";
+                }
+                fx.send(b.build());
+                fx.send(actor.vitalUpdate());
+                return null;
+            }
+            case "set_power_level" -> {  // 实力等级 PowerLevel=210 + 称号名（titleByPowerLevel 映射）
+                int stage = cmd.intParam("stage", -1);
+                if (stage < 0) {
+                    return "设置实力等级失败：未提供 stage";
+                }
+                fx.send(S2CPackets.playerBatch()
+                        .i32(PropertyId.POWER_LEVEL, stage).build());
+                return "实力等级设为 " + stage + "，称号 " + powerTitle(stage);
+            }
+            case "set_pk_mode" -> {  // PKMode=436(u8) + HasLearnExtSkill=434(u8)，0~3
+                int mode = cmd.intParam("pkMode", -1);
+                if (mode < 0) {
+                    mode = cmd.intParam("value", -1);
+                }
+                if (mode < 0 || mode > 3) {
+                    return "pkMode 应为 0~3（和平/江湖/阵营/戕屠）";
+                }
+                session.pkMode = mode;
+                fx.send(S2CPackets.playerBatch()
+                        .u8(PropertyId.PK_MODE, mode)
+                        .u8(PropertyId.HAS_LEARN_EXT_SKILL, 0).build());
+                return "攻击模式已切换为 " + PK_MODE_NAMES[mode];
+            }
+            case "grant_title" -> {  // 发放称号（role_titles 落库；无库回退会话内存）
+                int titleId = cmd.intParam("titleId", 0);
+                if (titleId < 1) {
+                    return "发放称号失败：titleId must be >= 1";
+                }
+                if (titleStore != null && session.roleId > 0) {
+                    if (!titleStore.grant(session.roleId, titleId)) {
+                        return "未发放：称号 " + titleId + " 不存在或已拥有";
+                    }
+                    return "已发放称号 " + titleId;
+                }
+                if (!session.grantedTitles.contains(titleId)) {
+                    session.grantedTitles.add(titleId);
+                }
+                return "已发放称号 " + titleId + "（共 " + session.grantedTitles.size() + " 个）";
+            }
+            case "wear_title" -> {  // 佩戴称号 TitleID=359（校验已拥有，is_worn 落库）
+                int titleId = cmd.intParam("titleId", 0);
+                if (titleId < 1) {
+                    return "佩戴称号失败：titleId must be >= 1";
+                }
+                boolean owns = titleStore != null && session.roleId > 0
+                        ? titleStore.owns(session.roleId, titleId)
+                        : session.grantedTitles.contains(titleId);
+                if (!owns) {
+                    return "未拥有称号 " + titleId + "，无法佩戴";
+                }
+                if (titleStore != null && session.roleId > 0) {
+                    titleStore.wear(session.roleId, titleId);
+                }
+                session.wornTitleId = titleId;
+                fx.send(S2CPackets.playerBatch()
+                        .i32(PropertyId.TITLE_ID, titleId).build());
+                return null;
+            }
+            case "cancel_title" -> {  // 取消佩戴（is_worn 清零 + TitleID=0）
+                if (titleStore != null && session.roleId > 0) {
+                    titleStore.cancelWorn(session.roleId);
+                }
+                session.wornTitleId = 0;
+                fx.send(S2CPackets.playerBatch()
+                        .i32(PropertyId.TITLE_ID, 0).build());
+                return null;
+            }
+            case "clear_titles" -> {  // 清空称号（role_titles 删行 + TitleID=0）
+                if (titleStore != null && session.roleId > 0) {
+                    titleStore.clear(session.roleId);
+                }
+                session.grantedTitles.clear();
+                session.wornTitleId = 0;
+                fx.send(S2CPackets.playerBatch()
+                        .i32(PropertyId.TITLE_ID, 0).build());
+                return null;
+            }
+            case "speech_nul" -> {  // 气泡（空终止+频道，0x1A）
+                String text = cmd.strParam("speechText");
+                if (text.isBlank()) {
+                    return "气泡发送失败：聊天内容为空";
+                }
+                fx.send(CustomPackets.speechNullTerm(S2CPackets.PLAYER_OBJECT_ID,
+                        cmd.intParam("speechMode", 1), text));
+                return null;
+            }
+            case "speech_len" -> {  // 气泡（旧：长度前缀，0x1A）
+                String text = cmd.strParam("speechText");
+                if (text.isBlank()) {
+                    return "气泡发送失败：聊天内容为空";
+                }
+                fx.send(CustomPackets.speechLenPrefix(S2CPackets.PLAYER_OBJECT_ID, text));
+                return null;
+            }
+            case "chat_broadcast" -> {  // 聊天广播（空终止气泡帧，频道 speechMode）
+                String text = cmd.strParam("speechText");
+                if (text.isBlank()) {
+                    return "聊天广播失败：聊天内容为空";
+                }
+                fx.send(CustomPackets.speechNullTerm(S2CPackets.PLAYER_OBJECT_ID,
+                        cmd.intParam("speechMode", 1), text));
+                return null;
+            }
+            case "add_item", "grant_item" -> {  // 面板发物（grant_item 的 wearNow 暂不入包即穿，走背包）
+                String config = cmd.params().getString("itemConfig");
+                int amount = cmd.intParam("amount", 1);
+                if (config == null || config.isBlank()) {
+                    return "添加物品失败：itemConfig 不能为空";
+                }
+                if (sceneFlow == null) {
+                    return "添加物品失败：库存系统未接线";
+                }
+                return sceneFlow.giveItem(fx, session, config, amount <= 0 ? 1 : amount);
+            }
+            case "spawn_chest" -> {  // 镀银宝箱（menu2 config=BoxNpc10006，大小写敏感，玩家身旁）
+                if (st == null || st.world == null) {
+                    return "生成宝箱失败：角色尚未进入场景";
+                }
+                float dx = session.x + 2f;
+                float dz = session.z + 2f;
+                NpcInstance chest = TwilightVerify.spawn(sceneManager, st.world,
+                        "BoxNpc10006", new float[]{dx, session.y, dz, session.orient}, "gm_chest");
+                TwilightVerify.sendNpc(fx, st, sceneManager, chest);
+                return "已生成镀银宝箱（对象=" + chest.objectId + "），点击开箱。";
+            }
+            case "idle_stance_set" -> {  // 待机站姿（idle_stance_ 前缀 key 或动作名直传）
+                String stance = cmd.strParam("stanceAction");
+                if (stance.isBlank()) {
+                    stance = cmd.strParam("key");
+                }
+                if (stance.isBlank()) {
+                    return "未知待机站姿：未提供 stanceAction";
+                }
+                if (stance.startsWith("idle_stance_")) {
+                    stance = stance.substring("idle_stance_".length());
+                }
+                if (stance.isBlank()) {
+                    return "未知待机站姿";
+                }
+                sendState(fx, stance);
+                return "已通过 State 发送待机站姿 " + stance;
+            }
+            case "custom_probe" -> {  // 自定义消息探针（0x1E：msgId + subType）
+                int msgId = cmd.intParam("msgId", 0);
+                int subType = cmd.intParam("subType", 0);
+                if (msgId == 0) {
+                    return "自定义消息发送失败：未提供 msgId";
+                }
+                fx.send(CustomPackets.intMessage(msgId, subType));
+                return "已发送 S2C 自定义消息 ID=" + msgId + " sub=" + subType;
+            }
             default -> {
                 return "动作未实现: " + cmd.action();
             }
@@ -562,6 +777,26 @@ public final class GmActions {
             case 4 -> "修罗";
             default -> "普通";
         };
+    }
+
+    /** PK 模式名（对齐 menu2：和平/江湖/阵营/戕屠）。 */
+    private static final String[] PK_MODE_NAMES = {"和平", "江湖", "阵营", "戕屠"};
+
+    /** 实力等级→称号 config（对齐 menu2 titleByPowerLevel：≤5→title001 … >150→title027）。 */
+    private static String powerTitle(int stage) {
+        if (stage <= 5) {
+            return "title001";
+        }
+        if (stage <= 120) {
+            return String.format("title%03d", Math.min(24, (stage - 1) / 5 + 1));
+        }
+        if (stage <= 130) {
+            return "title025";
+        }
+        if (stage <= 150) {
+            return "title026";
+        }
+        return "title027";
     }
 
     private String sendState(FxSession fx, String action) {

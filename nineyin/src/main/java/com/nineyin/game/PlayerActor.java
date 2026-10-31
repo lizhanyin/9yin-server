@@ -132,6 +132,8 @@ public final class PlayerActor {
     // 金币（CapitalType0=415，充值商城 560 计价货币）。初始额与 silver 同为私服娱乐值，
     // 参考服走 wallet store 持久化；capital 映射与持久化待实机抓包/存档格式钉死后接入。
     public long gold = 99999;
+    // 官银（CapitalType2=417，GM set_guanyin；与 silver/gold 同为会话内存值）。
+    public long guanYin = 0;
 
     public float gravity = 9.8f;
     public float moveSpeed = 5.0f;

@@ -1402,7 +1402,15 @@ public final class SceneFlow {
             return;
         }
         if (actor.parrying == engage) {
-            return;   // 重复包：对齐参考 setPlayerBlock 去重，不回帧
+            // 重复包对齐参考 setPlayerBlock 去重不广播；但游离 release（服务端本就
+            // 非格挡态）必须回一帧 release 确认：跨服/重连客户端带着旧会话"已格挡"
+            // 认知时只发 1 等确认、永不再发按下(0)——2026-10-31 晚实抓 141 个
+            // release / 0 个 engage 的死锁根因，参考服吞包依赖两端状态从不脱钩。
+            if (!engage) {
+                sendParryStateFrames(fx, session, actor, false, now, "", false);
+                log.info("ack stray manual parry release (client state resync)");
+            }
+            return;
         }
         actor.parrying = engage;
         String buffInfo;
@@ -1413,6 +1421,18 @@ public final class SceneFlow {
             actor.clearBuff(PARRY_BUFF_SLOT, PARRY_BUFF_STATIC_DATA);
             buffInfo = "";
         }
+        sendParryStateFrames(fx, session, actor, engage, now, buffInfo, true);
+        log.info("publish manual parry state={} (arg={} endurance={})",
+                actor.parrying, state.intOrZero(), actor.parryEndurance);
+    }
+
+    /**
+     * 格挡状态帧：① 0x1E msg169 BuffInParry buff 事件（end=!parrying、双 ObjRef(玩家)、
+     * int64 nowMs）② 0x10 属性帧 InParry(470)/InManualParry(473) + BufferInfo11(638)。
+     * relay=true（真实状态变化）同步 peer 版给同场景他人；游离 release 确认只发自机帧。
+     */
+    private void sendParryStateFrames(FxSession fx, LoginSession session, PlayerActor actor,
+                                      boolean engage, long now, String buffInfo, boolean relay) {
         fx.send(CustomPackets.intMessage(169,
                 engage ? 0 : 1,                     // end 标志 = !parrying
                 "BuffInParry",
@@ -1427,7 +1447,7 @@ public final class SceneFlow {
                 S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, flag),
                 S2CPackets.PropVal.text(PropertyId.BUFFER_INFO_FIRST + PARRY_BUFF_SLOT - 1, buffInfo)));
         // 战斗互播：招架 169 + 属性帧 peer 版（ObjRef/属性 oid 化）
-        if (session.playerObjectId != 0) {
+        if (relay && session.playerObjectId != 0) {
             relayPeerFrame(fx, CustomPackets.intMessage(169,
                     engage ? 0 : 1,
                     "BuffInParry",
@@ -1441,8 +1461,6 @@ public final class SceneFlow {
                     S2CPackets.PropVal.of(PropertyId.IN_PARRY, flag),
                     S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, flag)));
         }
-        log.info("publish manual parry state={} (arg={} endurance={})",
-                actor.parrying, state.intOrZero(), actor.parryEndurance);
     }
 
     /** 107 捏脸保存（参考服：`customizing upload too large: %d`；customizing 存储未接）。 */

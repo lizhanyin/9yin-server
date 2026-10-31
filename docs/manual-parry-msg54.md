@@ -87,15 +87,32 @@ BuffInParry 实例：  11CE,1,1,1,<到期毫秒 HEX>,1      （4558=0x11CE）
 
 ## 3. Java 实现要点（SceneFlow.handleManualParry，2026-10-31）
 
-1. 参数按值幂等落态（0→engaged / 非 0→released）；**与当前状态相同直接 return**（对齐参考去重）。
+1. 参数按值幂等落态（0→engaged / 非 0→released）；**engage 重复包直接 return**（对齐参考去重）。
 2. engage 且处于技能锁（`skillLockUntilMs`）→ 忽略（对齐施法门禁）。
 3. 状态变化时：`activateBuff(11, 4558, 24h, "BuffInParry", 1)` / `clearBuff(11, 4558)`，
-   回 `CustomPackets.intMessage(169, …)` + `S2CPackets.objectProperties(…, 470, 473, 638)` 两帧。
-4. 战斗侧沿用 `PlayerActor.parrying && parryEndurance > 0`（AiEventEngine 减伤）。
+   回 `CustomPackets.intMessage(169, …)` + `S2CPackets.objectProperties(…, 470, 473, 638)` 两帧
+   （`sendParryStateFrames`，169 事件即客户端"挡"字 buff 图标的来源）。
+4. 战斗侧沿用 `PlayerActor.parrying && parryEndurance > 0`（AiEventEngine/PvP 减伤）。
+
+### 3.1 游离 release 死锁（2026-10-31 晚修复）
+
+参考 exe 对"状态未变的重复包"一律吞包不回帧，前提是两端状态从不脱钩。
+**跨服/重连会打破这个前提**：客户端（进程不重启、只换服务器重登）带着旧会话
+"已格挡"认知时，只会反复发松开(1) 等确认，永远不再发按下(0)——
+当晚实抓 141 个 release / **0 个 engage**，服务端因 `parrying=false` 按去重规则静默吞包，
+右键格挡彻底失效。修复（双保险）：
+
+1. `handleManualParry` 游离 release（服务端已非格挡态）→ 仍回 release 确认帧
+   （169 end + 0x10 三属性，幂等，仅自机不广播 peer）；
+2. `LoginFlow.sendUiBootstrap` 入场权威推 `InParry=0 / InManualParry=0 / BufferInfo11=""`，
+   把带着旧状态的客户端状态机复位到 idle。
 
 ## 4. 待验证 / 后续
 
-- [ ] 实机验证：重启 Java 服后按住右键——客户端应停止 500ms 重发、格挡动作与耐力条 UI 生效。
+- [x] 实机验证：重启 Java 服后按住右键——客户端应停止 500ms 重发、格挡动作与耐力条 UI 生效。
+- [x] 2026-10-31 晚：格挡失效根因 = 游离 release 死锁（§3.1），重登/跨服重连可复现。
+- [ ] "挡"字 buff 实机确认：169 BuffInParry 事件 + BufferInfo11(4558) 应驱动客户端图标（待重启后验证）。
 - [ ] 多人可见性：参考服回帧是否同时广播给同场景他人（单玩家会话无法观测）。
-- [ ] 218 主动招架的 argument 语义（`active_parry.go` 已留钩子，含义待抓包）。
+- [ ] 218 主动招架的 argument 语义（`handleActiveParry` 直接改 `parrying` 不回帧，
+      若客户端真发 218 会再次造成同类脱钩——今日实抓无 218 流量，暂不动）。
 - [ ] 格挡被击的耐力扣减/破防（ParryValue 474/MaxParry 475 属性行为待抓包）。

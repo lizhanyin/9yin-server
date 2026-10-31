@@ -68,6 +68,11 @@ public final class AiEventEngine {
         /** BOSS 出招动作帧广播给同场景会话（含目标）。 */
         default void onBossAction(SceneWorld world, byte[] frame) {
         }
+
+        /** 战斗互播：排除 exclude（已单播过 self 版帧的会话）的广播。 */
+        default void onBossAction(SceneWorld world, byte[] frame, FxSession exclude) {
+            onBossAction(world, frame);
+        }
     }
 
     /**
@@ -132,6 +137,8 @@ public final class AiEventEngine {
     private volatile com.nineyin.script.CombatFormulaHost formulas;
     /** 内功特效运行时（玩家受击/招架钩子）；null = 内功特效关闭。 */
     private volatile NeigongRuntime neigong;
+    /** 战斗互播：玩家生命帧中继（SceneFlow wire：vitalUpdate 后补 peerCombatUpdate）。 */
+    private volatile java.util.function.BiConsumer<FxSession, LoginSession> peerVitalsRelay;
 
     /** 战斗掷骰（未命中/暴击）；测试可注入固定种子保证断言确定。 */
     private Random rng = ThreadLocalRandom.current();
@@ -162,6 +169,11 @@ public final class AiEventEngine {
     /** 注入内功特效运行时（SceneFlow wire；受击/招架钩子在 castSkill 落账前生效）。 */
     public void setNeigongRuntime(NeigongRuntime neigong) {
         this.neigong = neigong;
+    }
+
+    /** 注入战斗互播中继（SceneFlow wire；受击/死亡/复活后向同场景 peer 同步）。 */
+    public void setPeerVitalsRelay(java.util.function.BiConsumer<FxSession, LoginSession> relay) {
+        this.peerVitalsRelay = relay;
     }
 
     /** 测试注入固定随机源（战斗掷骰走它），保证血量断言确定。 */
@@ -235,7 +247,7 @@ public final class AiEventEngine {
                 fireTyped(pkg, 4, world, n, 0, now, ns, EVENT_REFIRE_MS);
                 if (now - n.lastCombatMs < COMBAT_WINDOW_MS) {
                     phaseTrigger(world, n, ns, now);
-                    regenTick(n, ns);
+                    regenTick(world, n, ns);
                     fireTyped(pkg, 6, world, n, 0, now, ns, EVENT_REFIRE_MS);
                     bossAttack(world, n, ns, now);
                 }
@@ -400,13 +412,13 @@ public final class AiEventEngine {
     }
 
     /** 回血类 buff（HPMP）战斗中每秒 2% 上限内回复（近似值）。 */
-    private void regenTick(NpcInstance n, NpcState ns) {
+    private void regenTick(SceneWorld world, NpcInstance n, NpcState ns) {
         if (n.hp >= n.maxHp || n.buffs.stream().noneMatch(b -> b.contains("HPMP"))) {
             return;
         }
         n.hp = Math.min(n.maxHp, n.hp + Math.max(1, n.maxHp / 50));
         if (ns.lastAttacker != null) {
-            sendBossHp(ns.lastAttacker, n);
+            sendBossHp(world, ns.lastAttacker, n);
         }
     }
 
@@ -526,8 +538,19 @@ public final class AiEventEngine {
             return;
         }
         if (skillId != null && world != null) {
-            broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(caster.objectId, caster.ownerId,
+            // 战斗互播（msg20 target 修复）：本人帧 target=1（自机渲染依赖，原样单播）；
+            // peer 广播帧 target=受击者分配 oid（此前硬编码 1，其他玩家看到 NPC 打"幽灵"）
+            target.send(SceneFlow.nativeSkillAction(caster.objectId, caster.ownerId,
                     skillId, S2CPackets.PLAYER_OBJECT_ID, S2CPackets.PLAYER_OWNER_ID));
+            int tgtOid = login.playerObjectId != 0 ? login.playerObjectId : S2CPackets.PLAYER_OBJECT_ID;
+            if (tgtOid != S2CPackets.PLAYER_OBJECT_ID) {
+                broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(caster.objectId,
+                        caster.ownerId, skillId, tgtOid, S2CPackets.PLAYER_OWNER_ID), target);
+            } else {
+                broadcaster.onBossAction(world, SceneFlow.nativeSkillAction(caster.objectId,
+                        caster.ownerId, skillId, S2CPackets.PLAYER_OBJECT_ID,
+                        S2CPackets.PLAYER_OWNER_ID));
+            }
         }
         PlayerActor actor = login.actor;
         boolean parrying = actor.parrying && actor.parryEndurance > 0;
@@ -554,6 +577,10 @@ public final class AiEventEngine {
         }
         boolean justDied = actor.applyDamage(incoming);
         target.send(actor.vitalUpdate());
+        // 战斗互播：受击血量/瘀血/死亡 peer 版
+        if (peerVitalsRelay != null) {
+            peerVitalsRelay.accept(target, login);
+        }
         log.info("npc {} cast {} -> {} damage={} crit={} parried={} hp={}", caster.configId, skillId,
                 login.roleName, incoming, hit.crit(), hit.parried(), actor.hp);
         // 技能带控制时对玩家落账（招架挡下不落控制；免疫位在 SceneFlow 侧消费）
@@ -563,7 +590,7 @@ public final class AiEventEngine {
         if (skillId != null && isBigSkill(skillId)
                 && caster.buffs.stream().anyMatch(b -> b.contains("xixue"))) {
             caster.hp = Math.min(caster.maxHp, caster.hp + XIXUE_HEAL);
-            sendBossHp(target, caster);
+            sendBossHp(world, target, caster);
         }
         if (justDied) {
             log.info("player {} defeated by {} (skill {}), revive in {}ms",
@@ -571,16 +598,21 @@ public final class AiEventEngine {
             GameScheduler.schedule(PLAYER_REVIVE_MS, () -> {
                 login.actor.revive();
                 target.send(login.actor.vitalUpdate());
+                if (peerVitalsRelay != null) {
+                    peerVitalsRelay.accept(target, login);
+                }
             });
         }
     }
 
-    /** BOSS 血量同步给攻击者（0x10 批量，npc oid）。 */
-    private void sendBossHp(FxSession fx, NpcInstance n) {
-        fx.send(S2CPackets.batch(n.objectId, n.ownerId)
+    /** BOSS 血量同步（0x10 批量，npc oid）：攻击者单播 + 同场景广播（帧幂等）。 */
+    private void sendBossHp(SceneWorld world, FxSession fx, NpcInstance n) {
+        byte[] frame = S2CPackets.batch(n.objectId, n.ownerId)
                 .i32(PropertyId.HP, n.hp)
                 .i32(PropertyId.HP_RATIO, n.maxHp > 0 ? (int) ((long) n.hp * 100 / n.maxHp) : 0)
-                .build());
+                .build();
+        fx.send(frame);
+        broadcaster.onBossAction(world, frame, fx);
     }
 
     /** 拼音后缀 = 命名大招（clone003_zhoulifeng_sxks）；数字后缀 = 常规轮转技（..._01）。 */

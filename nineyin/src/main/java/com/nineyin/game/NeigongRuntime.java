@@ -44,6 +44,15 @@ public final class NeigongRuntime {
     /** 九阴志阶段供应（SceneFlow wire ninjiuzhi.stage()；缺省阶段 1 = 高档特效未开）。 */
     private volatile java.util.function.IntSupplier storyStage = () -> 1;
 
+    /** 战斗互播：玩家生命帧中继（SceneFlow wire；null = 关闭）。 */
+    private volatile java.util.function.BiConsumer<com.nineyin.server.FxSession,
+            com.nineyin.login.LoginSession> peerVitalsRelay;
+
+    public void setPeerVitalsRelay(java.util.function.BiConsumer<com.nineyin.server.FxSession,
+            com.nineyin.login.LoginSession> relay) {
+        this.peerVitalsRelay = relay;
+    }
+
     public void setStoryStage(java.util.function.IntSupplier stage) {
         this.storyStage = stage == null ? () -> 1 : stage;
     }
@@ -306,6 +315,11 @@ public final class NeigongRuntime {
         }
         if (vital && fx != null) {
             fx.send(actor.vitalUpdate());
+            // 战斗互播：内功回血/护盾引起的 hp 变化同步给同场景 peer
+            if (peerVitalsRelay != null) {
+                peerVitalsRelay.accept(fx,
+                        fx.channel().attr(com.nineyin.login.LoginFlow.SESSION).get());
+            }
         }
         return vital;
     }

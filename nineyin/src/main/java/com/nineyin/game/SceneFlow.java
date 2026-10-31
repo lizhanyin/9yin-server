@@ -188,6 +188,8 @@ public final class SceneFlow {
         if (ai != null) {
             // NPC 技能命中玩家后的控制落账（§3.25；免疫位在 applyControlToPlayer 内消费）
             ai.setControlSink(this::applySkillControlToPlayer);
+            // 战斗互播：NPC 打玩家后的生命帧中继（受击/死亡/复活 peer 版）
+            ai.setPeerVitalsRelay(this::relayPeerCombatVitals);
             if (neigong != null) {
                 ai.setNeigongRuntime(neigong);
             }
@@ -239,6 +241,7 @@ public final class SceneFlow {
         this.neigong = new NeigongRuntime(host);
         // 内功高层特效档位随九阴志阶段开放（stage 1..9；缺省 alwaysOpen = 阶段 1）
         this.neigong.setStoryStage(() -> ninjiuzhi.stage());
+        this.neigong.setPeerVitalsRelay(this::relayPeerCombatVitals);
         if (ai != null) {
             ai.setNeigongRuntime(neigong);
         }
@@ -408,6 +411,95 @@ public final class SceneFlow {
                 continue;
             }
             other.send(loc);
+        }
+    }
+
+    // ---------- 战斗互播（第二批：双发模式——self 帧原样，peer 帧 oid 版） ----------
+
+    /**
+     * 玩家帧中继：把已构造好的 oid 版帧发给同场景其余会话（无节流；
+     * GameScheduler 线程闭包可安全调用——sessions 为 CopyOnWriteArrayList，
+     * FxSession.send 线程安全已在波次/followup 定时帧验证）。
+     */
+    private void relayPeerFrame(FxSession self, byte[] frame) {
+        relayPeerFrame(self, null, frame);
+    }
+
+    /** 带 world 覆盖的帧中继（self 的 SceneState 未挂 world 时使用）。 */
+    private void relayPeerFrame(FxSession self, SceneWorld world, byte[] frame) {
+        if (sessionsSource == null || frame == null) {
+            return;
+        }
+        SceneState st = self != null ? self.channel().attr(STATE).get() : null;
+        SceneWorld target = world != null ? world : (st != null ? st.world : null);
+        if (target == null) {
+            return;
+        }
+        for (FxSession other : sessionsSource.get()) {
+            if (other == self) {
+                continue;
+            }
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (!peerReady(peer)) {
+                continue;
+            }
+            SceneState peerSt = other.channel().attr(STATE).get();
+            if (peerSt.world != target) {
+                continue;
+            }
+            other.send(frame);
+        }
+    }
+
+    /** 战斗生命帧中继（peerCombatUpdate 子集：血量/瘀血/死亡/逻辑态/当前技能）。 */
+    private void relayPeerCombatVitals(FxSession self, LoginSession session) {
+        if (session == null || session.actor == null || session.playerObjectId == 0) {
+            return;
+        }
+        relayPeerFrame(self, session.actor.peerCombatUpdate(
+                session.playerObjectId, S2CPackets.PLAYER_OWNER_ID));
+    }
+
+    /** STATE 动作帧双发：self 原样（oid=1）+ 同场景 peer oid 版（出招/打坐/站立等）。 */
+    private void sendStateDual(FxSession fx, String state) {
+        fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, state));
+        LoginSession s = fx.channel().attr(LoginFlow.SESSION).get();
+        if (s != null && s.playerObjectId != 0) {
+            relayPeerFrame(fx, S2CPackets.objectPropertyString(s.playerObjectId,
+                    S2CPackets.PLAYER_OWNER_ID, PropertyId.STATE, state));
+        }
+    }
+
+    /** LOGIC_STATE 字节帧 peer 版中继（打坐/受控等逻辑态变化）。 */
+    private void relayPeerLogicState(FxSession fx, int state) {
+        LoginSession s = fx.channel().attr(LoginFlow.SESSION).get();
+        if (s != null && s.playerObjectId != 0) {
+            relayPeerFrame(fx, S2CPackets.objectPropertyByte(s.playerObjectId,
+                    S2CPackets.PLAYER_OWNER_ID, PropertyId.LOGIC_STATE, state));
+        }
+    }
+
+    /**
+     * NPC 帧广播（帧自带 NPC oid）：同 world 全会话（排除 exclude——通常是
+     * 已单播过该帧的攻击者）。照 NineyinServer.broadcastFrame 过滤条件。
+     */
+    private void broadcastToWorld(SceneWorld world, byte[] frame, FxSession exclude) {
+        if (sessionsSource == null || world == null || frame == null) {
+            return;
+        }
+        for (FxSession other : sessionsSource.get()) {
+            if (other == exclude) {
+                continue;
+            }
+            LoginSession peer = other.channel().attr(LoginFlow.SESSION).get();
+            if (!peerReady(peer)) {
+                continue;
+            }
+            SceneState peerSt = other.channel().attr(STATE).get();
+            if (peerSt.world != world) {
+                continue;
+            }
+            other.send(frame);
         }
     }
 
@@ -583,7 +675,8 @@ public final class SceneFlow {
             if (session.actor != null && session.actor.logicState == PlayerActor.LOGIC_STATE_SITCROSS) {
                 session.actor.logicState = PlayerActor.LOGIC_STATE_NORMAL;
                 fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, 0));
-                fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, "stand"));
+                sendStateDual(fx, "stand");
+                relayPeerLogicState(fx, 0);
                 log.info("sitcross cancelled by move");
             }
             long now = System.currentTimeMillis();
@@ -1327,6 +1420,21 @@ public final class SceneFlow {
                 S2CPackets.PropVal.of(PropertyId.IN_PARRY, flag),
                 S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, flag),
                 S2CPackets.PropVal.text(PropertyId.BUFFER_INFO_FIRST + PARRY_BUFF_SLOT - 1, buffInfo)));
+        // 战斗互播：招架 169 + 属性帧 peer 版（ObjRef/属性 oid 化）
+        if (session.playerObjectId != 0) {
+            relayPeerFrame(fx, CustomPackets.intMessage(169,
+                    engage ? 0 : 1,
+                    "BuffInParry",
+                    new CustomPackets.ObjRef(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                    new CustomPackets.ObjRef(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                    actor.name, actor.name,
+                    now,
+                    0));
+            relayPeerFrame(fx, S2CPackets.objectProperties(session.playerObjectId,
+                    S2CPackets.PLAYER_OWNER_ID,
+                    S2CPackets.PropVal.of(PropertyId.IN_PARRY, flag),
+                    S2CPackets.PropVal.of(PropertyId.IN_MANUAL_PARRY, flag)));
+        }
         log.info("publish manual parry state={} (arg={} endurance={})",
                 actor.parrying, state.intOrZero(), actor.parryEndurance);
     }
@@ -2456,7 +2564,8 @@ public final class SceneFlow {
         }
         session.actor.logicState = next;
         fx.send(S2CPackets.objectPropertyByte(PropertyId.LOGIC_STATE, next));
-        fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, next == PlayerActor.LOGIC_STATE_SITCROSS ? "sitdown" : "stand"));
+        sendStateDual(fx, next == PlayerActor.LOGIC_STATE_SITCROSS ? "sitdown" : "stand");
+        relayPeerLogicState(fx, next);
         log.info("sitcross LogicState -> {} (cmd={})", next, msg.val(1).intOrZero());
     }
 
@@ -2996,7 +3105,9 @@ public final class SceneFlow {
                 def.cooldownCategory(), now, now + def.personalCdMs(), def.cooldownTeam()));
         fx.send(actor.vitalUpdate());
         if (!def.actionName().isEmpty()) {
-            fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, def.actionName()));
+            sendStateDual(fx, def.actionName());
+            // 战斗互播：CurSkill 系随 peerCombatUpdate 子集中继
+            relayPeerCombatVitals(fx, session);
             scheduleFollowupActions(fx, def);
         }
         int damageDealt = 0;
@@ -3301,6 +3412,18 @@ public final class SceneFlow {
                         actor.name, actor.name,
                         now,
                         0));
+                // 战斗互播：peer 端 ObjRef 用分配 oid（否则 peer 客户端 buff 栏悬死）
+                LoginSession buffS = fx.channel().attr(LoginFlow.SESSION).get();
+                if (buffS != null && buffS.playerObjectId != 0) {
+                    relayPeerFrame(fx, CustomPackets.intMessage(169,
+                            0,
+                            buff.configId(),
+                            new CustomPackets.ObjRef(buffS.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                            new CustomPackets.ObjRef(buffS.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                            actor.name, actor.name,
+                            now,
+                            0));
+                }
             }
             log.info("staged compiled skill Buff skill={} buff={} property={} value={} expiry={}",
                     def.id(), buff.configId(), PropertyId.bufferInfoSlot(slot),
@@ -3308,18 +3431,18 @@ public final class SceneFlow {
         }
     }
 
-    /** zhaoshi 后续段：按 at 偏移补发 State 动作。 */
+    /** zhaoshi 后续段：按 at 偏移补发 State 动作（双发，peer 看 oid 版）。 */
     private void scheduleFollowupActions(FxSession fx, SkillCatalog.Definition def) {
         for (SkillCatalog.Segment segment : def.followupActions()) {
             GameScheduler.schedule(Math.max(0, segment.atMs()), () -> {
-                fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, segment.action()));
+                sendStateDual(fx, segment.action());
                 log.info("skill follow-up State sent id={} action={} at={}ms",
                         def.id(), segment.action(), segment.atMs());
             });
         }
     }
 
-    /** total_action 后清技能态并回 stand（旧定时器不覆盖新技能）。 */
+    /** total_action 后清技能态并回 stand（旧定时器不覆盖新技能；peer 端同步清）。 */
     private void scheduleCurrentSkillClear(FxSession fx, PlayerActor actor, SkillCatalog.Definition def) {
         long delay = Math.max(1, def.totalActionDurationMs());
         GameScheduler.schedule(delay, () -> {
@@ -3327,7 +3450,9 @@ public final class SceneFlow {
                 return;
             }
             fx.send(actor.currentSkillClearFrame());
-            fx.send(S2CPackets.objectPropertyString(PropertyId.STATE, "stand"));
+            sendStateDual(fx, "stand");
+            LoginSession s = fx.channel().attr(LoginFlow.SESSION).get();
+            relayPeerCombatVitals(fx, s);
             log.info("skill state cleared id={} total_action={}ms", def.id(), delay);
         });
     }
@@ -3536,9 +3661,14 @@ public final class SceneFlow {
             npcBatch.u8(PropertyId.DEAD, 1);
             loot = Math.max(1, Math.min(99, npc.maxHp / 100));
         }
-        fx.send(npcBatch.build());
+        byte[] npcHpFrame = npcBatch.build();
+        fx.send(npcHpFrame);
+        // 战斗互播：NPC 血量/死亡帧按 world 广播（帧已带 NPC oid；血量帧幂等）
+        broadcastToWorld(st.world, npcHpFrame, fx);
         if (npc.dead) {
-            fx.send(S2CPackets.removeObject(npc.objectId, npc.ownerId));
+            byte[] npcRemove = S2CPackets.removeObject(npc.objectId, npc.ownerId);
+            fx.send(npcRemove);
+            broadcastToWorld(st.world, npcRemove, fx);
             st.sentIds.remove(npc.objectId);
             if (ai != null) {
                 ai.onNpcDeath(st.world, npc, 0);
@@ -3739,6 +3869,17 @@ public final class SceneFlow {
                 fx.send(S2CPackets.objectProperties(S2CPackets.PLAYER_OBJECT_ID,
                         S2CPackets.PLAYER_OWNER_ID,
                         S2CPackets.PropVal.text(PropertyId.bufferInfoSlot(expired.slot()), "")));
+                // 战斗互播：remove 帧 peer 版（与 add 帧的 oid 版配对）
+                if (session.playerObjectId != 0) {
+                    relayPeerFrame(fx, CustomPackets.intMessage(169,
+                            1,
+                            expired.configId(),
+                            new CustomPackets.ObjRef(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                            new CustomPackets.ObjRef(session.playerObjectId, S2CPackets.PLAYER_OWNER_ID),
+                            session.actor.name, session.actor.name,
+                            now,
+                            0));
+                }
             }
         }
         respawnDeadNpcs(fx, st, session, now);

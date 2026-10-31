@@ -834,6 +834,28 @@ public final class PlayerActor {
         return b.build();
     }
 
+    /**
+     * 互播战斗快照（远端玩家视角子集）：HP/上限/瘀血/死亡/逻辑态/当前技能。
+     * 不含 CAPITAL（货币）、轻功点、BufferInfo、修炼等私有属性——
+     * {@link #vitalUpdate()} 保持自机全量，两者并行（双发模式）。
+     */
+    public byte[] peerCombatUpdate(int objectId, int ownerId) {
+        S2CPackets.Batch b = S2CPackets.batch(objectId, ownerId);
+        int effHp = maxHp();
+        int hpRatio = (int) ((long) hp * 100 / effHp);
+        int hitRatio = (int) ((long) hitHp * 100 / effHp);
+        b.u8(PropertyId.LOGIC_STATE, logicState)
+                .i32(PropertyId.HP_RATIO, hpRatio)
+                .i32(PropertyId.MAX_HP, effHp)
+                .i32(PropertyId.HP, hp)
+                .i32(PropertyId.HIT_HP, hitHp)
+                .i32(PropertyId.HIT_HP_RATIO, hitRatio)
+                .u8(PropertyId.DEAD, hp <= 0 ? 1 : 0)
+                .str(PropertyId.CUR_SKILL_ID, curSkillId)
+                .obj(PropertyId.CUR_SKILL_TARGET, curSkillTargetOid, curSkillTargetOwner);
+        return b.build();
+    }
+
     /** 内功面板静态种子（Go newPlayerProgress：运功中、普通模式、太极心法 30 级）。 */
     static final class BootstrapCurNeigong {
         static final String CUR = "ng_wd_001";

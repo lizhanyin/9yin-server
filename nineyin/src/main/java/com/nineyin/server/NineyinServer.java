@@ -160,6 +160,11 @@ public final class NineyinServer implements SummerApp {
             public void onBossAction(SceneWorld world, byte[] frame) {
                 broadcastFrame(world, frame);
             }
+
+            @Override
+            public void onBossAction(SceneWorld world, byte[] frame, FxSession exclude) {
+                broadcastFrame(world, frame, exclude);
+            }
         });
         loginFlow.addReadyHook(sceneFlow::sendSceneNpcs);
         loginFlow.setReentryHandler(fx -> {
@@ -199,7 +204,15 @@ public final class NineyinServer implements SummerApp {
 
     /** BOSS 出招动作帧广播：同场景且已下发 NPC 的会话。 */
     private void broadcastFrame(SceneWorld world, byte[] frame) {
+        broadcastFrame(world, frame, null);
+    }
+
+    /** 战斗互播：排除 exclude（已单播过 self 版帧的会话）的广播。 */
+    private void broadcastFrame(SceneWorld world, byte[] frame, FxSession exclude) {
         for (FxSession fx : sessions) {
+            if (fx == exclude) {
+                continue;
+            }
             LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
             if (login == null) {
                 continue;

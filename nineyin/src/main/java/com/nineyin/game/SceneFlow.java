@@ -100,6 +100,9 @@ public final class SceneFlow {
     private final com.nineyin.rule.EquipEffectCatalog equipEffects;
     /** 商店表（msgId 70 真机 5 值布局按 shopId 解析；null = 仅会话快照）。 */
     private com.nineyin.shop.ShopRepository shopRepository;
+    /** 技能脚本宿主（on_cast/on_hit 运行期钩子 + 伤害公式分发；null = 全走 Java 默认管线）。 */
+    private com.nineyin.script.ScriptHost scriptHost;
+    private com.nineyin.script.CombatFormulaHost formulaHost;
 
     /** 每会话场景同步状态。 */
     public static final class SceneState {
@@ -201,6 +204,24 @@ public final class SceneFlow {
     }
 
     /** 注入商店表（NineyinServer 装配；启用 msgId 70 按消息内 shopId 解析）。 */
+    /** 注入脚本宿主（NineyinServer wire）：on_cast/on_hit 钩子 + 伤害公式分发。 */
+    public void setScriptHost(com.nineyin.script.ScriptHost host) {
+        this.scriptHost = host;
+        this.formulaHost = new com.nineyin.script.CombatFormulaHost(host);
+    }
+
+    /** GM reload_scripts：重建脚本 state + 清技能定义缓存（进行中波次继续旧 Def）。 */
+    public String reloadScripts() {
+        if (scriptHost == null) {
+            return "脚本系统未启用";
+        }
+        scriptHost.reload();
+        skillCatalog.invalidateDefinitionCache();
+        return scriptHost.available()
+                ? "脚本已重载（" + scriptHost.loadedCount() + " 个）"
+                : "脚本重载失败（native 初始化错误），已回退 Java 默认管线";
+    }
+
     public void setShopRepository(com.nineyin.shop.ShopRepository shopRepository) {
         this.shopRepository = shopRepository;
     }
@@ -2665,7 +2686,7 @@ public final class SceneFlow {
             log.info("reject skill id={}: {}", skillId, reject);
             return;
         }
-        stageSkillBuffs(fx, actor, def, now);
+        stageSkillBuffs(fx, actor, def, now, appendCastEffects(actor, def, selected, now));
         // cooldown_rec 行（表 5：category, startMs, endMs, team）
         fx.send(S2CPackets.recordAddRow(com.nineyin.protocol.RecordId.COOLDOWN_REC, 0,
                 def.cooldownCategory(), now, now + def.personalCdMs(), def.cooldownTeam()));
@@ -2879,9 +2900,74 @@ public final class SceneFlow {
         return applied;
     }
 
-    /** 技能 Buff 暂驻（自身 Buff / 架势轮换 / 红霸体），日志与参考服同构。 */
-    private void stageSkillBuffs(FxSession fx, PlayerActor actor, SkillCatalog.Definition def, long now) {
-        for (SkillCatalog.Effect effect : def.effects()) {
+    /**
+     * on_cast 运行期钩子：scripts/skill/&lt;id&gt;.lua 的 M.on_cast(ctx) 返回
+     * {add_effects={...}} 时追加自身向效果（PLAYER_BUFF/STANCE_CYCLE/RED_ARMOR；
+     * 伤害/控制仍须走编译期管线保证帧配对）。无脚本/出错返回 null（默认管线）。
+     */
+    private List<SkillCatalog.Effect> appendCastEffects(PlayerActor actor, SkillCatalog.Definition def,
+                                                        NpcInstance selected, long now) {
+        if (scriptHost == null) {
+            return null;
+        }
+        party.iroiro.luajava.value.LuaValue module = scriptHost.skillModule(def.id());
+        if (module == null) {
+            return null;
+        }
+        party.iroiro.luajava.value.LuaValue fn = module.get("on_cast");
+        if (fn == null || fn.type() != party.iroiro.luajava.Lua.LuaType.FUNCTION) {
+            return null;
+        }
+        java.util.Map<String, Object> ctx = com.nineyin.script.SkillScriptBridge.castContext(
+                def.id(), def.level(),
+                actor.buffStaticDataAt(PlayerActor.BUFF_SLOT_TAIJI_STANCE, now),
+                actor.hp, actor.maxHp(), actor.mp,
+                selected != null ? selected.objectId : null,
+                selected != null ? selected.configId : null,
+                selected != null ? selected.hp : 0,
+                selected != null ? selected.maxHp : 0);
+        Object ret = scriptHost.callMap(fn, ctx);
+        return ret != null
+                ? com.nineyin.script.SkillScriptBridge.parseCastAddEffects(def.id(), ret) : null;
+    }
+
+    /**
+     * on_hit 运行期钩子：M.on_hit(ctx) 返回 {ratio=...} 时在掷点前修正该波倍率
+     * （架势加成/连击衰减等条件数值；门与帧不受影响）。出错/无返回保持原倍率。
+     */
+    private double modifyHitRatio(PlayerActor actor, NpcInstance npc, SkillCatalog.Definition def,
+                                  double ratio, int wave, int waves, long now) {
+        if (scriptHost == null) {
+            return ratio;
+        }
+        party.iroiro.luajava.value.LuaValue module = scriptHost.skillModule(def.id());
+        if (module == null) {
+            return ratio;
+        }
+        party.iroiro.luajava.value.LuaValue fn = module.get("on_hit");
+        if (fn == null || fn.type() != party.iroiro.luajava.Lua.LuaType.FUNCTION) {
+            return ratio;
+        }
+        java.util.Map<String, Object> ctx = com.nineyin.script.SkillScriptBridge.hitContext(
+                def.id(), def.level(), wave, waves, ratio,
+                actor.buffStaticDataAt(PlayerActor.BUFF_SLOT_TAIJI_STANCE, now),
+                actor.hp, actor.maxHp(), actor.mp,
+                npc.objectId, npc.configId, npc.hp, npc.maxHp);
+        Object ret = scriptHost.callMap(fn, ctx);
+        Double modified = ret != null
+                ? com.nineyin.script.SkillScriptBridge.parseHitRatio(ret) : null;
+        return modified != null ? modified : ratio;
+    }
+
+    /** 技能 Buff 暂驻（自身 Buff / 架势轮换 / 红霸体 + 脚本 on_cast 追加效果），日志与参考服同构。 */
+    private void stageSkillBuffs(FxSession fx, PlayerActor actor, SkillCatalog.Definition def, long now,
+                                 List<SkillCatalog.Effect> castExtras) {
+        List<SkillCatalog.Effect> all = def.effects();
+        if (castExtras != null && !castExtras.isEmpty()) {
+            all = new ArrayList<>(def.effects());
+            all.addAll(castExtras);
+        }
+        for (SkillCatalog.Effect effect : all) {
             SkillCatalog.BuffDef buff = null;
             switch (effect.kind()) {
                 case PLAYER_BUFF -> buff = effect.buff();
@@ -2973,7 +3059,7 @@ public final class SceneFlow {
         if (selected == null || selected.dead || selected.hp <= 0) {
             return new SettleSummary(0, 0, 0, List.of());
         }
-        HitResult hit = settleSkillHit(fx, session, st, selected, def, now, ratio);
+        HitResult hit = settleSkillHit(fx, session, st, selected, def, now, ratio, wave, waves);
         if (wave > 0) {
             log.info("skill {} wave {}/{} -> npc {} damage={}", def.id(), wave + 1, waves,
                     selected.configId, hit.damage());
@@ -2997,7 +3083,7 @@ public final class SceneFlow {
         int loot = 0;
         List<NpcInstance> landed = new ArrayList<>(hits.size());
         for (NpcInstance npc : hits) {
-            HitResult hit = settleSkillHit(fx, session, st, npc, def, now, ratio);
+            HitResult hit = settleSkillHit(fx, session, st, npc, def, now, ratio, wave, waves);
             damage += hit.damage();
             loot += hit.loot();
             if (hit.landed()) {
@@ -3096,15 +3182,21 @@ public final class SceneFlow {
     }
 
     /**
-     * 单目标伤害结算：CombatFormulas 掷未命中/暴击（ratio = 编译伤害/100/波数，
-     * 多跳总伤害与单发守恒），命中掉血 + 0x10 血条批，死亡 0x0E 移除 + 重生排期 + AI/九阴志事件。
+     * 单目标伤害结算：公式掷未命中/暴击（Lua formula.lua 优先、Java 回退；
+     * ratio = 编译伤害/100/波数，on_hit 钩子可在掷点前修正倍率；多跳总伤害与单发守恒），
+     * 命中掉血 + 0x10 血条批，死亡 0x0E 移除 + 重生排期 + AI/九阴志事件。
      */
     private HitResult settleSkillHit(FxSession fx, LoginSession session, SceneState st,
                                      NpcInstance npc, SkillCatalog.Definition def, long now,
-                                     double ratio) {
-        CombatFormulas.DamageResult hit = CombatFormulas.calc(session.actor.combatStats(),
-                CombatStats.defender(npc.defense, npc.evasion),
-                ratio, ThreadLocalRandom.current(), false);
+                                     double ratio, int wave, int waves) {
+        ratio = modifyHitRatio(session.actor, npc, def, ratio, wave, waves, now);
+        CombatFormulas.DamageResult hit = formulaHost != null
+                ? formulaHost.calc(session.actor.combatStats(),
+                        CombatStats.defender(npc.defense, npc.evasion),
+                        ratio, ThreadLocalRandom.current(), false)
+                : CombatFormulas.calc(session.actor.combatStats(),
+                        CombatStats.defender(npc.defense, npc.evasion),
+                        ratio, ThreadLocalRandom.current(), false);
         if (hit.miss()) {
             log.info("skill {} -> npc {} MISS", def.id(), npc.configId);
             if (ai != null) {

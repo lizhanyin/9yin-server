@@ -37,6 +37,20 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
         </dependency>
+        <!-- 技能/公式 Lua 脚本引擎（scripts/ 目录，GM 可热重载） -->
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>luajava</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>lua55</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>lua55-platform</artifactId>
+            <classifier>natives-desktop</classifier>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

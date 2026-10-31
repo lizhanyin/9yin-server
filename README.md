@@ -42,6 +42,13 @@
 （CWD/data → 环境变量 → share 根上溯三级自动解析），两者缺失时面板仍可用，目录接口
 返回空列表。
 
+## Lua 脚本（技能效果与伤害公式）
+
+`scripts/`（仓库根；定位方式与 share 同）：`skill/<技能ID>.lua` 技能效果脚本 +
+`combat/formula.lua` 伤害公式，GM 面板 `reload_scripts` 热重载（不重启）；目录缺失
+或脚本出错时自动回退 Java 默认管线，不影响开服。契约见
+[docs/skill-script-framework.md](docs/skill-script-framework.md)。
+
 ## 协议知识库
 
 C++ 工程的 `spec/` 目录（51 个 S2C opcode 分发表、1548 条属性定义、297 张记录表 schema）

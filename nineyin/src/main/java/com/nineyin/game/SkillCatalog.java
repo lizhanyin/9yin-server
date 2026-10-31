@@ -58,26 +58,26 @@ public final class SkillCatalog {
     public record BuffDef(String configId, int staticData, int level, long lifetimeMs, int preferredSlot) {
     }
 
-    /** 一个技能效果：伤害 / 自身 Buff / 目标控制 / 红霸体 / 架势轮换。 */
+    /** 一个技能效果：伤害 / 自身 Buff / 目标控制 / 红霸体 / 架势轮换。工厂对 script 桥开放。 */
     public record Effect(EffectKind kind, int amount, BuffDef buff, List<BuffDef> buffVariants) {
 
-        static Effect damage(int amount) {
+        public static Effect damage(int amount) {
             return new Effect(EffectKind.DAMAGE, amount, null, null);
         }
 
-        static Effect buff(BuffDef def) {
+        public static Effect buff(BuffDef def) {
             return new Effect(EffectKind.PLAYER_BUFF, 0, def, null);
         }
 
-        static Effect control(BuffDef def) {
+        public static Effect control(BuffDef def) {
             return new Effect(EffectKind.TARGET_CONTROL, 0, def, null);
         }
 
-        static Effect stance(List<BuffDef> variants) {
+        public static Effect stance(List<BuffDef> variants) {
             return new Effect(EffectKind.STANCE_CYCLE, 0, null, variants);
         }
 
-        static Effect redArmor() {
+        public static Effect redArmor() {
             return new Effect(EffectKind.RED_ARMOR, 0, null, null);
         }
     }
@@ -103,24 +103,15 @@ public final class SkillCatalog {
         }
     }
 
-    /** 已实机验证的效果 overlay（exe 内嵌 buf_CS_wd_tjq04_1/2 等 ConfigID 佐证架势轮换仍在）。 */
-    private record Overlay(long selfBuffLeaseMs, int preferredSlot, boolean redArmor, List<BuffDef> stance) {
-    }
+    /**
+     * 脚本 compile 钩子产出的覆盖指令（scripts/skill/&lt;id&gt;.lua 的 M.compile(def) 返回）。
+     * 原为 6 条实机验证的 VERIFIED_OVERLAYS 手工表（花神/太极 buff 租约、架势轮换、红霸体），
+     * 已逐字段迁移至 Lua；exe 内嵌 buf_CS_wd_tjq04_1/2 等 ConfigID 佐证架势轮换仍在。
+     */
+    public record ScriptOverlay(long selfBuffLeaseMs, int preferredSlot, boolean redArmor,
+                                List<BuffDef> stance, List<Effect> effectsOverride) {
 
-    private static final Map<String, Overlay> VERIFIED_OVERLAYS = buildOverlays();
-
-    private static Map<String, Overlay> buildOverlays() {
-        Map<String, Overlay> m = new LinkedHashMap<>();
-        m.put("CS_yhwq_hsqs04", new Overlay(35_000L, PlayerActor.BUFF_SLOT_YIHUA, false, null));
-        m.put("CS_yhwq_hsqs05", new Overlay(0, PlayerActor.BUFF_SLOT_YIHUA_05, true, null));
-        List<BuffDef> stance = List.of(
-                new BuffDef("buf_CS_wd_tjq04_1", 6013, 1, 24L * 60 * 60 * 1000, PlayerActor.BUFF_SLOT_TAIJI_STANCE),
-                new BuffDef("buf_CS_wd_tjq04_2", 6055, 1, 24L * 60 * 60 * 1000, PlayerActor.BUFF_SLOT_TAIJI_STANCE));
-        m.put("CS_wd_tjq04", new Overlay(0, PlayerActor.BUFF_SLOT_TAIJI_STANCE, false, stance));
-        m.put("CS_wd_tjq05", new Overlay(0, PlayerActor.BUFF_SLOT_TAIJI_05, false, null));
-        m.put("CS_wd_tjq07", new Overlay(0, PlayerActor.BUFF_SLOT_TAIJI_07, false, null));
-        m.put("CS_wd_tjq08", new Overlay(0, 0, true, null));
-        return Collections.unmodifiableMap(m);
+        public static final ScriptOverlay NONE = new ScriptOverlay(0, 0, false, null, null);
     }
 
     // ---------- ini 载入 ----------
@@ -203,6 +194,8 @@ public final class SkillCatalog {
     private final Map<String, Integer> skipReasons = new TreeMap<>();
     private final Map<String, Optional<Definition>> cache = new ConcurrentHashMap<>();
     private int useLimitPacks;
+    /** 技能脚本宿主（scripts/skill/&lt;id&gt;.lua；null = 无脚本，全走 INI 默认编译）。 */
+    private com.nineyin.script.ScriptHost scriptHost;
 
     /** 加载 modern 根（resources/modern）：share/skill/*.ini + ini/action/zhaoshi_player*.ini。 */
     public void load(Path modernRoot) {
@@ -334,6 +327,20 @@ public final class SkillCatalog {
         return id + "#" + level;
     }
 
+    /**
+     * 注入脚本宿主（NineyinServer wire；编译时对有脚本的技能调用 M.compile）。
+     * 清空定义缓存：load() 的 levelOne 预编译可能发生在注入前（无 overlay 版本已入缓存）。
+     */
+    public void setScriptHost(com.nineyin.script.ScriptHost host) {
+        this.scriptHost = host;
+        cache.clear();
+    }
+
+    /** GM reload_scripts 后清空定义缓存（进行中波次继续旧 Def，下次 compile 用新效果）。 */
+    public void invalidateDefinitionCache() {
+        cache.clear();
+    }
+
     public int indexedCount() {
         return indexed.size();
     }
@@ -388,23 +395,36 @@ public final class SkillCatalog {
             publicCd = personalCd;
         }
         List<Effect> effects = new ArrayList<>(3);
+        BuffDef exact = compileExactBuff(id, level);
+        ScriptOverlay overlay = scriptOverlay(id, level, staticData, script,
+                value(staticFields, "TaoLu"), baseDamage, hitCount, shape.mode(), targetRange, exact);
+        if (overlay != null && overlay.effectsOverride() != null) {
+            // 全量覆盖逃生舱：脚本完全接管效果列表（跳过 INI 默认编译）
+            return new Definition(id, staticData, script, value(staticFields, "TaoLu"), level,
+                    intValue(staticFields, "CoolDownCategory"), intValue(staticFields, "CoolDownTeam"),
+                    personalCd, publicCd,
+                    intValue(consumeFields, "AConsumeMP"), intValue(consumeFields, "AConsumeSP"),
+                    intValue(consumeFields, "AConsumeQGP"), baseDamage,
+                    shape.mode() == TargetMode.SELECTED || shape.mode() == TargetMode.SELECTED_AREA,
+                    shape.mode(), shape.radius(), floatValue(varProp, "HeightDiff"),
+                    shape.sectorAngle(), shape.areaWidth(), targetRange, hitCount,
+                    timeline.actionName(), timeline.durationMs(),
+                    timeline.followups(), Collections.unmodifiableList(overlay.effectsOverride()));
+        }
         if (baseDamage > 0) {
             effects.add(Effect.damage(baseDamage));
         }
-        BuffDef exact = compileExactBuff(id, level);
         if (exact != null) {
-            Overlay overlay = VERIFIED_OVERLAYS.get(id);
             if (overlay != null && overlay.selfBuffLeaseMs() > 0) {
                 exact = new BuffDef(exact.configId(), exact.staticData(), exact.level(),
                         overlay.selfBuffLeaseMs(), overlay.preferredSlot());
-            } else if (overlay != null) {
+            } else if (overlay != null && overlay.preferredSlot() != 0) {
                 exact = new BuffDef(exact.configId(), exact.staticData(), exact.level(),
                         exact.lifetimeMs(), overlay.preferredSlot());
             }
             boolean harmful = intValue(buffStatic.get(sectionKey(exact.staticData())), "IsDamage") != 0;
             effects.add(harmful ? Effect.control(exact) : Effect.buff(exact));
         }
-        Overlay overlay = VERIFIED_OVERLAYS.get(id);
         if (overlay != null && overlay.stance() != null) {
             effects.add(Effect.stance(overlay.stance()));
         }
@@ -421,6 +441,31 @@ public final class SkillCatalog {
                 shape.sectorAngle(), shape.areaWidth(), targetRange, hitCount,
                 timeline.actionName(), timeline.durationMs(),
                 timeline.followups(), Collections.unmodifiableList(effects));
+    }
+
+    /**
+     * 脚本覆盖钩子：存在 scripts/skill/&lt;id&gt;.lua 时调用 M.compile(def 快照)，
+     * 解析覆盖指令（租约/首选槽/红霸体/架势轮换/全量效果）；无脚本或脚本出错返回 null
+     * （走 INI 默认编译，脚本错误仅 WARN 不得阻断编译）。
+     */
+    private ScriptOverlay scriptOverlay(String id, int level, int staticData, String script,
+                                        String taoLu, int baseDamage, int hitCount,
+                                        TargetMode targetMode, float targetRange, BuffDef exact) {
+        if (scriptHost == null) {
+            return null;
+        }
+        party.iroiro.luajava.value.LuaValue module = scriptHost.skillModule(id);
+        if (module == null) {
+            return null;
+        }
+        party.iroiro.luajava.value.LuaValue fn = module.get("compile");
+        if (fn == null || fn.type() != party.iroiro.luajava.Lua.LuaType.FUNCTION) {
+            return null;
+        }
+        Map<String, Object> snapshot = com.nineyin.script.SkillScriptBridge.definitionSnapshot(
+                id, level, staticData, script, taoLu, baseDamage, hitCount, targetMode, targetRange, exact);
+        Object ret = scriptHost.callMap(fn, snapshot);
+        return ret != null ? com.nineyin.script.SkillScriptBridge.parseOverlay(id, ret) : null;
     }
 
     private List<String[]> levelVarProp(List<String[]> staticFields, String script, int level) {

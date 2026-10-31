@@ -115,17 +115,28 @@ public final class CombatFormulas {
     }
 
     /**
-     * 主公式：先掷未命中（闪避方概率 > 0 时消耗一次随机数），命中后掷暴击
-     * （概率 > 0 时消耗一次随机数，招架状态不影响暴击）；受击方招架时乘穿透比
+     * 主公式（随机源版）：预掷两次随机数（未命中/暴击各一）后走确定性重载。
+     * 掷骰消耗固定化（原实现 miss=0 时不消耗），独立均匀分布下与旧行为等价，
+     * 并与 Lua 公式（formula.lua 收 rand={r_miss, r_crit}）逐次对齐。
+     */
+    public static DamageResult calc(CombatStats attacker, CombatStats defender,
+                                    double skillRatio, Random rng, boolean defenderParrying) {
+        return calc(attacker, defender, skillRatio, rng.nextDouble(), rng.nextDouble(), defenderParrying);
+    }
+
+    /**
+     * 主公式（确定性版，Lua formula.lua 与 JUnit 对照共用）：
+     * 先掷未命中，命中后掷暴击（招架状态不影响暴击）；受击方招架时乘穿透比
      * （完全挡下则伤害 0），最后扣平减值。顺序：
      * floor((攻击×(1−减伤)+破防) × 技能倍率 × 暴击倍数 × 招架穿透比) − 平减，
      * 保底 1 点（未命中/完全招架为 0）。招架耐力消耗在调用方（按攻击力计）。
      */
     public static DamageResult calc(CombatStats attacker, CombatStats defender,
-                                    double skillRatio, Random rng, boolean defenderParrying) {
+                                    double skillRatio, double rMiss, double rCrit,
+                                    boolean defenderParrying) {
         double miss = missChance(attacker.accuracy(), defender.evasion(),
                 attacker.hitRateBonus(), defender.dodgeRateBonus());
-        if (miss > 0 && rng.nextDouble() < miss) {
+        if (miss > 0 && rMiss < miss) {
             return new DamageResult(0, true, false, false, defenseReduction(defender.defense()));
         }
         double reduction = defenseReduction(defender.defense());
@@ -134,7 +145,7 @@ public final class CombatFormulas {
         boolean crit = false;
         double chance = critChance(attacker.critValue(), defender.resilience(),
                 attacker.critRateBonus(), defender.critRateReduction());
-        if (chance > 0 && rng.nextDouble() < chance) {
+        if (chance > 0 && rCrit < chance) {
             raw *= critMultiplier(attacker.critDamageBonus(), defender.critDamageReduction());
             crit = true;
         }

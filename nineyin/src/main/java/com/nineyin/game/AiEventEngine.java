@@ -128,6 +128,8 @@ public final class AiEventEngine {
     };
 
     private volatile ControlSink controlSink;
+    /** 伤害公式分发（Lua formula.lua 优先，Java 回退）；null = 纯 Java 公式。 */
+    private volatile com.nineyin.script.CombatFormulaHost formulas;
 
     /** 战斗掷骰（未命中/暴击）；测试可注入固定种子保证断言确定。 */
     private Random rng = ThreadLocalRandom.current();
@@ -148,6 +150,11 @@ public final class AiEventEngine {
 
     public void setControlSink(ControlSink controlSink) {
         this.controlSink = controlSink;
+    }
+
+    /** 注入脚本公式宿主（NineyinServer wire；NPC 出招伤害同走 Lua formula.lua）。 */
+    public void setScriptHost(com.nineyin.script.ScriptHost host) {
+        this.formulas = new com.nineyin.script.CombatFormulaHost(host);
     }
 
     /** 测试注入固定随机源（战斗掷骰走它），保证血量断言确定。 */
@@ -517,8 +524,9 @@ public final class AiEventEngine {
         }
         PlayerActor actor = login.actor;
         boolean parrying = actor.parrying && actor.parryEndurance > 0;
-        CombatFormulas.DamageResult hit = CombatFormulas.calc(
-                atk, actor.combatStats(), 1.0, rng, parrying);
+        CombatFormulas.DamageResult hit = formulas != null
+                ? formulas.calc(atk, actor.combatStats(), 1.0, rng, parrying)
+                : CombatFormulas.calc(atk, actor.combatStats(), 1.0, rng, parrying);
         if (hit.miss()) {
             log.info("npc {} cast {} -> {} MISS", caster.configId, skillId, login.roleName);
             return;

@@ -81,6 +81,8 @@ public final class NineyinServer implements SummerApp {
     private TickScheduler actorScheduler;
     private TickScheduler bossScheduler;
     private TickScheduler bagpackScheduler;
+    /** Lua 脚本宿主（技能效果钩子 + 伤害公式；scripts/ 目录）。 */
+    private com.nineyin.script.ScriptHost scriptHost;
 
     public NineyinServer() {
         this.roleStore = openRoleStore();
@@ -98,7 +100,12 @@ public final class NineyinServer implements SummerApp {
         // 技能系统：学习表（skill_init.ini，缺失回退内置 23 技）+ 编译目录（share/skill + ini/action）
         SkillInitTable skillInitTable = new SkillInitTable();
         skillInitTable.load(shareRoot.resolve("skill").resolve("skill_init.ini"));
+        // 技能/公式 Lua 脚本（服务器根 scripts/，缺失 = 无脚本模式全走 INI 默认编译）。
+        // 先于 SkillCatalog.load：levelOne 预编译期就要带上脚本 overlay。
+        scriptHost = new com.nineyin.script.ScriptHost();
+        scriptHost.load(com.nineyin.script.ScriptHost.locateScriptsRoot());
         SkillCatalog skillCatalog = new SkillCatalog();
+        skillCatalog.setScriptHost(scriptHost);
         skillCatalog.load(shareRoot.getParent());
         // 修炼等级曲线（升级修炼度查表；缺失时 FacultyState 走旧公式回退）
         WuxueLevelInfo levelCurves = new WuxueLevelInfo();
@@ -112,8 +119,10 @@ public final class NineyinServer implements SummerApp {
         BuffCatalog buffCatalog = new BuffCatalog();
         buffCatalog.load(shareRoot.resolve("skill"));
         AiEventEngine aiEngine = new AiEventEngine(aiRules, sceneManager.templates(), buffCatalog);
+        aiEngine.setScriptHost(scriptHost);
         sceneFlow = new SceneFlow(sceneManager, roleStore, qinggongCatalog, aiEngine, ninjiuzhi,
                 skillCatalog, skillInitTable);
+        sceneFlow.setScriptHost(scriptHost);
         sceneFlow.setShopRepository(shopRepository);
         sceneFlow.setWuxueLevelInfo(levelCurves);
         // 邮箱（data/mail.json，与参考服 Go mailStore 同构共享）
@@ -445,6 +454,9 @@ public final class NineyinServer implements SummerApp {
             bossScheduler.close();
         }
         gmServer.stop();
+        if (scriptHost != null) {
+            scriptHost.close();
+        }
         roleStore.flush();
         log.info("nineyin server stopped");
     }

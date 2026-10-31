@@ -28,3 +28,6 @@ nineyin/logs
 
 hs_err_pid*
 mysql.env
+
+# 服务器运行日志（cwd 相对）
+logs/

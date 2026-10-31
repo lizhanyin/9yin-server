@@ -178,6 +178,15 @@ public final class GmActions {
             return "角色尚未进入场景";
         }
         switch (cmd.action()) {
+            case "reload_scripts" -> {
+                // 技能/公式 Lua 热重载（scripts/；重建脚本 state + 清技能定义缓存，不重启）
+                if (sceneFlow == null) {
+                    return "场景系统未接线";
+                }
+                String result = sceneFlow.reloadScripts();
+                log.info("GM reload scripts: {}", result);
+                return result;
+            }
             case "set_silver" -> {
                 long silver = cmd.params().getLongValue("silver");
                 actor.silver = Math.max(0, silver);

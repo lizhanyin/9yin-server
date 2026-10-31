@@ -269,6 +269,12 @@ public final class PlayerActor {
         return buff == null ? 0 : buff.expiresMs;
     }
 
+    /** 槽上生效中 Buff 的 StaticData（空槽/已过期 0；脚本钩子 ctx 的架势快照用）。 */
+    public int buffStaticDataAt(int slot, long nowMs) {
+        ActiveBuff buff = buffs.get(slot);
+        return buff != null && buff.expiresMs > nowMs ? buff.staticData : 0;
+    }
+
     /** 架势轮换：首选槽空闲→首变体；当前 StaticData 命中某变体→下一变体（循环）。 */
     public SkillCatalog.BuffDef nextStanceVariant(List<SkillCatalog.BuffDef> variants, long nowMs) {
         if (variants == null || variants.isEmpty()) {

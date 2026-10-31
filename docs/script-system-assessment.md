@@ -3,6 +3,15 @@
 > 评估日期：2026-10-29。
 > 问题：服务端是否需要接入脚本系统（LuaJ / GraalJS / Groovy 等嵌入式脚本引擎）承载游戏玩法逻辑。
 > 结论先行：**现阶段不接入，延后到"玩法内容生产期"（任务/剧情、活动/福利批量落地阶段）再评估。届时优先扩数据驱动 DSL，其次才是嵌入式脚本。**
+>
+> **决策更新（2026-10-31）**：技能层按本 ADR 预留的"备选方案 2"接入——
+> [LuaJava 现代移植](https://github.com/gudzpoz/luajava)（`party.iroiro.luajava`，
+> native Lua 5.5），限定纯函数钩子：技能效果（compile/on_cast/on_hit）与伤害公式
+> （formula.lua）脚本化并支持 GM 热重载；原 6 条 `VERIFIED_OVERLAYS` 手工补丁
+> 已逐字段迁移为 `scripts/skill/*.lua`。契约与边界见
+> [skill-script-framework.md](skill-script-framework.md)。触发原因：技能数值与
+> 机制进入高频调整期，"改逻辑不重启"需求提前出现；帧/门/费仍留 Java，存档一致性
+> 不受影响（脚本无状态、无 Session 访问）。
 
 ---
 

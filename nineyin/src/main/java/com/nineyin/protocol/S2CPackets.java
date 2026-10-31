@@ -418,6 +418,17 @@ public final class S2CPackets {
      */
     public static byte[] loginSuccessOneRole(String name, java.util.List<String> appearance,
                                              String sceneConfig, String sceneResource, long epochSec) {
+        return loginSuccessOneRole(name, appearance, sceneConfig, sceneResource, epochSec, "title001");
+    }
+
+    /**
+     * 单角色登录成功包（带实力称号）。title 填 role_para f[23]，选人界面按
+     * desc_title0NN 本地化显示实力档位文字（title001=不堪一击 … title027=返璞归真）。
+     * 参考 exe 对同种子玩家（PowerLevel 151）发 title027（2026-10-30 抓包 #0）。
+     */
+    public static byte[] loginSuccessOneRole(String name, java.util.List<String> appearance,
+                                             String sceneConfig, String sceneResource, long epochSec,
+                                             String title) {
         byte[] base = loginSuccessNoRole(epochSec);
         base[0x25] = 1; // 角色数 u32 @0x25
 
@@ -441,7 +452,7 @@ public final class S2CPackets {
         fields[11] = visual.shoes();
         fields[21] = "stand";
         fields[22] = "127.0.0.1";
-        fields[23] = "title001";
+        fields[23] = title;
         fields[24] = SceneNames.sceneDisplayName(sceneConfig, sceneResource);
         fields[25] = SceneNames.bookIntroKey(book);
         fields[31] = "0";

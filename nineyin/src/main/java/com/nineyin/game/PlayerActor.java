@@ -160,7 +160,8 @@ public final class PlayerActor {
     // 人物属性面板身份块（参考服登录 0x10 帧 exe 表 256-266 段，本服 0x09 表按名换算）。
     // powerLevel 种子 151/title027 与参考服同种子玩家（ng_wd_001 30 级）登录帧一致；
     // GM set_power_level/set_alignment/set_vitals 写回这些字段，vitalUpdate 全量兜底。
-    public int powerLevel = 151;   // 实力等级（210）
+    public static final int SEED_POWER_LEVEL = 151;
+    public int powerLevel = SEED_POWER_LEVEL;   // 实力等级（210）
     public int justice;            // 侠（320）
     public int evil;               // 恶（321）
     public int freeBase;           // 基础狂邪（322）

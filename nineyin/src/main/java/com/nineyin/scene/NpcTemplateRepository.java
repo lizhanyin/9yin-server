@@ -14,8 +14,16 @@ import java.util.stream.Stream;
 
 /**
  * NPC 模板仓库：递归加载 npcconfig 目录下全部 .txt（GBK TSV，
- * 首行中文表头、次行英文字段名）。字段名兼容多拼写（ID/Id/ConfigID、
+ * 首行中文表头、次行英文字段名）。字段名兼容多拼写（ID/ConfigID、
  * script/Script/ScriptClass 等），跳过 npc_type。
+ *
+ * <p>风水宝地标记（Fsbd_*）不合成模板、不下发：F 盘 9-19 Go 参考服全链路抓包
+ * （captures/local 解码，2.2 万帧）中 Fsbd 出现 0 次，其 NPC 目录加载对无
+ * npcconfig 表行的条目本就跳过——客户端的宝地地图标记由本地数据渲染，与
+ * 服务端无关。服务端若合成模板下发 0x0D 帧（Resource 回退成 "Fsbd_xxx_01"
+ * 无效资源），反而挤占/干扰客户端本地标记。加成结算不受影响：
+ * {@code SceneFlow.refreshFengshuiBonus} 遍历 SceneWorld.npcs
+ * （SceneCreatorLoader 直接读 creator xml），不经模板仓库。
  */
 public final class NpcTemplateRepository {
 
@@ -25,23 +33,6 @@ public final class NpcTemplateRepository {
 
     private final Map<String, NpcTemplate> templates = new HashMap<>();
     private volatile boolean loaded;
-
-    public NpcTemplateRepository() {
-        // 风水宝地标记（Fsbd_*，commonnpc.xml 常驻摆放，desc=「风水宝地标记（山/林/水/洞/雪）」）。
-        // 无 npcconfig 表行：模板缺行会被 SceneFlow.visibleNpcs 当 MISSING 丢弃，
-        // 这里按 configId 合成最简模板（脚本类留空＝非 eventnpc，客户端按 ConfigID 自行渲染）。
-        // 环境效果（ui_xl_*）：山→火/阳、林→木/阳、水→水/阴、洞→土/阴阳、雪→金/阴，
-        // 提高对应属性真气出现几率与武学经脉聚气速度（修炼界面「当前所在地的风水情况」数据源）。
-        for (String[] fsbd : new String[][]{
-                {"Fsbd_shan_01", "风水宝地·山"},
-                {"Fsbd_lin_01", "风水宝地·林"},
-                {"Fsbd_shui_01", "风水宝地·水"},
-                {"Fsbd_dong_01", "风水宝地·洞"},
-                {"Fsbd_xue_01", "风水宝地·雪"}}) {
-            templates.put(fsbd[0], new NpcTemplate(fsbd[0], "", fsbd[1], "", "", "",
-                    0, 1000, 0, 0, 0, 0, "", "", "", "", 0f, List.of(), 0, 0, 0, null));
-        }
-    }
 
     public synchronized void load(Path npcconfigRoot) {
         if (loaded) {

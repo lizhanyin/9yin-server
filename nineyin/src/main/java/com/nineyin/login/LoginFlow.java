@@ -140,7 +140,7 @@ public final class LoginFlow {
             s.z = stored.getZ();
             s.orient = stored.getOrient();
             fx.send(S2CPackets.loginSuccessOneRole(s.roleName, s.appearance,
-                    s.spawnConfig, s.spawnResource, epochSec()));
+                    s.spawnConfig, s.spawnResource, epochSec(), roleListTitle()));
             log.info("login account={} agreed={} role={} (loaded) ip={}",
                     s.accountKey, s.termsAgreed, s.roleName, fx.remoteAddress());
         } else {
@@ -170,7 +170,8 @@ public final class LoginFlow {
         List<String> appearance = normalizeCreateAppearance(createRoleStrings(plain));
         String book = Appearance.get(appearance, 0, "book1");
         SpawnPoints.SpawnPoint sp = SpawnPoints.forBook(book);
-        fx.send(S2CPackets.loginSuccessOneRole(name, appearance, sp.config(), sp.resource(), epochSec()));
+        fx.send(S2CPackets.loginSuccessOneRole(name, appearance, sp.config(), sp.resource(),
+                epochSec(), roleListTitle()));
 
         s.roleName = name;
         s.appearance = appearance;
@@ -207,6 +208,15 @@ public final class LoginFlow {
     }
 
     // ---------- 0x04 ClientChooseRole → 进场景链 ----------
+
+    /**
+     * 选人界面实力称号（0x04 role_para f[23]）：与面板 vitalUpdate 的 LEVEL_TITLE
+     * 同源映射。角色实力等级尚未持久化，全部按种子 151（参考 exe 同种子玩家
+     * 选人帧发 title027=返璞归真，2026-10-30 抓包 #0）。
+     */
+    private static String roleListTitle() {
+        return PlayerActor.levelTitleFor(PlayerActor.SEED_POWER_LEVEL);
+    }
 
     private void onChooseRole(FxSession fx, byte[] plain) {
         LoginSession s = sessionOf(fx);

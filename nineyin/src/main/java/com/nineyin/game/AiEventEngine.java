@@ -89,6 +89,7 @@ public final class AiEventEngine {
         volatile boolean phaseFired;   // 30% 血转阶段大招已触发（攻略近似）
         FxSession lastAttacker;
         long lastAttackMs;
+        long lastChaseMs;
         int rotationIdx;
         final Map<Integer, Long> lastFired = new ConcurrentHashMap<>();
         /** buff → 原生 BufferInfo 槽位（1..24，视觉帧用）。 */
@@ -113,6 +114,10 @@ public final class AiEventEngine {
     private static final long MONSTER_ATTACK_INTERVAL_MS = TimeUnit.SECONDS.toMillis(2);
     private static final int DEFAULT_MONSTER_ATTACK = 20;
     private static final float MONSTER_ATTACK_REACH = 4f;
+    /** 追击近似：3 m/s（巡逻 1.77、玩家走 5/跑 7 之间）；拖出 home 50m 脱战回位。 */
+    private static final float CHASE_SPEED = 3.0f;
+    private static final float CHASE_LEASH = 50f;
+    private static final long CHASE_REPATH_MS = 1500;
 
     private final AiRuleData rules;
     private final NpcTemplateRepository templates;
@@ -419,11 +424,13 @@ public final class AiEventEngine {
         castSkill(world, boss, ns, skillId, bossStats(boss, skillId));
     }
 
-    /** 普通怪普攻：战斗窗口内对仇恨目标按 MONSTER_ATTACK_INTERVAL_MS 出手（无追击，
-     *  超出 MONSTER_ATTACK_REACH 不打）；模板带技能时轮转广播动作帧，否则纯结算。 */
+    /**
+     * 普通怪战斗循环：战斗窗口内——超出攻击距离先追击（向仇恨目标开移动腿，
+     * 3 m/s 近似），拖出 home 50m 脱战回位；贴身才按 MONSTER_ATTACK_INTERVAL_MS 出手
+     * （模板带技能时轮转广播动作帧，否则纯结算）。
+     */
     private void monsterAttack(SceneWorld world, NpcInstance npc, NpcState ns, long now) {
-        if (now - npc.lastCombatMs >= COMBAT_WINDOW_MS
-                || now - ns.lastAttackMs < MONSTER_ATTACK_INTERVAL_MS) {
+        if (now - npc.lastCombatMs >= COMBAT_WINDOW_MS) {
             return;
         }
         FxSession target = ns.lastAttacker;
@@ -434,9 +441,25 @@ public final class AiEventEngine {
         if (login == null || login.actor == null || login.actor.hp <= 0) {
             return;
         }
+        // 脱战：被拖出 home 太远 → 清仇恨并回位
+        float hdx = npc.x - npc.homeX;
+        float hdz = npc.z - npc.homeZ;
+        if (hdx * hdx + hdz * hdz > CHASE_LEASH * CHASE_LEASH) {
+            ns.lastAttacker = null;
+            world.openLeg(npc.objectId, npc.homeX, npc.homeY, npc.homeZ, npc.orient,
+                    now, now + (long) (Math.sqrt(hdx * hdx + hdz * hdz) / CHASE_SPEED * 1000));
+            log.info("monster {} drops aggro beyond {}m leash, returning home", npc.configId,
+                    (int) CHASE_LEASH);
+            return;
+        }
         float dx = login.x - npc.x;
         float dz = login.z - npc.z;
-        if (dx * dx + dz * dz > MONSTER_ATTACK_REACH * MONSTER_ATTACK_REACH) {
+        float distSq = dx * dx + dz * dz;
+        if (distSq > MONSTER_ATTACK_REACH * MONSTER_ATTACK_REACH) {
+            chase(world, npc, ns, login, now, dx, dz, distSq);
+            return;
+        }
+        if (now - ns.lastAttackMs < MONSTER_ATTACK_INTERVAL_MS) {
             return;
         }
         List<NpcTemplate.SkillRef> skills = templates.lookup(npc.configId).skills();
@@ -444,6 +467,24 @@ public final class AiEventEngine {
                 : skills.get(ns.rotationIdx++ % skills.size()).id();
         castSkill(world, npc, ns, skillId, monsterStats(npc));
         ns.lastAttackMs = now;
+    }
+
+    /** 追击开腿：目标点取仇恨目标身前 ~2m；腿未落位/换腿节流窗内不重开。 */
+    private void chase(SceneWorld world, NpcInstance npc, NpcState ns, LoginSession login,
+                       long now, float dx, float dz, float distSq) {
+        if (now - ns.lastChaseMs < CHASE_REPATH_MS) {
+            return;
+        }
+        float dist = (float) Math.sqrt(distSq);
+        float stopShort = Math.min(2f, Math.max(0f, dist - MONSTER_ATTACK_REACH / 2));
+        float tx = login.x - dx / dist * stopShort;
+        float tz = login.z - dz / dist * stopShort;
+        float moveDist = dist - stopShort;
+        ns.lastChaseMs = now;
+        world.openLeg(npc.objectId, tx, login.y, tz, (float) Math.atan2(dz, dx),
+                now, now + Math.max(600, (long) (moveDist / CHASE_SPEED * 1000)));
+        log.info("monster {} chasing {} d={}m", npc.configId, login.roleName,
+                String.format(Locale.ROOT, "%.1f", dist));
     }
 
     /** 普通怪攻击档案：模板 attack 列优先，缺省 20（参考服 monv/lifeanimal 实测普攻 20）。 */

@@ -45,6 +45,7 @@ class SceneFlowTest {
 
     private RoleStore roleStore;
     private SceneFlow sceneFlow;
+    private SkillCatalog skillCatalog;
     private MailStore mailStore;
     private TeamManager teamManager;
     private EmbeddedChannel channel;
@@ -56,7 +57,7 @@ class SceneFlowTest {
         FxOpcodeRouter router = new FxOpcodeRouter();
         LoginFlow loginFlow = new LoginFlow(roleStore);
         // 技能目录：fixture ini 链（test_self 自 buff 技 / test_atk 单体伤害技）
-        SkillCatalog skillCatalog = new SkillCatalog();
+        skillCatalog = new SkillCatalog();
         skillCatalog.load(tempDir);
         SkillInitTable skillInit = new SkillInitTable();
         skillInit.load(share.resolve("skill").resolve("skill_init.ini"));
@@ -154,6 +155,11 @@ class SceneFlowTest {
                 StaticData=900006
                 script=SkillNormal
                 ItemType=1000
+
+                [test_multi]
+                StaticData=900007
+                script=SkillNormal
+                ItemType=1000
                 """, GBK);
         Files.writeString(skill.resolve("skill_static.ini"), """
                 [900001]
@@ -203,6 +209,14 @@ class SceneFlowTest {
                 CoolDownTeam=50269
                 IsDamage=1
                 TaoLu=test
+
+                [900007]
+                MinVarPropNo=800061
+                MaxVarPropNo=800065
+                CoolDownCategory=12452
+                CoolDownTeam=50269
+                IsDamage=1
+                TaoLu=test
                 """, GBK);
         Files.writeString(skill.resolve("skill_normal_varprop.ini"), """
                 [800001]
@@ -245,6 +259,14 @@ class SceneFlowTest {
                 Consume=15608
                 HitShapePkg=1
                 CoolDownTime=15000
+
+                [800061]
+                Level=1
+                Consume=15608
+                HitShapePkg=1
+                HitCount=3
+                CoolDownTime=15000
+                DamageCalculate=23033
                 """, GBK);
         Files.writeString(skill.resolve("skill_consume.ini"), """
                 [15608]
@@ -373,6 +395,13 @@ class SceneFlowTest {
                 level=1
                 maxlevel=1
                 coolDown=0
+
+                [test_multi]
+                staticData=900007
+                itemType=1000
+                level=1
+                maxlevel=1
+                coolDown=0
                 """, GBK);
         Path action = tempDir.resolve("ini/action");
         Files.createDirectories(action);
@@ -395,6 +424,9 @@ class SceneFlowTest {
 
                 [test_cc_only]
                 1=cc_act;0;43;-1;-1;1
+
+                [test_multi]
+                1=multi_act;0;43;-1;-1;1
                 """, GBK);
     }
 
@@ -931,6 +963,46 @@ class SceneFlowTest {
         byte[] remove = findBuff169(expired, 1, "buf_test_self");
         org.junit.jupiter.api.Assertions.assertNotNull(remove, "到期应发 169 remove 帧");
         assertTrue(login.actor.drainExpiredBuffs().isEmpty(), "剔除队列已排空");
+    }
+
+    /**
+     * 多跳波次守恒（test_multi HitCount=3）：三波合计 ≈ 单发全量（远小于旧单发 3 倍）；
+     * 目标死亡后波次空结算；castSeq 变化由波次守卫拦（此处验证结算层口径）。
+     */
+    @Test
+    void multiHitWavesConserveDamageAndStopOnDead() {
+        fullLogin();
+        LoginSession login = channel.attr(LoginFlow.SESSION).get();
+        SceneFlow.SceneState st = sceneFlow.stateOf(login.fx);
+        NpcInstance target = npcByConfig(st, "mon_test_001");
+        org.junit.jupiter.api.Assertions.assertNotNull(target);
+        login.actor.accuracy = 400;   // 命中确定性
+        SkillCatalog.Definition def = skillCatalog.definition("test_multi", 1);
+        org.junit.jupiter.api.Assertions.assertNotNull(def);
+        assertEquals(3, def.hitCount(), "HitCount 编译进定义");
+
+        int fullHp = target.hp;
+        int singleShot = sceneFlow.settleSelected(login.fx, login, st, def, target,
+                System.currentTimeMillis(), def.baseDamage() / 100.0, 0, 1).damage();
+        target.hp = fullHp;   // 复位后走三波
+        double waveRatio = def.baseDamage() / 100.0 / 3;
+        int total = 0;
+        for (int wave = 0; wave < 3; wave++) {
+            total += sceneFlow.settleSelected(login.fx, login, st, def, target,
+                    System.currentTimeMillis(), waveRatio, wave, 3).damage();
+        }
+        assertTrue(total > 0, "三波都应造成伤害");
+        assertTrue(total >= singleShot / 2 && total <= singleShot * 2,
+                "波次合计 ≈ 单发全量（±暴击/取整），single=" + singleShot + " total=" + total);
+        assertEquals(fullHp - total, target.hp, "血量扣除与波次合计一致");
+
+        // 目标死亡后：波次空结算
+        target.dead = true;
+        SceneFlow.SettleSummary after =
+                sceneFlow.settleSelected(login.fx, login, st, def, target,
+                        System.currentTimeMillis(), waveRatio, 2, 3);
+        assertEquals(0, after.damage());
+        assertEquals(0, after.targets());
     }
 
     /** NPC 技能控制接线（ControlSink 的 SceneFlow 侧）：按目录解析 TARGET_CONTROL 落到玩家。 */

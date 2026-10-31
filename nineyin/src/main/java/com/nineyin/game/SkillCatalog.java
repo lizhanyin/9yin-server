@@ -89,7 +89,7 @@ public final class SkillCatalog {
                              int mpCost, int spCost, int qgCost, int baseDamage,
                              boolean requiresTarget, TargetMode targetMode,
                              float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
-                             float targetRangeMeters,
+                             float targetRangeMeters, int hitCount,
                              String actionName, long actionDurationMs,
                              List<Segment> followupActions, List<Effect> effects) {
 
@@ -374,6 +374,7 @@ public final class SkillCatalog {
         TargetShape shape = compileTargetMode(hitShapeFields, isDamage);
         float targetRange = compileTargetRange(
                 targetShape.get(sectionKey(intValue(varProp, "TargetShapePkg"))));
+        int hitCount = Math.max(1, intValue(varProp, "HitCount"));
         Timeline timeline = compileActions(actions.get(id));
         if (timeline.actionName().isEmpty()) {
             throw new CompileError(id + " has no player action timeline");
@@ -417,7 +418,7 @@ public final class SkillCatalog {
                 intValue(consumeFields, "AConsumeQGP"), baseDamage,
                 shape.mode() == TargetMode.SELECTED || shape.mode() == TargetMode.SELECTED_AREA,
                 shape.mode(), shape.radius(), floatValue(varProp, "HeightDiff"),
-                shape.sectorAngle(), shape.areaWidth(), targetRange,
+                shape.sectorAngle(), shape.areaWidth(), targetRange, hitCount,
                 timeline.actionName(), timeline.durationMs(),
                 timeline.followups(), Collections.unmodifiableList(effects));
     }

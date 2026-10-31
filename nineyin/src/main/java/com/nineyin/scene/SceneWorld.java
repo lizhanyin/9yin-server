@@ -95,7 +95,8 @@ public final class SceneWorld {
     }
 
     /**
-     * 推进巡逻：到点的腿落位；随后（≥800ms 节流）为空闲的巡逻 NPC 开新腿。
+     * 推进巡逻：到点的腿落位（按腿自身目标坐标，追击/回位腿不依赖巡逻路线）；
+     * 随后（≥800ms 节流）为空闲的巡逻 NPC 开新腿。
      */
     public synchronized void tick(long nowMs) {
         Iterator<Map.Entry<Integer, PendingLeg>> it = legs.entrySet().iterator();
@@ -106,7 +107,13 @@ public final class SceneWorld {
             }
             NpcInstance n = npcById(e.getKey());
             if (n != null) {
-                PatrolPaths.confirmArrive(n);
+                PendingLeg leg = e.getValue();
+                n.x = leg.x;
+                n.y = leg.y;
+                n.z = leg.z;
+                if (leg.orient != 0f) {
+                    n.orient = leg.orient;
+                }
             }
             it.remove();
         }
@@ -118,6 +125,9 @@ public final class SceneWorld {
         for (NpcInstance n : npcs) {
             if (n.route.size() < 2 || legs.containsKey(n.objectId)) {
                 continue;
+            }
+            if (n.lastCombatMs > 0 && nowMs - n.lastCombatMs < 8000) {
+                continue;   // 战斗窗口内冻结巡逻（追击/回位腿由 AI 侧驱动；0=从未战斗）
             }
             if (!PatrolPaths.stepPatrol(n)) {
                 continue;
@@ -134,6 +144,19 @@ public final class SceneWorld {
 
     public synchronized PendingLeg legOf(int objectId) {
         return legs.get(objectId);
+    }
+
+    /**
+     * 为 NPC 开一条移动腿（AI 追击/回位用，不依赖巡逻路线）：
+     * 已有进行中的腿不开（等其落位后由调用方按最新态势重开）。
+     */
+    public synchronized boolean openLeg(int objectId, float x, float y, float z,
+                                        float orient, long nowMs, long arriveMs) {
+        if (legs.containsKey(objectId)) {
+            return false;
+        }
+        legs.put(objectId, new PendingLeg(nowMs, arriveMs, x, y, z, orient));
+        return true;
     }
 
     public synchronized List<NpcInstance> snapshotNear(float px, float pz, float radius,

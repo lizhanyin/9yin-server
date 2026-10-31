@@ -2679,6 +2679,13 @@ public final class SceneFlow {
         int lootTotal = 0;
         SettleSummary lastSettle = new SettleSummary(0, 0, 0, List.of());
         boolean damageSettled = false;
+        // 多跳：HitCount 波次铺满动作时长，单波倍率 = 总倍率/波数（总伤害守恒）；
+        // 第 0 波立即结算，后续波按 cadence 排期，每波重解析目标（位置/存活实时）。
+        int waves = Math.max(1, Math.min(def.hitCount(), MULTI_HIT_MAX_WAVES));
+        double waveRatio = (def.baseDamage() > 0 ? def.baseDamage() / 100.0 : 1.0) / waves;
+        long cadenceMs = Math.max(1, def.totalActionDurationMs() / waves);
+        long seq = actor.castSeq;
+        final NpcInstance waveTarget = selected;
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() != SkillCatalog.EffectKind.DAMAGE || effect.amount() <= 0) {
                 continue;
@@ -2687,12 +2694,28 @@ public final class SceneFlow {
                 continue;   // 自身技无目标结算（对齐参考实现的 damage switch 无 SELF 分支）
             }
             lastSettle = def.targetMode() == SkillCatalog.TargetMode.SELECTED
-                    ? settleSelected(fx, session, st, def, selected, now)
-                    : settleArea(fx, session, st, def, selected, msg, now);
+                    ? settleSelected(fx, session, st, def, selected, now, waveRatio, 0, waves)
+                    : settleArea(fx, session, st, def, selected, msg, now, waveRatio, 0, waves);
             damageSettled = true;
             damageDealt += lastSettle.damage();
             targetCount += lastSettle.targets();
             lootTotal += lastSettle.loot();
+            for (int wave = 1; wave < waves; wave++) {
+                final int waveIdx = wave;
+                GameScheduler.schedule(waveIdx * cadenceMs, () -> {
+                    if (actor.castSeq != seq || actor.hp <= 0) {
+                        return;   // 新施法/死亡使旧波次作废
+                    }
+                    SettleSummary s = def.targetMode() == SkillCatalog.TargetMode.SELECTED
+                            ? settleSelected(fx, session, st, def, waveTarget,
+                                    System.currentTimeMillis(), waveRatio, waveIdx, waves)
+                            : settleArea(fx, session, st, def, waveTarget, msg,
+                                    System.currentTimeMillis(), waveRatio, waveIdx, waves);
+                    if (s.loot() > 0) {
+                        creditLoot(fx, actor, s.loot());
+                    }
+                });
+            }
         }
         for (SkillCatalog.Effect effect : def.effects()) {
             if (effect.kind() == SkillCatalog.EffectKind.TARGET_CONTROL) {
@@ -2707,9 +2730,7 @@ public final class SceneFlow {
             }
         }
         if (lootTotal > 0) {
-            actor.silver += lootTotal;
-            fx.send(S2CPackets.playerBatch()
-                    .i64(PropertyId.CAPITAL_TYPE1, actor.silver).build());
+            creditLoot(fx, actor, lootTotal);
             log.info("skill defeated NPCs targets={} silver_drop={}", targetCount, lootTotal);
         }
         log.info("accepted skill id={} mp={} sp={} qg={} damage={} target={} targets={} personal_cd={}ms public_cd={}ms",
@@ -2753,6 +2774,7 @@ public final class SceneFlow {
             return "MP spend rejected";
         }
         actor.sp -= def.spCost();
+        actor.castSeq++;
         actor.skillCooldowns.put(def.id(), now + def.personalCdMs());
         actor.skillTeamCooldowns.put(teamKey, now + def.publicCdMs());
         actor.skillLockUntilMs = now + SKILL_LOCK_MS;
@@ -2920,6 +2942,13 @@ public final class SceneFlow {
         });
     }
 
+    /** 击杀碎银入账 + 0x10 CapitalType1（第 0 波同步入账，后续波次各自入账）。 */
+    private void creditLoot(FxSession fx, PlayerActor actor, int lootTotal) {
+        actor.silver += lootTotal;
+        fx.send(S2CPackets.playerBatch()
+                .i64(PropertyId.CAPITAL_TYPE1, actor.silver).build());
+    }
+
     /** 选中且存活的可攻击目标。 */
     private NpcInstance selectedLivingTarget(SceneState st) {
         if (st.world == null || st.selectedOid == 0) {
@@ -2933,24 +2962,30 @@ public final class SceneFlow {
     }
 
     /** 效果结算汇总：实际伤害 / 命中目标数 / 击杀掉落（碎银）/ 被击中的 NPC（控制结算用）。 */
-    private record SettleSummary(int damage, int targets, int loot, List<NpcInstance> npcs) {
+    record SettleSummary(int damage, int targets, int loot, List<NpcInstance> npcs) {
     }
 
-    /** 单体伤害效果结算（SELECTED）。 */
-    private SettleSummary settleSelected(FxSession fx, LoginSession session, SceneState st,
-                                         SkillCatalog.Definition def, NpcInstance selected, long now) {
-        if (selected == null) {
+    /** 单体伤害效果结算（SELECTED，多跳波次按 wave/waves 计；目标死亡后波次空结算）。
+     *  包可见：SceneFlowTest 直接验证波次守恒。 */
+    SettleSummary settleSelected(FxSession fx, LoginSession session, SceneState st,
+                                         SkillCatalog.Definition def, NpcInstance selected,
+                                         long now, double ratio, int wave, int waves) {
+        if (selected == null || selected.dead || selected.hp <= 0) {
             return new SettleSummary(0, 0, 0, List.of());
         }
-        HitResult hit = settleSkillHit(fx, session, st, selected, def, now);
+        HitResult hit = settleSkillHit(fx, session, st, selected, def, now, ratio);
+        if (wave > 0) {
+            log.info("skill {} wave {}/{} -> npc {} damage={}", def.id(), wave + 1, waves,
+                    selected.configId, hit.damage());
+        }
         return new SettleSummary(hit.damage(), hit.landed() ? 1 : 0, hit.loot(),
                 hit.landed() ? List.of(selected) : List.of());
     }
 
-    /** 区域伤害效果结算（圆/扇/矩形/目标区域；日志与参考服同构，split/cadence 待钉死）。 */
+    /** 区域伤害效果结算（圆/扇/矩形/目标区域；每波重扫目标，日志与参考服同构）。 */
     private SettleSummary settleArea(FxSession fx, LoginSession session, SceneState st,
                                      SkillCatalog.Definition def, NpcInstance selected,
-                                     CustomMsg msg, long now) {
+                                     CustomMsg msg, long now, double ratio, int wave, int waves) {
         CastCenter center = castCenter(st, selected, msg, session);
         if (center == null) {
             log.info("compiled area skill id={} has no center; no targets settled", def.id());
@@ -2962,7 +2997,7 @@ public final class SceneFlow {
         int loot = 0;
         List<NpcInstance> landed = new ArrayList<>(hits.size());
         for (NpcInstance npc : hits) {
-            HitResult hit = settleSkillHit(fx, session, st, npc, def, now);
+            HitResult hit = settleSkillHit(fx, session, st, npc, def, now, ratio);
             damage += hit.damage();
             loot += hit.loot();
             if (hit.landed()) {
@@ -2970,15 +3005,16 @@ public final class SceneFlow {
                 landed.add(npc);
             }
         }
-        log.info("settled compiled area skill id={} mode={} center=({},{},{}) radius={} angle={} width={} hits={} split={} cadence={}ms damage_total={}",
-                def.id(), def.targetMode().ordinal(),
+        log.info("settled compiled area skill id={} wave={}/{} mode={} center=({},{},{}) radius={} angle={} width={} hits={} split={} cadence={}ms damage_total={}",
+                def.id(), wave + 1, waves, def.targetMode().ordinal(),
                 String.format(Locale.ROOT, "%.2f", center.x()),
                 String.format(Locale.ROOT, "%.2f", center.y()),
                 String.format(Locale.ROOT, "%.2f", center.z()),
                 String.format(Locale.ROOT, "%.1f", def.areaRadius()),
                 String.format(Locale.ROOT, "%.1f", def.sectorAngle()),
                 String.format(Locale.ROOT, "%.1f", def.areaWidth()),
-                hits.size(), 1, 0, damage);
+                hits.size(), waves,
+                Math.max(1, def.totalActionDurationMs() / waves), damage);
         return new SettleSummary(damage, targets, loot, landed);
     }
 
@@ -3060,12 +3096,12 @@ public final class SceneFlow {
     }
 
     /**
-     * 单目标伤害结算：CombatFormulas 掷未命中/暴击（技能倍率 = 编译伤害/100），
-     * 命中掉血 + 0x10 血条批，死亡 0x0E 移除 + 重生排期 + AI/九阴志事件。
+     * 单目标伤害结算：CombatFormulas 掷未命中/暴击（ratio = 编译伤害/100/波数，
+     * 多跳总伤害与单发守恒），命中掉血 + 0x10 血条批，死亡 0x0E 移除 + 重生排期 + AI/九阴志事件。
      */
     private HitResult settleSkillHit(FxSession fx, LoginSession session, SceneState st,
-                                     NpcInstance npc, SkillCatalog.Definition def, long now) {
-        double ratio = def.baseDamage() > 0 ? def.baseDamage() / 100.0 : 1.0;
+                                     NpcInstance npc, SkillCatalog.Definition def, long now,
+                                     double ratio) {
         CombatFormulas.DamageResult hit = CombatFormulas.calc(session.actor.combatStats(),
                 CombatStats.defender(npc.defense, npc.evasion),
                 ratio, ThreadLocalRandom.current(), false);
@@ -3120,6 +3156,8 @@ public final class SceneFlow {
     private static final double RANGE_GATE_TOLERANCE = 1.2;
     /** 技能 Buff 是否发 event-169 add/remove（客户端表现异常时可关，仅保留 BufferInfo 属性）。 */
     private static final boolean SEND_SKILL_BUFF_EVENTS = true;
+    /** 多跳波次上限（varprop HitCount 实测 1..50；每波重扫目标，上限防爆帧）。 */
+    private static final int MULTI_HIT_MAX_WAVES = 20;
 
     // ---------- 轻功 ----------
 
@@ -3383,8 +3421,8 @@ public final class SceneFlow {
                 if (dx * dx + dz * dz > PATROL_BROADCAST_RADIUS * PATROL_BROADCAST_RADIUS) {
                     continue;
                 }
-                if (n.route.size() < 2) {
-                    continue;
+                if (n.route.size() < 2 && !st.world.legs.containsKey(n.objectId)) {
+                    continue;   // 无巡逻路线：仅当有 AI 追击/回位腿时广播移动
                 }
                 SceneWorld.PendingLeg leg = st.world.legs.get(n.objectId);
                 if (leg == null) {

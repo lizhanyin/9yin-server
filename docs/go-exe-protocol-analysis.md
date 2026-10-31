@@ -212,8 +212,10 @@ Java 侧落地（`com.nineyin.game.SkillInitTable` / `SkillCatalog` / SceneFlow 
   ~~施法距离校验~~（已接：varprop `TargetShapePkg` → `attack_targetshape.ini`，TargetShape=1
   圆形 Para2 即射程——真实数据 pkg 6/9/16/17 → 5/8/15/20m，与 exe range gate max 值一致；
   Java 侧加 20% 容差修正参考服 `dist 8.5>8.0` 式硬拒；airborne 校验仍缺，需先接轻功悬空态）、
-  区域多跳 split/cadence
-  （拆分公式未钉死，现单跳 split=1）、[skill-save] 学习进度持久化、
+  ~~区域多跳 split/cadence~~（已接近似：varprop `HitCount`（实测 1..50，主流 10）为波数，
+  等间隔铺满 total_action、单波倍率 = 总倍率/波数（总伤害守恒），每波重扫目标（位置/存活
+  实时）、castSeq 变化即作废旧波次；exe 的逐 hit-frame 时刻表（333ms/1.1s/1.333s…）未钉死，
+  暂以等间隔近似）、[skill-save] 学习进度持久化、
   ~~`learned skill count %d exceeds u16 view capacity` 的全量 View 推送~~
   （**第十六轮已实现整推**，见 §3.16）。
 

@@ -168,6 +168,56 @@ class AiEventEngineTest {
         assertEquals(1000, login.actor.hp, "超出攻击距离不得出手");
     }
 
+    /** 追击：超距开腿（目标点 = 玩家身前 ~2m），腿落位（不依赖巡逻路线）后下一拍贴身攻击。 */
+    @Test
+    void monsterChasesPlayerWhenOutOfReach() {
+        NpcInstance mon = bossNpc("mon_chase_001");   // (10,0,-20)，home 同位
+        world.addDynamic(mon);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 20;
+        login.z = -20;                                // 距怪 10m → 追击
+        engine.useRngForTest(new Random(42));
+        engine.onNpcDamaged(world, mon, fx, 4000L);
+        engine.pump(world, 4000L);
+        assertEquals(1000, login.actor.hp, "追击中不出手");
+        SceneWorld.PendingLeg leg = world.legOf(mon.objectId);
+        assertNotNull(leg, "超距应开追击腿");
+        assertEquals(18f, leg.x, 0.01f, "目标点为玩家身前 2m");
+        assertEquals(-20f, leg.z, 0.01f);
+
+        // 腿到点落位（按腿坐标，无巡逻路线也能落）→ 再次受击刷新战斗窗口 → 贴身出普攻
+        world.tick(4000L + 10_000);
+        float dx = login.x - mon.x;
+        float dz = login.z - mon.z;
+        assertTrue(dx * dx + dz * dz <= 4f * 4f,
+                "落位后进入攻击距离，npc=(" + mon.x + "," + mon.z + ")");
+        engine.onNpcDamaged(world, mon, fx, 4000L + 10_000);
+        engine.pump(world, 4000L + 10_000 + 1000);
+        assertTrue(login.actor.hp < 1000, "贴身后出普攻");
+    }
+
+    /** 脱战：被拖出 home 50m → 清仇恨并开回位腿（不再攻击）。 */
+    @Test
+    void monsterDropsAggroBeyondLeashAndReturnsHome() {
+        NpcInstance mon = bossNpc("mon_leash_001");   // home (10,0,-20)
+        mon.x = 100;
+        mon.z = -20;                                  // 距 home 90m > 50m
+        world.addDynamic(mon);
+        FxSession fx = attachPlayer();
+        LoginSession login = fx.channel().attr(LoginFlow.SESSION).get();
+        login.x = 102;
+        login.z = -20;
+        engine.useRngForTest(new Random(42));
+        engine.onNpcDamaged(world, mon, fx, 4000L);
+        engine.pump(world, 4000L);
+        assertEquals(1000, login.actor.hp, "脱战不攻击");
+        SceneWorld.PendingLeg leg = world.legOf(mon.objectId);
+        assertNotNull(leg, "脱战应开回位腿");
+        assertEquals(10f, leg.x, 0.01f, "回 home");
+        assertEquals(-20f, leg.z, 0.01f);
+    }
+
     @Test
     void controlledMonsterSkipsAttack() {
         NpcInstance mon = bossNpc("mon_ctrl_001");

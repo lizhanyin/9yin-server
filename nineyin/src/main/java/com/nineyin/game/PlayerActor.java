@@ -145,6 +145,8 @@ public final class PlayerActor {
     public final Map<Integer, Long> skillTeamCooldowns = new HashMap<>();
     /** 通用技能锁（起手互斥窗口）。 */
     public volatile long skillLockUntilMs;
+    /** 施法序号（beginSkillUse 递增）：多跳波次/延迟结算据它判废，新施法使旧波次失效。 */
+    public volatile long castSeq;
 
     // 控制效果（§3.25）：受控期间技能施放被拒；免疫位（equipImmunities）在
     // 控制落账前消费（StateType=1 眩晕族 ↔ 位 33..38）。

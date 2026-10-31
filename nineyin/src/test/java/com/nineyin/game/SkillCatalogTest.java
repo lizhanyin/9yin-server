@@ -82,6 +82,7 @@ class SkillCatalogTest {
                 Consume=15608
                 HitShapePkg=1
                 TargetShapePkg=7
+                HitCount=3
                 CoolDownTime=15000
                 DamageCalculate=23033
                 """, GBK);
@@ -179,6 +180,10 @@ class SkillCatalogTest {
         // 施法射程（attack_targetshape.ini）：TargetShape=1 圆形 → Para2；无 pkg → 0 不设门
         assertEquals(6f, atk.targetRangeMeters(), "TargetShapePkg=7 → 半径 6 米");
         assertEquals(0f, self.targetRangeMeters(), "test_self 无 TargetShapePkg → 不校验");
+
+        // 多跳波次（HitCount）：显式 3；缺省（0/无字段）回退 1
+        assertEquals(3, atk.hitCount(), "HitCount 编译进定义");
+        assertEquals(1, self.hitCount(), "无 HitCount → 单发");
 
         assertNull(catalog.definition("test_bad_script", 1));
         assertNull(catalog.definition("no_such_skill", 1));

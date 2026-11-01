@@ -11,7 +11,7 @@ tools/smoke/go_capture*
 tools/smoke/*frames.txt
 nineyin/logs
 tmp-analysis
-resources
+/resources
 
 -----
 *.bak

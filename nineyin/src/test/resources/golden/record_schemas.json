@@ -1,0 +1,26 @@
+[
+  {
+    "col_types": "Bw==",
+    "name": "QingGongRec"
+  },
+  {
+    "col_types": "Bw==",
+    "name": "ActiveQGSkillRec"
+  },
+  {
+    "col_types": "AwMDBwcHAw==",
+    "name": "Task_Accepted"
+  },
+  {
+    "col_types": "Aw==",
+    "name": "Task_Completed"
+  },
+  {
+    "col_types": "AwcH",
+    "name": "shortcut_rec"
+  },
+  {
+    "col_types": "AwQEAw==",
+    "name": "cooldown_rec"
+  }
+]

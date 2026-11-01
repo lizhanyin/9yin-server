@@ -1,0 +1,59 @@
+{
+  "cur_neigong": "ng_yh_001",
+  "faculty": 114456,
+  "faculty_state": 2,
+  "faculty_style": 1,
+  "faculty_name": "ng_yh_001",
+  "fill_speed": 200,
+  "last_advance_utc": "2026-01-02T15:04:05Z",
+  "books": [
+    {
+      "config_id": "ng_wd_001",
+      "level": 30,
+      "fill": 0,
+      "total": 273200,
+      "power": 4550,
+      "max_power": 4550
+    },
+    {
+      "config_id": "ng_yh_001",
+      "level": 31,
+      "fill": 18999,
+      "total": 810630,
+      "power": 5000,
+      "max_power": 8180
+    },
+    {
+      "config_id": "ng_th_001",
+      "level": 30,
+      "fill": 0,
+      "total": 579600,
+      "power": 8180,
+      "max_power": 8180
+    },
+    {
+      "config_id": "ng_wd_002",
+      "level": 1,
+      "fill": 0,
+      "total": 700,
+      "power": 120,
+      "max_power": 120
+    },
+    {
+      "config_id": "ng_jh_001",
+      "level": 1,
+      "fill": 0,
+      "total": 700,
+      "power": 120,
+      "max_power": 120
+    },
+    {
+      "config_id": "ng_em_001",
+      "level": 1,
+      "fill": 0,
+      "total": 700,
+      "power": 120,
+      "max_power": 120
+    }
+  ]
+}

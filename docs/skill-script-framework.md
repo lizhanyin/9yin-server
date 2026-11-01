@@ -2,6 +2,8 @@
 
 `scripts/` 与 share 同法经 `ServerPaths`（env `NINEYIN_SERVER_ROOT` → 属性 → cwd 探测）定位；
 引擎为 party.iroiro.luajava 4.1.0（lua55 natives，单 Lua 状态 + 全局锁——脚本是纯函数）。
+客户端方言为 Lua 5.1，引擎对齐方案（lua55→lua51，4 文件 ~12 行，未执行）见
+[lua-dialect-51.md](lua-dialect-51.md)。
 **缺目录/natives 失败/执行异常 → 伤害公式回退 Java `CombatFormulas`、技能覆盖回退 INI 默认编译，
 出招链路永不因脚本层不可用而拒绝**。
 

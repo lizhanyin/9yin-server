@@ -1,24 +1,23 @@
 package com.nineyin.protocol;
 
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
 import com.nineyin.game.ServerPaths;
+import com.nineyin.util.ResourceCache;
 
 /**
- * 角色选择界面所在场景显示名（选角 0x04 rolePara 的 f24），数据源三件：
- * share/rule/scenes.ini（GBK，config/resource → 场景 id）、
- * text/chineses/stringname.idres（UTF-8，键=ini\scene\xxx 小写 / resource，如
- * "ini\scene\school09_yihuagong=移花宫"、"city05=成都"）、
- * text/chineses/scene.idres（UTF-8，场景别名表）。
+ * 角色选择界面所在场景显示名（选角 0x04 rolePara 的 f24），数据源：
+ * share/rule/scenes.ini（GBK，config/resource → 场景 id）+
+ * text/chineses/stringname.idres（UTF-8，键=ini\scene\xxx 小写，如
+ * "ini\scene\school09_yihuagong=移花宫"、"city05=成都"）。
+ * scene.idres 仅有子区域（area_*）别名，主场景名不依赖它，暂不加载。
  *
- * <p>解析顺序：stringname（config 键 → resource 键）→ scene.idres（同序）→
- * 缺失时回退 scene_name_NNN 客户端本地化键（N=scenes.ini 场景 id）。
+ * <p>缺失时回退 scene_name_NNN 客户端本地化键（N=scenes.ini 场景 id）。
+ * 全部表经 {@link ResourceCache} 按目录缓存，首次使用后不再读盘。
  */
 public final class SceneNames {
 
@@ -32,27 +31,57 @@ public final class SceneNames {
             "book5", "jm",
             "book8", "wmp");
 
-    private static volatile boolean loaded;
-    private static final Map<String, Integer> ID_BY_CONFIG = new HashMap<>();
-    private static final Map<String, Integer> ID_BY_RESOURCE = new HashMap<>();
-    private static final Map<String, String> NAME_BY_KEY = new HashMap<>();
+    /** 一次性构建的表组（ResourceCache 缓存值，随 shareRoot 路径区分）。 */
+    private record Tables(Map<String, Integer> idByConfig,
+                          Map<String, Integer> idByResource,
+                          Map<String, String> nameByKey) {
+
+        static Tables build(Path shareRoot) {
+            Map<String, Integer> idByConfig = new HashMap<>();
+            Map<String, Integer> idByResource = new HashMap<>();
+            ResourceCache.ini(shareRoot.resolve("rule").resolve("scenes.ini"), GBK, (section, key, value) -> {
+                if (!section.chars().allMatch(Character::isDigit) || !key.equalsIgnoreCase("Config")) {
+                    return;
+                }
+                int id;
+                try {
+                    id = Integer.parseInt(section);
+                } catch (NumberFormatException e) {
+                    return;
+                }
+                idByConfig.put(value.toLowerCase(Locale.ROOT), id);
+                int slash = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+                String base = slash >= 0 ? value.substring(slash + 1) : value;
+                idByResource.putIfAbsent(base.toLowerCase(Locale.ROOT), id);
+            });
+            Map<String, String> nameByKey = new HashMap<>(
+                    ResourceCache.idresLowerCased(shareRoot.getParent()
+                            .resolve("text").resolve("chineses").resolve("stringname.idres")));
+            return new Tables(idByConfig, idByResource, nameByKey);
+        }
+    }
 
     private SceneNames() {
     }
 
+    private static Tables tables() {
+        Path shareRoot = ServerPaths.projectPath("resources", "modern", "share");
+        return ResourceCache.of("scene-names:" + shareRoot, () -> Tables.build(shareRoot));
+    }
+
     /** 角色所在（下线）场景显示名；表缺失时回退 scene_name_NNN 键（客户端本地化）。 */
     public static String sceneDisplayName(String config, String resource) {
-        ensureLoaded();
+        Tables tables = tables();
         String configLower = config == null ? "" : config.toLowerCase(Locale.ROOT);
         String resourceLower = resource == null ? "" : resource.toLowerCase(Locale.ROOT);
-        String name = NAME_BY_KEY.get(configLower);
+        String name = tables.nameByKey().get(configLower);
         if (name == null || name.isEmpty()) {
-            name = NAME_BY_KEY.get(resourceLower);
+            name = tables.nameByKey().get(resourceLower);
         }
         if (name != null && !name.isEmpty()) {
             return name;
         }
-        Integer id = sceneId(configLower, resourceLower);
+        Integer id = sceneId(tables, configLower, resourceLower);
         return id != null ? String.format("scene_name_%03d", id) : FALLBACK_KEY;
     }
 
@@ -62,100 +91,16 @@ public final class SceneNames {
         return code != null ? "introduction_" + code + "01_title" : book;
     }
 
-    private static Integer sceneId(String configLower, String resourceLower) {
+    private static Integer sceneId(Tables tables, String configLower, String resourceLower) {
         if (!configLower.isEmpty()) {
-            Integer id = ID_BY_CONFIG.get(configLower);
+            Integer id = tables.idByConfig().get(configLower);
             if (id != null) {
                 return id;
             }
         }
         if (!resourceLower.isEmpty()) {
-            return ID_BY_RESOURCE.get(resourceLower);
+            return tables.idByResource().get(resourceLower);
         }
         return null;
-    }
-
-    private static void ensureLoaded() {
-        if (loaded) {
-            return;
-        }
-        synchronized (SceneNames.class) {
-            if (loaded) {
-                return;
-            }
-            Path shareRoot = ServerPaths.projectPath("resources", "modern", "share");
-            loadScenesIni(shareRoot.resolve("rule").resolve("scenes.ini"));
-            Path textRoot = shareRoot.getParent().resolve("text").resolve("chineses");
-            // stringname 优先（含 ini\scene\xxx 主场景名），scene.idres 作别名兜底。
-            loadIdres(textRoot.resolve("stringname.idres"));
-            loadIdres(textRoot.resolve("scene.idres"));
-            loaded = true;
-        }
-    }
-
-    /** scenes.ini（GBK）：纯数字 section=场景 id，Config=ini\scene\xxx。 */
-    private static void loadScenesIni(Path ini) {
-        if (!Files.isRegularFile(ini)) {
-            return;
-        }
-        try {
-            String data = new String(Files.readAllBytes(ini), GBK);
-            String section = "";
-            for (String rawLine : data.split("\n")) {
-                String line = rawLine.trim();
-                if (line.isEmpty() || line.startsWith(";") || line.startsWith("#")
-                        || line.startsWith("//")) {
-                    continue;
-                }
-                if (line.startsWith("[") && line.endsWith("]")) {
-                    section = line.substring(1, line.length() - 1).trim();
-                    continue;
-                }
-                int eq = line.indexOf('=');
-                if (eq > 0 && section.chars().allMatch(Character::isDigit)
-                        && line.substring(0, eq).trim().equalsIgnoreCase("Config")) {
-                    String cfg = line.substring(eq + 1).trim();
-                    int id;
-                    try {
-                        id = Integer.parseInt(section);
-                    } catch (NumberFormatException e) {
-                        continue;
-                    }
-                    ID_BY_CONFIG.put(cfg.toLowerCase(Locale.ROOT), id);
-                    int slash = Math.max(cfg.lastIndexOf('\\'), cfg.lastIndexOf('/'));
-                    String base = slash >= 0 ? cfg.substring(slash + 1) : cfg;
-                    ID_BY_RESOURCE.putIfAbsent(base.toLowerCase(Locale.ROOT), id);
-                }
-            }
-        } catch (Exception ignored) {
-            // 表缺失：sceneDisplayName 回退 scene_name_NNN
-        }
-    }
-
-    /** idres（UTF-8 可带 BOM，key=value）：键统一小写入表（查找用小写键）。 */
-    private static void loadIdres(Path idres) {
-        if (!Files.isRegularFile(idres)) {
-            return;
-        }
-        try {
-            String data = new String(Files.readAllBytes(idres), StandardCharsets.UTF_8);
-            if (!data.isEmpty() && data.charAt(0) == '﻿') {
-                data = data.substring(1);
-            }
-            for (String rawLine : data.split("\n")) {
-                String line = rawLine.trim();
-                int eq = line.indexOf('=');
-                if (eq <= 0) {
-                    continue;
-                }
-                String key = line.substring(0, eq).trim().toLowerCase(Locale.ROOT);
-                String value = line.substring(eq + 1).trim();
-                if (!value.isEmpty()) {
-                    NAME_BY_KEY.putIfAbsent(key, value);
-                }
-            }
-        } catch (Exception ignored) {
-            // 表缺失：sceneDisplayName 回退 scene_name_NNN
-        }
     }
 }

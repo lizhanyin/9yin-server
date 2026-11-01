@@ -1,12 +1,9 @@
 package com.nineyin.game.avatar.neigong;
 
 import com.nineyin.game.ServerPaths;
+import com.nineyin.util.ResourceCache;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -45,34 +42,17 @@ public final class NeiGongCatalog {
     private final Map<Integer, List<Modifier>> propPacks = new HashMap<>();
     private final Map<Integer, List<Modifier>> skillPacks = new HashMap<>();
 
-    private static volatile NeiGongCatalog cached;
-
-    /** Go loadModernNeiGongCatalog 的 sync.Once 惰性单例。 */
+    /** Go loadModernNeiGongCatalog 的 sync.Once 等价：目录级缓存（serverRoot 变化自动换表）。 */
     public static NeiGongCatalog load() {
-        NeiGongCatalog catalog = cached;
-        if (catalog != null) {
+        return ResourceCache.of("neigong-catalog:" + ServerPaths.projectPath("resources", "modern", "share"), () -> {
+            NeiGongCatalog catalog = new NeiGongCatalog();
+            catalog.loadAll(ServerPaths.projectPath("resources", "modern", "share"));
             return catalog;
-        }
-        synchronized (NeiGongCatalog.class) {
-            if (cached == null) {
-                Path shareRoot = ServerPaths.projectPath("resources", "modern", "share");
-                NeiGongCatalog fresh = new NeiGongCatalog();
-                fresh.loadAll(shareRoot);
-                cached = fresh;
-            }
-            return cached;
-        }
-    }
-
-    /** 测试注入。 */
-    public static void override(NeiGongCatalog catalog) {
-        synchronized (NeiGongCatalog.class) {
-            cached = catalog;
-        }
+        });
     }
 
     private void loadAll(Path shareRoot) {
-        parseIni(shareRoot.resolve(Path.of("skill", "neigong", "neigong_static.ini")), (section, key, value) -> {
+        ResourceCache.ini(shareRoot.resolve(Path.of("skill", "neigong", "neigong_static.ini")), java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
             Integer id = parseInt(section);
             if (id == null) {
                 return;
@@ -85,7 +65,7 @@ public final class NeiGongCatalog {
                 }
             }
         });
-        parseIni(shareRoot.resolve(Path.of("skill", "neigong", "neigong_varprop.ini")), (section, key, value) -> {
+        ResourceCache.ini(shareRoot.resolve(Path.of("skill", "neigong", "neigong_varprop.ini")), java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
             Integer id = parseInt(section);
             if (id == null) {
                 return;
@@ -102,7 +82,7 @@ public final class NeiGongCatalog {
                 }
             }
         });
-        parseIni(shareRoot.resolve(Path.of("skill", "buff_new.ini")), (section, key, value) -> {
+        ResourceCache.ini(shareRoot.resolve(Path.of("skill", "buff_new.ini")), java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
             if (!key.equals("StaticData")) {
                 return;
             }
@@ -165,7 +145,7 @@ public final class NeiGongCatalog {
     }
 
     private static void loadModifierPacks(Path path, Map<Integer, List<Modifier>> destination) {
-        parseIni(path, (section, key, value) -> {
+        ResourceCache.ini(path, java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
             if (!key.equals("r")) {
                 return;
             }
@@ -224,38 +204,8 @@ public final class NeiGongCatalog {
         }
     }
 
-    interface IniConsumer {
-        void accept(String section, String key, String value);
-    }
-
-    static void parseIni(Path path, IniConsumer consume) {
-        if (!Files.isRegularFile(path)) {
-            return;
-        }
-        // 资源为 GBK/UTF-8 混排：Latin-1 无损逐字节（键值均为 ASCII）。
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                Files.newInputStream(path), StandardCharsets.ISO_8859_1))) {
-            String section = "";
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith(";") || line.startsWith("//")) {
-                    continue;
-                }
-                if (line.startsWith("[") && line.endsWith("]")) {
-                    section = line.substring(1, line.length() - 1).trim();
-                    continue;
-                }
-                int eq = line.indexOf('=');
-                if (eq <= 0 || section.isEmpty()) {
-                    continue;
-                }
-                consume.accept(section, line.substring(0, eq).trim(), line.substring(eq + 1).trim());
-            }
-        } catch (IOException e) {
-            // Go 对缺文件返回 err；此处目录级缺省资源视作空表（best-effort 同 refreshAllModernEffects）。
-        }
-    }
+    // INI 逐行解析走 ResourceCache.ini（Latin-1 无损：GBK/UTF-8 混排资源的键值均为 ASCII），
+    // 表按文件路径缓存，重复 load 不再重读。
 
     private static Integer parseInt(String text) {
         try {

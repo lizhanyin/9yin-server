@@ -55,7 +55,11 @@ class LoginFlowTest {
     }
 
     private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty) {
-        LoginFlow flow = new LoginFlow(store, faculty, Clock.systemDefaultZone());
+        return newChannel(store, faculty, new com.nineyin.gm.GmHub());
+    }
+
+    private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty, com.nineyin.gm.GmHub hub) {
+        LoginFlow flow = new LoginFlow(store, faculty, hub, Clock.systemDefaultZone());
         Connection connection = new Connection(null);
         EmbeddedChannel channel = new EmbeddedChannel();
         // EmbeddedChannel 没有真 socket：Connection 持有的 channel 在 handler 写出侧由 pipeline 承担。
@@ -110,8 +114,9 @@ class LoginFlowTest {
     @Test
     void fullCreateChooseReadyFlow(@TempDir Path tempDir) throws Exception {
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
+        RoleStoreFacade store = new RoleStoreFacade(repository);
         FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
-        EmbeddedChannel channel = newChannel(new RoleStoreFacade(repository), faculty);
+        EmbeddedChannel channel = newChannel(store, faculty);
         assertTrue(channel.isActive());
 
         // 0x02 登录（抓包明文）→ 无角色 0x04。
@@ -177,6 +182,21 @@ class LoginFlowTest {
 
         // faculty.json 已初始化默认进度。
         assertTrue(java.nio.file.Files.exists(tempDir.resolve("faculty.json")));
+        // GM 面板会话：选角后挂快照，断连后摘除。
+        com.nineyin.gm.GmHub hub = new com.nineyin.gm.GmHub();
+        EmbeddedChannel gmChannel = newChannel(store, faculty, hub);
+        send(gmChannel, loginFrame());
+        drain(gmChannel);
+        send(gmChannel, new byte[]{0x03});
+        drain(gmChannel);
+        byte[] chooseAgain = new byte[0x54];
+        chooseAgain[0] = 0x04;
+        send(gmChannel, chooseAgain);
+        drain(gmChannel);
+        assertEquals(1, hub.onlineCount());
+        assertEquals("金镶玉", hub.snapshots().get(0).name);
+        gmChannel.close();
+        assertEquals(0, hub.onlineCount());
     }
 
     @Test

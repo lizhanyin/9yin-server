@@ -12,8 +12,11 @@ import java.util.Properties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.game.ServerPaths;
+import com.nineyin.game.avatar.neigong.FacultyStore;
+import com.nineyin.gm.GmCatalog;
+import com.nineyin.gm.GmHttpServer;
+import com.nineyin.gm.GmHub;
 import com.nineyin.role.JsonRoleRepository;
 import com.nineyin.role.MySqlRoleRepository;
 import com.nineyin.role.RoleRepository;
@@ -29,12 +32,17 @@ import com.swingfrog.summer.protocol.custom.ProtocolCustomMgr;
 /**
  * 九阴服务端入口（一期：按 Go 源码 9yin-go-server1 复刻登录链）。
  * 装配：serverRoot 定位 → 角色存档（DSN→MySQL / 默认 JSON）→ faculty.json →
- * Summer 网络模块接管（19061 登录链 + 4000 svrlist）。
+ * Summer 网络模块接管（19061 登录链 + 4000 svrlist）→ GM HTTP 面板（默认 127.0.0.1:19080）。
  */
 public final class NineyinServer implements SummerApp {
 
     private static final Logger log = LoggerFactory.getLogger(NineyinServer.class);
 
+    public static final String GM_HOST_PROPERTY = "nineyin.gm.host";
+    public static final String GM_PORT_PROPERTY = "nineyin.gm.port";
+
+    private final GmHub gmHub = new GmHub();
+    private GmHttpServer gmServer;
     private RoleStoreFacade roleStore;
     private FacultyStore facultyStore;
 
@@ -44,11 +52,16 @@ public final class NineyinServer implements SummerApp {
         RoleRepository repository = openRoleRepository();
         roleStore = new RoleStoreFacade(repository);
         facultyStore = FacultyStore.open(ServerPaths.projectPath("data", "faculty.json"));
+        gmServer = new GmHttpServer(gmHub, GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share")),
+                gmHost(), gmPort());
+        GmHub.ServerStatus status = gmHub.status();
+        status.serverRoot = ServerPaths.serverRoot().toString();
+        status.phase = "Go-replica phase 1 (transport+login+entry frames)";
         ProtocolCustomMgr.get().setHandler(new NineyinProtocolHandler(
-                new LoginFlow(roleStore, facultyStore, Clock.systemDefaultZone()),
+                new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone()),
                 "127.0.0.1", gamePort()));
-        log.info("nineyin server initialized: root={} storage={}",
-                ServerPaths.serverRoot(), repository.getClass().getSimpleName());
+        log.info("nineyin server initialized: root={} storage={} gmPanel={}",
+                ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url());
     }
 
     private static RoleRepository openRoleRepository() {
@@ -57,6 +70,15 @@ public final class NineyinServer implements SummerApp {
             return MySqlRoleRepository.open(dsn.get());
         }
         return JsonRoleRepository.open(ServerPaths.projectPath("data", "roles.json"));
+    }
+
+    /** GM 面板监听地址：系统属性覆盖，默认仅 127.0.0.1（对齐 Go/C++ 控制台不对外暴露）。 */
+    static String gmHost() {
+        return System.getProperty(GM_HOST_PROPERTY, GmHttpServer.DEFAULT_HOST);
+    }
+
+    static int gmPort() {
+        return Integer.parseInt(System.getProperty(GM_PORT_PROPERTY, String.valueOf(GmHttpServer.DEFAULT_PORT)));
     }
 
     private static int gamePort() {
@@ -73,11 +95,14 @@ public final class NineyinServer implements SummerApp {
 
     @Override
     public void start() {
+        gmServer.start();
+        gmHub.status().listenAddr = gmServer.url();
         log.info("nineyin server started");
     }
 
     @Override
     public void stop() {
+        gmServer.stop();
         roleStore.close();
         log.info("nineyin server stopped");
     }

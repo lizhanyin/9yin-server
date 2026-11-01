@@ -31,6 +31,11 @@ final class GameServerHandler extends SimpleChannelInboundHandler<byte[]> {
     }
 
     @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        flow.onDisconnect(session);
+    }
+
+    @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         if (cause instanceof FrameException) {
             log.info("frame error from {}: {}", ctx.channel().remoteAddress(), cause.getMessage());

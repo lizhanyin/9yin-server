@@ -11,6 +11,7 @@ import com.nineyin.auth.LoginIdentity;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
+import com.nineyin.gm.GmHub;
 import com.nineyin.protocol.LoginMessages;
 import com.nineyin.protocol.SceneMessages;
 import com.nineyin.role.RoleStoreFacade;
@@ -33,11 +34,13 @@ public final class LoginFlow {
 
     private final RoleStoreFacade roleStore;
     private final FacultyStore facultyStore;
+    private final GmHub gmHub;
     private final Clock clock;
 
-    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, Clock clock) {
+    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock) {
         this.roleStore = roleStore;
         this.facultyStore = facultyStore;
+        this.gmHub = gmHub;
         this.clock = clock;
     }
 
@@ -174,9 +177,33 @@ public final class LoginFlow {
             log.info("complete choose-role transition: {}", transition.getMessage());
             return false;
         }
+        attachGmSnapshot(connection, session, location);
         log.info("session={} sent property/record tables, views, entry scene and player spawn; waiting for ClientReady",
                 session.machine.id());
         return true;
+    }
+
+    /** Go main.go gm.attach：选角完成即挂面板会话快照。 */
+    private void attachGmSnapshot(Connection connection, LoginSession session, Roles.Location location) {
+        GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
+        snapshot.sessionId = session.machine.id();
+        snapshot.remote = String.valueOf(connection.channel().remoteAddress());
+        snapshot.name = session.selected.name();
+        snapshot.sceneConfig = location.scene().config();
+        snapshot.sceneResource = location.scene().resource();
+        snapshot.x = location.position().x();
+        snapshot.y = location.position().y();
+        snapshot.z = location.position().z();
+        snapshot.orient = location.position().orient();
+        snapshot.silver = session.player.silver();
+        snapshot.sp = 0;
+        snapshot.faction = session.player.faction();
+        gmHub.attach(snapshot.sessionId, snapshot);
+    }
+
+    /** 连接断开（含校验失败断连）：摘除面板会话快照。 */
+    public void onDisconnect(LoginSession session) {
+        gmHub.detach(session.machine.id());
     }
 
     /** 一期：相位转移 + 权威 vital；Go 的 starter 链（轻功/View43/40/0x27）属二期。 */

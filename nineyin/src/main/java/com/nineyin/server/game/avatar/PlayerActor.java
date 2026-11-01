@@ -421,6 +421,220 @@ public final class PlayerActor {
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
+    // ------------------------------------------------------------------- combat
+
+    /** Go beginSkillUse 的 (bool, reason)。 */
+    public record SkillGate(boolean allowed, String reason) {
+
+        static SkillGate reject(String reason) {
+            return new SkillGate(false, reason);
+        }
+    }
+
+    /** 技能冷却（skillId → 就绪时刻）与公共 CD 门（gateKey → 就绪时刻）。 */
+    private final java.util.Map<String, Instant> skillCooldowns = new java.util.HashMap<>();
+    private final java.util.Map<Long, Instant> skillTeamCooldowns = new java.util.HashMap<>();
+    private Instant skillLockUntil;
+    private String currentSkillId = "";
+    private String currentSkillEffectId = "";
+    private int currentSkillLevel;
+    private long currentSkillTarget;
+    /** 架势轮换相位（stance 槽当前 staticData → 下一变体）。 */
+    private final java.util.Map<Integer, Long> stanceSlotStatic = new java.util.HashMap<>();
+    /** 最近一次命中敌人的时刻（战斗退出计时基准；62433 抓包：命中才进 Fighting）。 */
+    private volatile Instant lastCombatAt;
+
+    /**
+     * 命中敌人进入战斗（62433 抓包实证：出招不切 Fighting，首招 vital 仍 0，
+     * 命中后才有 LogicState=1 帧）。返回是否发生 0→1 迁移（调用方据此发单帧）。
+     */
+    public synchronized boolean enterCombat(Instant now) {
+        lastCombatAt = now;
+        if (actor.snapshot().logicState() == Actor.LOGIC_STATE_FIGHTING) {
+            return false;
+        }
+        actor.setLogicState(Actor.LOGIC_STATE_FIGHTING);
+        logicStateOverride = -1;
+        return true;
+    }
+
+    /**
+     * 战斗闲时退出：距最近命中超过窗口且仍在 Fighting → 切回 NORMAL。
+     * 返回是否发生 1→0 迁移（调用方据此发单帧）。
+     */
+    public synchronized boolean exitCombatIfIdle(java.time.Duration idleWindow, Instant now) {
+        if (actor.snapshot().logicState() != Actor.LOGIC_STATE_FIGHTING) {
+            return false;
+        }
+        if (lastCombatAt == null || Duration.between(lastCombatAt, now).compareTo(idleWindow) < 0) {
+            return false;
+        }
+        actor.setLogicState(Actor.LOGIC_STATE_NORMAL);
+        return true;
+    }
+
+    /** 单属性 LogicState 帧（进/退战斗的即时推送，62433 抓包 n=6 小帧的精简形态）。 */
+    public byte[] logicStateFrame() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "LogicState",
+                PropertyValues.Value.ofByte(effectiveLogicState(actor.snapshot())));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /** 当前是否战斗态（格挡闸门等）。 */
+    public boolean fighting() {
+        return actor.snapshot().logicState() == Actor.LOGIC_STATE_FIGHTING;
+    }
+
+    /**
+     * Go beginSkillUse：技能锁 → 个人 CD → 公共 CD → 死亡 → MP → SP → 轻功点，
+     * 全过才扣资源、写 CD/当前技能、进 Fighting。拒绝返回原因（调用方静默记日志）。
+     */
+    public synchronized SkillGate beginSkillUse(com.nineyin.server.world.fight.CombatSkill skill,
+                                                long targetKey, Instant now) {
+        if (skillLockUntil != null && now.isBefore(skillLockUntil)) {
+            return SkillGate.reject("skill locked remaining="
+                    + java.time.Duration.between(now, skillLockUntil).toMillis() + "ms");
+        }
+        Instant ready = skillCooldowns.get(skill.id());
+        if (ready != null && now.isBefore(ready)) {
+            return SkillGate.reject("personal cooldown remaining="
+                    + java.time.Duration.between(now, ready).toMillis() + "ms");
+        }
+        long gateKey = skill.cooldownGateKey();
+        Instant teamReady = skillTeamCooldowns.get(gateKey);
+        if (teamReady != null && now.isBefore(teamReady)) {
+            return SkillGate.reject("public cooldown team=" + gateKey + " remaining="
+                    + java.time.Duration.between(now, teamReady).toMillis() + "ms");
+        }
+        Actor.State state = actor.snapshot();
+        if (state.logicState() == Actor.LOGIC_STATE_DIED || state.hp() <= 0) {
+            return SkillGate.reject("player is dead");
+        }
+        if (state.mp() < skill.mpCost()) {
+            return SkillGate.reject("MP " + state.mp() + " < " + skill.mpCost());
+        }
+        if (progress.sp() < skill.spCost()) {
+            return SkillGate.reject("SP " + progress.sp() + " < " + skill.spCost());
+        }
+        if (skill.qgCost() > 0 && actor.useQingGong(skill.qgCost()) < 0) {
+            return SkillGate.reject("QingGongPoint cannot pay " + skill.qgCost());
+        }
+        if (!actor.spendMp(skill.mpCost())) {
+            return SkillGate.reject("MP spend rejected");
+        }
+        if (skill.spCost() > 0) {
+            progress.addSP(-skill.spCost());
+        }
+        skillCooldowns.put(skill.id(), now.plusMillis(skill.personalCdMs()));
+        skillTeamCooldowns.put(gateKey, now.plusMillis(skill.publicCdMs()));
+        currentSkillId = skill.id();
+        currentSkillEffectId = skill.id();
+        currentSkillLevel = skill.level();
+        currentSkillTarget = targetKey;
+        // 62433 抓包实证：出招不切 Fighting——命中敌人才进战斗（enterCombat）。
+        return new SkillGate(true, "");
+    }
+
+    /** Go clearCurrentSkill：仅当当前技能仍是它才清（并发出招防误清）；不动 LogicState。 */
+    public synchronized boolean clearCurrentSkill(String skillId) {
+        if (!currentSkillId.equals(skillId)) {
+            return false;
+        }
+        currentSkillId = "";
+        currentSkillEffectId = "";
+        currentSkillLevel = 0;
+        currentSkillTarget = 0;
+        return true;
+    }
+
+    public synchronized String currentSkillId() {
+        return currentSkillId;
+    }
+
+    /** 被击技能锁（Go 500ms；本 phase 无 NPC 反击，接口先备）。 */
+    public synchronized void lockSkillsUntil(Instant until) {
+        if (skillLockUntil == null || until.isAfter(skillLockUntil)) {
+            skillLockUntil = until;
+        }
+    }
+
+    /**
+     * 泛化 buff 槽激活（Go activateSkillBuff）：写槽返回 BufferInfo 串；
+     * 到期清理由调用方调度（scheduler 到期发空槽帧）。
+     */
+    public synchronized String activateBuff(int slot, long staticData, String configId,
+                                            int level, Instant expiresAt) {
+        buffs.put(slot, new ActiveBuff(staticData, expiresAt, configId, Math.max(level, 1)));
+        return bufferInfo(slot, clock.instant());
+    }
+
+    /** 架势轮换取下一变体：槽位当前 staticData 的下一个（双态即互切，首拍取第一个）。 */
+    public synchronized com.nineyin.server.world.fight.CombatSkill.Buff nextStanceVariant(
+            List<com.nineyin.server.world.fight.CombatSkill.Buff> variants) {
+        Long current = stanceSlotStatic.get(variants.get(0).preferredSlot());
+        for (int i = 0; i < variants.size(); i++) {
+            if (current != null && variants.get(i).staticData() == current) {
+                return variants.get((i + 1) % variants.size());
+            }
+        }
+        return variants.get(0);
+    }
+
+    /** 记录架势槽相位（activateBuff 成功后由调用方回写）。 */
+    public synchronized void noteStanceSlot(int slot, long staticData) {
+        stanceSlotStatic.put(slot, staticData);
+    }
+
+    /** 清 buff 槽（到期调度用）；返回是否确有清除。 */
+    public synchronized boolean clearBuffSlot(int slot) {
+        return buffs.remove(slot) != null;
+    }
+
+    /** 找空闲 buff 槽（未占用或已过期），无则 -1。 */
+    public synchronized int freeBuffSlot() {
+        Instant now = clock.instant();
+        for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
+            ActiveBuff buff = buffs.get(slot);
+            if (buff == null || !buff.expiresUtc().isAfter(now)) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    /** 单 buff 槽属性帧（0x10 BufferInfoN）。 */
+    public byte[] buffSlotFrame(int slot, String buffInfo) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, NpcSchema.bufferInfoPropertyName(slot),
+                PropertyValues.Value.ofString(buffInfo == null ? "" : buffInfo));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /** 出招收尾 stand 复位帧（0x10 State，idx19 官方表按名解析）。 */
+    public byte[] standStateFrame() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "State", PropertyValues.Value.ofString("stand"));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /**
+     * 伤害公式攻方面（formula.lua 的 attack）：装备外功上下限 + 内功运功书
+     * PhyDamageAdd；掷值由调用方做（可测试）。
+     */
+    public int[] meleeDamageRange() {
+        PlayerProgress.EquipBonus bonus = panel.equipBonus();
+        PlayerProgress.Book equipped = progress.book(progress.curNeiGong);
+        int add = PlayerProgress.eff(equipped, "PhyDamageAdd");
+        int meleePower = bonus == null ? 0 : bonus.meleePowerAdd();
+        int min = (bonus == null ? 0 : bonus.minMelee()) + add + meleePower;
+        int max = (bonus == null ? 0 : bonus.maxMelee()) + add + meleePower;
+        if (max < min) {
+            max = min;
+        }
+        return new int[]{min, max};
+    }
+
     // ------------------------------------------------------------------- frames
 
     /** Go addObject：0x3f 首部 + 属性归档，count 回填 @0x3d。 */
@@ -479,10 +693,10 @@ public final class PlayerActor {
         prop(writer, "NeigongPKStatus", PropertyValues.Value.ofInt32(0), bump);
         prop(writer, "Dead", PropertyValues.Value.ofInt32(state.hp() <= 0 ? 1 : 0), bump);
         prop(writer, "CantUseSkill", PropertyValues.Value.ofInt32(0), bump);
-        prop(writer, "CurSkillID", PropertyValues.Value.ofString(""), bump);
-        prop(writer, "CurSkillEffectID", PropertyValues.Value.ofString(""), bump);
-        prop(writer, "CurSkillLevel", PropertyValues.Value.ofInt32(0), bump);
-        prop(writer, "CurSkillTarget", PropertyValues.Value.ofObject(0), bump);
+        prop(writer, "CurSkillID", PropertyValues.Value.ofString(currentSkillId), bump);
+        prop(writer, "CurSkillEffectID", PropertyValues.Value.ofString(currentSkillEffectId), bump);
+        prop(writer, "CurSkillLevel", PropertyValues.Value.ofInt32(currentSkillLevel), bump);
+        prop(writer, "CurSkillTarget", PropertyValues.Value.ofObject(currentSkillTarget), bump);
         prop(writer, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000), bump);
         prop(writer, "BufferListStr", PropertyValues.Value.ofString(bufferListString(now)), bump);
         for (PropertyValues.Indexed property : baseMotionProperties(currentMotion)) {
@@ -559,10 +773,10 @@ public final class PlayerActor {
         Props.add(properties, "NeigongPKStatus", PropertyValues.Value.ofInt32(0));
         Props.add(properties, "Dead", PropertyValues.Value.ofInt32(state.hp() <= 0 ? 1 : 0));
         Props.add(properties, "CantUseSkill", PropertyValues.Value.ofInt32(0));
-        Props.add(properties, "CurSkillID", PropertyValues.Value.ofString(""));
-        Props.add(properties, "CurSkillEffectID", PropertyValues.Value.ofString(""));
-        Props.add(properties, "CurSkillLevel", PropertyValues.Value.ofInt32(0));
-        Props.add(properties, "CurSkillTarget", PropertyValues.Value.ofObject(0));
+        Props.add(properties, "CurSkillID", PropertyValues.Value.ofString(currentSkillId));
+        Props.add(properties, "CurSkillEffectID", PropertyValues.Value.ofString(currentSkillEffectId));
+        Props.add(properties, "CurSkillLevel", PropertyValues.Value.ofInt32(currentSkillLevel));
+        Props.add(properties, "CurSkillTarget", PropertyValues.Value.ofObject(currentSkillTarget));
         Props.add(properties, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000));
         Props.add(properties, "HPHeartSpeed", PropertyValues.Value.ofInt32(1000));
         Props.add(properties, "HPHeartSpeedAdd", PropertyValues.Value.ofInt32(0));

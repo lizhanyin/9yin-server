@@ -112,6 +112,64 @@ public final class SceneLifecycle {
         return normalized.equals("attacknpc") || normalized.equals("bossnpc");
     }
 
+    /** 战斗期 NPC 快照（技能释放/伤害结算读取；properties 按名取值）。 */
+    public record CombatNpcInfo(int id, int ownerId, boolean combat,
+                                float x, float y, float z, float orient,
+                                int maxHp, String model, String name) {
+
+        public String modelOrFallback() {
+            return model == null || model.isEmpty() ? "monv000000" : model;
+        }
+    }
+
+    /** 单个战斗 NPC 信息（未物化/不存在 → null）。 */
+    public synchronized CombatNpcInfo combatNpcInfo(int id) {
+        SceneEntity entity = entities.get(id);
+        if (entity == null) {
+            return null;
+        }
+        return toCombatInfo(entity);
+    }
+
+    /** 全部 combat NPC（面积技能目标选择的快照遍历）。 */
+    public synchronized java.util.List<CombatNpcInfo> combatNpcs() {
+        java.util.List<CombatNpcInfo> result = new java.util.ArrayList<>(entities.size());
+        for (SceneEntity entity : entities.values()) {
+            if (entity.combat) {
+                result.add(toCombatInfo(entity));
+            }
+        }
+        result.sort(java.util.Comparator.comparingInt(CombatNpcInfo::id));
+        return result;
+    }
+
+    private static CombatNpcInfo toCombatInfo(SceneEntity entity) {
+        int maxHp = 1000;
+        String model = "";
+        String name = "";
+        for (PropertyValues.Indexed property : entity.properties) {
+            switch (property.name()) {
+                case "MaxHP" -> maxHp = property.value().i32();
+                case "Resource" -> model = property.value().text();
+                case "Name" -> name = property.value().text();
+                default -> {
+                }
+            }
+        }
+        if (maxHp <= 0) {
+            maxHp = 1000;
+        }
+        if (model == null) {
+            model = "";
+        }
+        if (name == null) {
+            name = "";
+        }
+        return new CombatNpcInfo(entity.id, entity.ownerId, entity.combat,
+                entity.transform.x(), entity.transform.y(), entity.transform.z(),
+                entity.transform.orient(), Math.max(maxHp, 1), model, name);
+    }
+
     /** Go unregister：摘除世界实体（同代时 reconcile 发 0x0E）。 */
     public synchronized void unregister(int id) {
         scene.remove(id);

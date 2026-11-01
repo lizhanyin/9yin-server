@@ -116,6 +116,8 @@ public class GmRemote {
             case "set_sp" -> intRange(params, "sp", 0, 100);
             case "add_sp" -> intRange(params, "sp", 1, 100);
             case "fill_sp" -> null;
+            // 战斗一期：Lua 脚本热重载（formula/skill overlay 调参免重启）。
+            case "reload_scripts" -> null;
             default -> "unsupported action: " + action;
         };
     }

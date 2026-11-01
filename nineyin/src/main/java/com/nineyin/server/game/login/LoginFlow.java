@@ -3,12 +3,14 @@ package com.nineyin.server.game.login;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
 import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
+import com.nineyin.server.world.fight.SkillCastHandler;
 import com.nineyin.server.world.npc.SceneNpcRegistry;
 import com.nineyin.server.world.scene.NpcViewport;
 import com.nineyin.server.world.scene.SceneLifecycle;
@@ -21,6 +23,7 @@ import com.nineyin.server.game.avatar.RoleVisual;
 import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
 import com.nineyin.server.game.avatar.panel.PanelState;
 import com.nineyin.server.game.starter.StarterGrants;
+import com.nineyin.server.game.starter.StarterSkills;
 import com.nineyin.server.world.db.RoleInventoryStore;
 import com.nineyin.server.world.db.PanelDataStore;
 import com.nineyin.server.game.starter.StarterQingGong;
@@ -28,6 +31,7 @@ import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmHub;
 import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.protocol.CustomMessages;
+import com.nineyin.server.protocol.FightMessages;
 import com.nineyin.server.protocol.LoginMessages;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
@@ -109,6 +113,7 @@ public final class LoginFlow {
             case SessionMachine.CLIENT_READY -> onClientReady(connection, session);
             case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session, plain);
             case 0x1E, 0x27 -> onCustomDirect(connection, session, plain);
+            case 0x07 -> onObjectRequest(connection, session, plain);
             default -> true; // 未分类 opcode 放行业务层（一期无业务层）
         };
     }
@@ -232,6 +237,8 @@ public final class LoginFlow {
         // Go world.begin：场景世代重置（清实体/停定时器），不发帧。
         session.world = new SceneLifecycle(connection, scheduler);
         session.world.begin(location.scene().config(), location.scene().resource());
+        // 战斗一期：战斗态随场景世代重建（NPC 每连接物化，血量/威胁从零开始）。
+        session.fight = new com.nineyin.server.world.fight.FightState();
         connection.writeFrame(SceneMessages.entryScene(location.scene()));
         // 四期装备词缀/特效层（DB 模式）：addObject 归档前重算，登录帧即带装备加成面板。
         var equips = loadEquips(session);
@@ -435,6 +442,11 @@ public final class LoginFlow {
 
     /** Go processGMCommand：按 action 分派；未进场景/未实现动作明确失败回执。 */
     private void applyGmCommand(Connection connection, LoginSession session, GmCommand command) {
+        if ("reload_scripts".equals(command.action())) {
+            com.nineyin.server.script.LuaScriptService.getInstance().reload();
+            command.succeed("Lua 脚本已重载（formula/skill overlay）");
+            return;
+        }
         if (session.player == null) {
             command.fail("角色尚未进入场景");
             return;
@@ -765,11 +777,20 @@ public final class LoginFlow {
             }
         }
         if (session.player != null && !session.neigongGranted) {
+            java.util.List<RoleInventoryStore.Skill> dbSkills = loadDbSkills(session);
             StarterGrants.grantStarterProgress(connection, session.player,
-                    loadDbSkills(session), loadDbShortcuts(session));
+                    dbSkills, loadDbShortcuts(session));
+            session.learnedSkills = learnedSkillLevels(dbSkills);
+            session.skillRows = skillRows(dbSkills);
             session.neigongGranted = true;
-            log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady",
-                    session.machine.id());
+            // View40 行可用性初始批（62433 抓包：starter 授予后每行推 CanUse=1；
+            // 不发则客户端技能图标恒为不可用——真机反馈"显示不可用但能释放"）
+            for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+                connection.writeFrame(FightMessages.skillRowCanUse(
+                        SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
+            }
+            log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady (learned={})",
+                    session.machine.id(), session.learnedSkills.size());
         }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
@@ -855,7 +876,7 @@ public final class LoginFlow {
         return true;
     }
 
-    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}；本期实现 215/1006，其余受理记日志。 */
+    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}；已实现 215/1006/54/211/431。 */
     private void dispatchCustom(Connection connection, LoginSession session,
                                 CustomC2S.Message custom, String route) {
         int messageId = custom.messageId();
@@ -870,13 +891,109 @@ public final class LoginFlow {
                 }
                 persistFaculty(session);
             }
-            case 200, 201, 240, 211, 216, 217, 218 ->
+            case 211 -> handleUseSkill(connection, session, custom);
+            case 431 -> handleSelectTarget(connection, session, custom);
+            case 200, 201, 240, 216, 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
             case 54 -> handleManualParry(connection, session, custom);
             default -> log.info("session={} unrecognized custom msgId={} via {}",
                     session.machine.id(), messageId, route);
         }
+    }
+
+    /** msg211 USE_SKILL → 战斗编排（拒绝路径静默记日志，抓包实证不回帧）。 */
+    private void handleUseSkill(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.world == null || session.fight == null) {
+            log.info("session={} reject skill before scene ready", session.machine.id());
+            return;
+        }
+        SkillCastHandler.handle(new SkillCastHandler.CastContext(
+                connection, session.player, session.world, session.fight,
+                session.learnedSkills, session.skillRows, scheduler, clock,
+                session.combatRandom), custom);
+    }
+
+    /** msg431 选中目标（与 0x07 等价，62433 抓包成对出现；仅 combat NPC 落选）。 */
+    private void handleSelectTarget(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.world == null || session.fight == null
+                || custom.values.size() < 2 || custom.values.get(1).tag != 8) {
+            return;
+        }
+        long packed = custom.values.get(1).int64;
+        int objectId = (int) (packed & 0xFFFFFFFFL);
+        int ownerId = (int) (packed >>> 32);
+        selectCombatTarget(connection, session, objectId, ownerId);
+    }
+
+    /**
+     * C2S 0x07 对象请求（33B：seq@17/objId@21/owner@25/FuncID@29）。
+     * 战斗一期只接目标选择：combat NPC → 记选中 + 回 0x10 LastObject（idx414，
+     * 62433 抓包 19 对 0x07/431 全回）；非 combat（菜单/传送门）暂放行待后续期。
+     */
+    private boolean onObjectRequest(Connection connection, LoginSession session, byte[] plain) {
+        if (plain.length != 33) {
+            log.info("session={} tolerated object request len={}", session.machine.id(), plain.length);
+            return true;
+        }
+        int objectId = readU32(plain, 21);
+        int ownerId = readU32(plain, 25);
+        if (session.player != null && session.world != null && session.fight != null) {
+            selectCombatTarget(connection, session, objectId, ownerId);
+        }
+        return true;
+    }
+
+    /** 选中 combat NPC（存活才可用于出招）；只要对象存在就回 LastObject 属性帧。 */
+    private void selectCombatTarget(Connection connection, LoginSession session,
+                                    int objectId, int ownerId) {
+        if (session.world.combatNpcInfo(objectId) == null) {
+            return;
+        }
+        boolean selected = session.fight.selectTarget(session.world, objectId, ownerId);
+        if (!selected) {
+            log.info("session={} target {}-{} not selectable (dead or non-combat)",
+                    session.machine.id(), objectId, ownerId);
+        }
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "LastObject", PropertyValues.Value.ofObject(objectId, ownerId));
+        connection.writeFrame(SceneMessages.objectProperties(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, 0, properties));
+    }
+
+    private static int readU32(byte[] plain, int offset) {
+        return (plain[offset] & 0xFF) | (plain[offset + 1] & 0xFF) << 8
+                | (plain[offset + 2] & 0xFF) << 16 | (plain[offset + 3] & 0xFF) << 24;
+    }
+
+    /** 已学表：DB role_skills 优先，回退 starter 集（等级恒 1，与 View40 下发一致）。 */
+    private static java.util.Map<String, Integer> learnedSkillLevels(
+            java.util.List<RoleInventoryStore.Skill> dbSkills) {
+        java.util.Map<String, Integer> learned = new java.util.LinkedHashMap<>();
+        if (dbSkills != null && !dbSkills.isEmpty()) {
+            for (RoleInventoryStore.Skill skill : dbSkills) {
+                learned.put(skill.skillId(), 1);
+            }
+            return learned;
+        }
+        return StarterSkills.starterLearnedLevels();
+    }
+
+    /** View40 行号表：与 grantStarterProgress 下发顺序同构（db 行序或 starter 列表序，1 起）。 */
+    private static java.util.Map<String, Integer> skillRows(
+            java.util.List<RoleInventoryStore.Skill> dbSkills) {
+        java.util.Map<String, Integer> rows = new java.util.LinkedHashMap<>();
+        if (dbSkills != null && !dbSkills.isEmpty()) {
+            for (int i = 0; i < dbSkills.size(); i++) {
+                rows.put(dbSkills.get(i).skillId(), i + 1);
+            }
+            return rows;
+        }
+        List<String> ids = StarterSkills.starterSkillIds();
+        for (int i = 0; i < ids.size(); i++) {
+            rows.put(ids.get(i), i + 1);
+        }
+        return rows;
     }
 
     /**
@@ -904,6 +1021,13 @@ public final class LoginFlow {
         }
         PlayerActor actor = session.player;
         boolean engage = state.exactInt32() == 0;
+        // 格挡闸门：仅战斗态（LogicState=Fighting）可按下——命中敌人才进战斗
+        // （62433 抓包模型），非战斗态的右键格挡直接忽略。
+        if (engage && !actor.fighting()) {
+            log.info("reject manual parry engage outside combat (LogicState={})",
+                    actor.actorState().logicState());
+            return;
+        }
         long now = clock.instant().toEpochMilli();
         if (actor.parrying() == engage) {
             if (!engage) {

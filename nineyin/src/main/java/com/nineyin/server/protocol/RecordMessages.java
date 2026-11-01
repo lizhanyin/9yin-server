@@ -19,6 +19,9 @@ public final class RecordMessages {
     public static final int RECORD_TASK_COMPLETED = 3;
     public static final int RECORD_SHORTCUT = 4;
     public static final int RECORD_COOLDOWN = 5;
+    /** 战斗一期追加（官方协商表同名记录：active_skill_rec=[7]、fight_relation_rec=[9,2]）。 */
+    public static final int RECORD_ACTIVE_SKILL = 6;
+    public static final int RECORD_FIGHT_RELATION = 7;
 
     /** 记录格：与 Go recordCell 一致，同一时间至多一种值。 */
     public static final class Cell {
@@ -86,6 +89,11 @@ public final class RecordMessages {
         for (int column = 0; column < cells.length; column++) {
             Cell cell = cells[column];
             switch (columnTypes[column]) {
+                case 2 -> {
+                    // 官方 cooldown_rec 第 4 列 team 是 u16（0xFFFF 个人行 / CoolDownTeam GCD 行）。
+                    requireInt32(cell, recordIndex, column);
+                    writer.writeU16((int) (cell.int32 & 0xFFFFL));
+                }
                 case 3 -> {
                     requireInt32(cell, recordIndex, column);
                     writer.writeU32(cell.int32);

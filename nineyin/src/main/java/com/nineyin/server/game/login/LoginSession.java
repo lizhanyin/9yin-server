@@ -31,6 +31,12 @@ public final class LoginSession {
     Roles.Location pendingLocation;
     /** 三期内修 1s ticker 句柄（断连取消）。 */
     java.util.concurrent.ScheduledFuture<?> facultyTicker;
+    /** 战斗一期：单连接战斗态（选角时重建）；combatRandom 测试可换种子。 */
+    com.nineyin.server.world.fight.FightState fight;
+    java.util.Map<String, Integer> learnedSkills = new java.util.HashMap<>();
+    /** View40 行号表（id → 行，CanUse 行帧寻址，授予时与 View40 行同序固化）。 */
+    java.util.Map<String, Integer> skillRows = new java.util.HashMap<>();
+    java.util.Random combatRandom = new java.util.Random();
 
     public LoginSession() {
     }

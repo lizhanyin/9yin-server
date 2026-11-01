@@ -53,6 +53,24 @@ public final class StarterSkills {
         return (float) (frames * 1000.0 / 30);
     }
 
+    /** 已学表（msg211 校验用，无 DB 行时回退 starter 集；等级恒 1）。 */
+    public static java.util.Map<String, Integer> starterLearnedLevels() {
+        java.util.Map<String, Integer> learned = new java.util.LinkedHashMap<>();
+        for (LearnedSkill skill : STARTER_SKILL_VIEWS) {
+            learned.put(skill.configId(), 1);
+        }
+        return learned;
+    }
+
+    /** starter 已学 ID 有序表（View40 行号表与下发顺序同构）。 */
+    public static java.util.List<String> starterSkillIds() {
+        java.util.List<String> ids = new java.util.ArrayList<>(STARTER_SKILL_VIEWS.size());
+        for (LearnedSkill skill : STARTER_SKILL_VIEWS) {
+            ids.add(skill.configId());
+        }
+        return ids;
+    }
+
     /** Go starterSkillViewFrames：View 40 容器 + 每技能一行（四期：skill_init 目录叠加 + 零值特效族）。 */
     public static List<byte[]> starterSkillViewFrames() {
         List<byte[]> frames = new ArrayList<>(STARTER_SKILL_VIEWS.size() + 1);

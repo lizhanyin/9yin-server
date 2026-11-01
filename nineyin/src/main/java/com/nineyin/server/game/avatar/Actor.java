@@ -92,4 +92,69 @@ public final class Actor {
     public void setLogicState(int state) {
         this.logicState = state;
     }
+
+    // ------------------------------------------------------------------ 战斗一期
+
+    public boolean isDead() {
+        return hp <= 0 || logicState == LOGIC_STATE_DIED;
+    }
+
+    /**
+     * Go ApplyDamage：死亡是状态迁移不是 HP==0 的客户端解释。受击先把淤血条
+     * （HitHP）抬到受击前血量；归零即 Died（HP/HitHP 双清零）。
+     *
+     * @return 状态是否变化（已死/非法伤害返回 false 不结算）
+     */
+    public boolean applyDamage(int amount) {
+        if (amount <= 0 || hp == 0) {
+            return false;
+        }
+        if (hitHp < hp) {
+            hitHp = hp;
+        }
+        hp -= amount;
+        if (hp <= 0) {
+            hp = 0;
+            hitHp = 0;
+            logicState = LOGIC_STATE_DIED;
+        } else {
+            logicState = LOGIC_STATE_FIGHTING;
+        }
+        return true;
+    }
+
+    /** Go SpendMP：出招 MP 权威闸门。 */
+    public boolean spendMp(int cost) {
+        if (cost < 0 || mp < cost) {
+            return false;
+        }
+        mp -= cost;
+        return true;
+    }
+
+    /**
+     * Go UseQingGong（无消耗系数档）：成功扣点；成功后余量 &lt; 50 自动回满
+     * （回满在闸门之后——动作必须先付得起）。返回实付点数，付不起返回 -1。
+     */
+    public int useQingGong(int baseCost) {
+        if (baseCost < 0) {
+            return -1;
+        }
+        if (qingGong < baseCost) {
+            return -1;
+        }
+        qingGong -= baseCost;
+        if (qingGong < 50) {
+            qingGong = maxQingGong + maxQingGongAdd;
+        }
+        return baseCost;
+    }
+
+    /** 重生（NPC 语义）：满血满淤血回 NORMAL；复活是显式状态迁移，不走治疗。 */
+    public void respawnFull() {
+        hp = maxHp;
+        hitHp = maxHp;
+        mp = maxMp;
+        logicState = LOGIC_STATE_NORMAL;
+    }
 }

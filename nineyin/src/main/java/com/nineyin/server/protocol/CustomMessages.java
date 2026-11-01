@@ -23,6 +23,8 @@ public final class CustomMessages {
         final Double float64;
         final long objectId;
         final long ownerId;
+        /** 空对象（tag8 + 双 u32 零）：msg20 玩家出招目标恒 obj(0,0)（62433 技能抓包实证）。 */
+        final boolean emptyObject;
 
         private Value(String text, Integer int32, Long int64, Float float32, long objectId, long ownerId) {
             this(text, null, int32, int64, float32, null, objectId, ownerId);
@@ -35,6 +37,15 @@ public final class CustomMessages {
 
         private Value(String text, String wideText, Integer int32, Long int64, Float float32,
                       Double float64, long objectId, long ownerId) {
+            this(text, wideText, int32, int64, float32, float64, objectId, ownerId, false);
+        }
+
+        private Value(boolean emptyObject) {
+            this(null, null, null, null, null, null, 0, 0, emptyObject);
+        }
+
+        private Value(String text, String wideText, Integer int32, Long int64, Float float32,
+                      Double float64, long objectId, long ownerId, boolean emptyObject) {
             this.text = text;
             this.wideText = wideText;
             this.int32 = int32;
@@ -43,6 +54,7 @@ public final class CustomMessages {
             this.float64 = float64;
             this.objectId = objectId;
             this.ownerId = ownerId;
+            this.emptyObject = emptyObject;
         }
 
         public String text() {
@@ -101,6 +113,11 @@ public final class CustomMessages {
         public static Value ofObject(long objectId, long ownerId) {
             return new Value(null, null, null, null, objectId, ownerId);
         }
+
+        /** 空对象 obj(0,0)：编码为 tag8 + 双 u32 零（非空对象的退路是抛 empty argument）。 */
+        public static Value ofEmptyObject() {
+            return new Value(true);
+        }
     }
 
     /** Go serverCustomIntMessage：旧 0x1E 壳（仅限已在该壳上验证过的路由）。 */
@@ -142,7 +159,7 @@ public final class CustomMessages {
                 writer.writeU8(4).writeU32(Float.floatToRawIntBits(value.float32) & 0xFFFFFFFFL);
             } else if (value.float64 != null) {
                 writer.writeU8(5).writeU64(Double.doubleToRawLongBits(value.float64));
-            } else if (value.objectId != 0 || value.ownerId != 0) {
+            } else if (value.objectId != 0 || value.ownerId != 0 || value.emptyObject) {
                 writer.writeU8(8).writeU32(value.objectId).writeU32(value.ownerId);
             } else {
                 throw new IllegalArgumentException("custom message has an empty argument");

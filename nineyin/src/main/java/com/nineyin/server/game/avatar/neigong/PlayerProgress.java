@@ -367,6 +367,10 @@ public final class PlayerProgress {
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
         Props.add(properties, "SP", PropertyValues.Value.ofInt32(a.sp));
+        // MaxSP(580)/MaxSPAdd(583)：怒气上限——不随下发客户端上限显示 0（62433 抓包
+        // 全量帧实证 F exe 恒发，其值 80；本服怒气域上限 100）。
+        Props.add(properties, "MaxSP", PropertyValues.Value.ofInt32(MAX_PLAYER_SP_VALUE));
+        Props.add(properties, "MaxSPAdd", PropertyValues.Value.ofInt32(0));
         Props.add(properties, "Str", PropertyValues.Value.ofInt32(a.str + bonus.strAdd));
         Props.add(properties, "Sta", PropertyValues.Value.ofInt32(a.sta + bonus.staAdd));
         Props.add(properties, "Dex", PropertyValues.Value.ofInt32(a.dex + bonus.dexAdd));

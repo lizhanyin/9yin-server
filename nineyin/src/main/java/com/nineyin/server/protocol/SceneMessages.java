@@ -34,7 +34,11 @@ public final class SceneMessages {
             // shortcut_game.lua 先查此记录再 custom_set_shortcut(200)。
             new RecordSchema("shortcut_rec", new byte[]{3, 7, 7}),
             // CoolLogicManager 注册原生回调：每行 = StartACool(category, end-start, team, 0)。
-            new RecordSchema("cooldown_rec", new byte[]{3, 4, 4, 3}));
+            // 第 4 列官方协商表为 u16（62433 技能抓包 cooldown_rec cols=[3,4,4,2]，帧 38B 实证）。
+            new RecordSchema("cooldown_rec", new byte[]{3, 4, 4, 2}),
+            // 战斗一期：当前施放技能（0x11 增行 / 0x12 删行0）与 fight_relation 威胁格（0x13）。
+            new RecordSchema("active_skill_rec", new byte[]{7}),
+            new RecordSchema("fight_relation_rec", new byte[]{9, 2}));
 
     /** Go serverRecordTable：0x0A | u16 count | (C 名 + NUL + u16 列数 + 类型字节)*。 */
     public static byte[] recordTable(List<RecordSchema> schemas) {

@@ -2,7 +2,7 @@ package com.nineyin.protocol;
 
 import java.util.List;
 
-import com.nineyin.game.npc.NpcSpawn;
+import com.nineyin.world.npc.NpcSpawn;
 
 /**
  * NPC 场景对象帧：0x0D AddObject / 0x20 Moving / 0x0E Remove / 0x1F Location /

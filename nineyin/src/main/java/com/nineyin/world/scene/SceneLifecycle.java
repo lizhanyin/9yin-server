@@ -1,4 +1,4 @@
-package com.nineyin.game.scene;
+package com.nineyin.world.scene;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -9,7 +9,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-import com.nineyin.game.npc.NpcSpawn;
+import com.nineyin.world.npc.NpcSpawn;
 import com.nineyin.protocol.NpcMessages;
 import com.nineyin.protocol.NpcSchema;
 import com.nineyin.protocol.PropertyValues;

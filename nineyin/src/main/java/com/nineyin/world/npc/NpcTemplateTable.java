@@ -1,4 +1,4 @@
-package com.nineyin.game.npc;
+package com.nineyin.world.npc;
 
 import java.io.IOException;
 import java.nio.charset.Charset;

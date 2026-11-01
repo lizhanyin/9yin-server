@@ -4,18 +4,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import com.nineyin.world.scene.SceneLifecycle;
+import com.nineyin.world.scene.WorldScene;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.npc.NpcCreator;
-import com.nineyin.game.npc.NpcResolver;
-import com.nineyin.game.npc.NpcSpawn;
+import com.nineyin.world.npc.NpcCreator;
+import com.nineyin.world.npc.NpcResolver;
+import com.nineyin.world.npc.NpcSpawn;
 import com.nineyin.protocol.PropertyValues.Value;
 import com.nineyin.transport.Connection;
 import com.nineyin.transport.FrameCodec;

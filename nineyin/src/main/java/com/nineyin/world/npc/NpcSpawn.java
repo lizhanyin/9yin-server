@@ -1,4 +1,4 @@
-package com.nineyin.game.npc;
+package com.nineyin.world.npc;
 
 import com.nineyin.protocol.PropertyValues.Value;
 

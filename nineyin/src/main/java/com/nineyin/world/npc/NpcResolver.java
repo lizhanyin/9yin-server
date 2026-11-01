@@ -1,4 +1,4 @@
-package com.nineyin.game.npc;
+package com.nineyin.world.npc;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;

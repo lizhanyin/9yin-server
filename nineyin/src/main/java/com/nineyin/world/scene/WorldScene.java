@@ -1,4 +1,4 @@
-package com.nineyin.game.scene;
+package com.nineyin.world.scene;
 
 import java.util.ArrayList;
 import java.util.HashMap;

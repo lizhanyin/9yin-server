@@ -14,7 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nineyin.game.ServerPaths;
-import com.nineyin.game.npc.SceneNpcRegistry;
+import com.nineyin.world.npc.SceneNpcRegistry;
 import com.nineyin.protocol.NpcSchema;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.gm.GmCatalog;

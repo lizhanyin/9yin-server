@@ -6,8 +6,8 @@ import java.util.Set;
 
 import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
-import com.nineyin.game.npc.NpcSpawn;
-import com.nineyin.game.scene.SceneLifecycle;
+import com.nineyin.world.npc.NpcSpawn;
+import com.nineyin.world.scene.SceneLifecycle;
 import com.nineyin.role.Roles;
 import com.nineyin.session.SessionMachine;
 

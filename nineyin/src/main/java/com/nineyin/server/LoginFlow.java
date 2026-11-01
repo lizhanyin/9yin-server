@@ -7,9 +7,9 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 import com.nineyin.game.avatar.equipment.EquipmentResolver;
-import com.nineyin.game.npc.SceneNpcRegistry;
-import com.nineyin.game.scene.NpcViewport;
-import com.nineyin.game.scene.SceneLifecycle;
+import com.nineyin.world.npc.SceneNpcRegistry;
+import com.nineyin.world.scene.NpcViewport;
+import com.nineyin.world.scene.SceneLifecycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

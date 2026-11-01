@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import com.nineyin.world.npc.SceneNpcRegistry;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -60,7 +61,7 @@ class LoginFlowTest {
     }
 
     private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty,
-                                              com.nineyin.gm.GmHub hub, com.nineyin.game.npc.SceneNpcRegistry registry) {
+                                              com.nineyin.gm.GmHub hub, SceneNpcRegistry registry) {
         LoginFlow flow = new LoginFlow(store, faculty, hub, Clock.systemDefaultZone(),
                 registry, new ManualScheduler());
         Connection connection = new Connection(null);
@@ -517,7 +518,7 @@ class LoginFlowTest {
         Assumptions.assumeTrue(java.nio.file.Files.isDirectory(
                 GO_SERVER_ROOT.resolve("resources/modern/share/npc/npcconfig")),
                 "Go 仓库 share 资源不可用，跳过 NPC 物化 e2e");
-        com.nineyin.game.npc.SceneNpcRegistry registry = npcRegistry();
+        SceneNpcRegistry registry = npcRegistry();
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
         RoleStoreFacade store = new RoleStoreFacade(repository);
         FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
@@ -554,9 +555,9 @@ class LoginFlowTest {
         channel.close();
     }
 
-    private static com.nineyin.game.npc.SceneNpcRegistry npcRegistry() throws Exception {
+    private static SceneNpcRegistry npcRegistry() throws Exception {
         java.nio.file.Path share = GO_SERVER_ROOT.resolve("resources/modern/share");
-        return com.nineyin.game.npc.SceneNpcRegistry.open(share.resolve("npc/npcconfig"),
+        return SceneNpcRegistry.open(share.resolve("npc/npcconfig"),
                 share.resolve("creator/npc_creator"),
                 com.nineyin.protocol.NpcSchema.visibleNpcModernV1());
     }

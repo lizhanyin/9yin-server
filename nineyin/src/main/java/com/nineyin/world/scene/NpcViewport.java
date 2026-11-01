@@ -1,11 +1,10 @@
-package com.nineyin.game.scene;
+package com.nineyin.world.scene;
 
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
-import com.nineyin.game.npc.NpcSpawn;
+import com.nineyin.world.npc.NpcSpawn;
 import com.nineyin.role.Roles;
 
 /**

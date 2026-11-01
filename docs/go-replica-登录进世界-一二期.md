@@ -281,3 +281,58 @@ activity 物化 **409 NPC**（409 对 0x0D/0x1F + 5 批重放 2045×0x1F + 巡�
 - `ab6f715` 二期(上)：RecordMessages/CustomMessages/starter 包/PlayerProgress.viewFrames/
   PlayerActor 快捷栏/LoginFlow ready 链/ready_chain_manifest + 12 样本 golden/75→86 测试
 - `8b229cb` 二期(下)：game.npc 五类/game.scene 四类/NpcMessages/移动包/冒烟与脚本
+
+---
+
+# 三期：内修闭环 + 装备/背包/内功 DB 下发（`a1219d9` `05272c7` `c27f3b0`）
+
+## 决策记录（用户确认）
+
+1. **协商属性表换官方 2424 项整表**（`official_property_table.txt`，bak 从官服提取）：
+   verbatim 透传 0x09 帧；编码按名查表（`PropertyTable`/`Props`），Go 复刻方言里官方
+   表没有的 36 名（PosiX/Orient/BufferListStr/Race/AITemplate…）从属性帧剔除——位置走
+   0x0D 头 + 0x1F、Buff 走 BufferInfo 槽。带属性帧 golden 改 Java 官方快照
+   （`*_official.*`，regen：`-Dnineyin.golden.regen=true`）；无属性帧仍对齐 Go golden。
+2. **MaxVisuals 官方语义=画质档位** u16=100（capture-fxgame-op2 官服 0x0B 实证）；
+   Go 复刻的 1000000 是私设，已纠正。
+3. **bak 17 视图容器**、**DB 优先 + starter 回退**、**含扩容锚点 + DB 快捷栏**。
+
+## 内修闭环（1006/21 演武 + 1s ticker）
+
+- `CustomC2S`：0x1E/0x27 直达 + 0x0A 信封（21 字节头含 opcode）TVarList 解析，
+  `exactInt32` 容忍 double 整值；白名单 {200,201,240,211,215,216,217,218,1006}，
+  本期实现 215/1006，其余受理记日志。
+- `FacultyCustomHandler` 回复帧序（Go 逐行）：215→[0x10]；1006/1 选书 [0x18,0x10]
+  未知静默；/11 普通恒 LogicState0；/21 演武 [0x10, 191/(22,0)] LogicState=108；
+  /22,/12 停 [0x10]；/23 演武卡 [0x18,0x10]→升级 191/14→191/23（绝不出 24）/
+  否则 191/24、陈旧吞掉；/24 FacultyName 置空+全量；/31,32 受理；未知断连。
+- 1s ticker（`scheduleWithFixedDelay`）：整分钟结算（200/min、cost=ceil(fill/2)、
+  满级/枯竭自动停），变化 [0x18 书帧,0x10]+持久化，静默秒零帧；断连取消。
+- `FacultyStore.attachDatabase`：role_faculty 快照读优先/写 UPSERT best-effort，
+  JSON 主档。View43 经 DB 恢复自动真书化（role 618 = 48 本）。
+
+## 物品域 DB 下发
+
+- `world.db.RoleInventoryStore`（只读池，GmCatalogDb 同策略）：equips/bagItems
+  （game_items 200 一批富化）/skills（JOIN game_skills）/shortcuts/bagpacks。
+- `protocol.EquipmentModels`：equipment.ini 静态（Photo 链 itemartstatic.ini）。
+- `protocol.InventoryMessages`：17 视图（8 主页 cap90+BaseCap18/8 扩展/View1 cap48）、
+  锚点（页号→扩展视图 {1:3,2:122,3:124,4:126}，BeginPos=19+Σboost，永久=720h）、
+  背包成对 `0x19(view,slot)→0x18→0x19(镜像,slot)`（真实槽位防误删）、纸娃娃行、
+  UniqueID=MD5(roleId:bag|equip:slot)[:16hex]、WeaponMode 0x10。
+- LoginFlow：选角 0x0B 前建 17 视图+锚点，vitals 后 DB 模式物品整推；ready 段
+  View40=role_skills（十属性行）+快捷栏=role_shortcuts，空则 starter 回退。
+- DB 数据基线（mysql-26）：role 618 = 8 穿戴/27 背包/190 武学/48 内功/117 快捷栏/4 锚点。
+
+## 验证
+
+- 109/109 绿：FacultyProgressTest 11 例（Go 向量）、InventoryMessagesTest 6 例
+  （成对存活/锚点数学）、RoleInventoryStore/FacultyStore DB 集成（自跳过）、
+  LoginFlowTest 0x1E 直达 e2e、官方快照 golden ×13。
+- **真机待验**：role 618 账号登录目检（背包 27 格/纸娃娃 8 件/内功 48 书/技能页/
+  演武开卡/内修涨条）——冒烟账号是自动新角色走 starter 回退，DB 模式需真实账号。
+
+## 四期候选
+
+msg30 穿脱/使用（0x19/0x18 双向同步+WeaponMode 重推）、0x07 对象选择/菜单/商店、
+战斗（211/cooldown/combat tick）、0x0C 切图重入恢复链、传送门、200/201/240/216-218 信封。

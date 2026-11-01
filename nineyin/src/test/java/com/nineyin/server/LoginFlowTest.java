@@ -3,6 +3,7 @@ package com.nineyin.server;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
@@ -55,11 +56,13 @@ class LoginFlowTest {
     }
 
     private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty) {
-        return newChannel(store, faculty, new com.nineyin.gm.GmHub());
+        return newChannel(store, faculty, new com.nineyin.gm.GmHub(), null);
     }
 
-    private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty, com.nineyin.gm.GmHub hub) {
-        LoginFlow flow = new LoginFlow(store, faculty, hub, Clock.systemDefaultZone());
+    private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty,
+                                              com.nineyin.gm.GmHub hub, com.nineyin.game.npc.SceneNpcRegistry registry) {
+        LoginFlow flow = new LoginFlow(store, faculty, hub, Clock.systemDefaultZone(),
+                registry, new ManualScheduler());
         Connection connection = new Connection(null);
         EmbeddedChannel channel = new EmbeddedChannel();
         // EmbeddedChannel 没有真 socket：Connection 持有的 channel 在 handler 写出侧由 pipeline 承担。
@@ -67,6 +70,140 @@ class LoginFlowTest {
         channel.pipeline().addLast(new FrameEncoder(connection));
         channel.pipeline().addLast(new GameServerHandler(flow, new Connection(channel)));
         return channel;
+    }
+
+    /** 记录任务不执行：重放/巡逻等定时帧不进 e2e 断言（与 Go 快照语义一致）。 */
+    static final class ManualScheduler implements java.util.concurrent.ScheduledExecutorService {
+        final List<Runnable> tasks = java.util.Collections.synchronizedList(new ArrayList<>());
+
+        private static final java.util.concurrent.ScheduledFuture<?> NONE = new java.util.concurrent.ScheduledFuture<>() {
+            @Override
+            public long getDelay(java.util.concurrent.TimeUnit unit) {
+                return 0;
+            }
+
+            @Override
+            public int compareTo(java.util.concurrent.Delayed other) {
+                return 0;
+            }
+
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return false;
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public boolean isDone() {
+                return false;
+            }
+
+            @Override
+            public Object get() {
+                return null;
+            }
+
+            @Override
+            public Object get(long timeout, java.util.concurrent.TimeUnit unit) {
+                return null;
+            }
+        };
+
+        @Override
+        public java.util.concurrent.ScheduledFuture<?> schedule(Runnable command, long delay, java.util.concurrent.TimeUnit unit) {
+            tasks.add(command);
+            return NONE;
+        }
+
+        @Override
+        public <V> java.util.concurrent.ScheduledFuture<V> schedule(
+                java.util.concurrent.Callable<V> callable, long delay, java.util.concurrent.TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public java.util.concurrent.ScheduledFuture<?> scheduleAtFixedRate(
+                Runnable command, long initialDelay, long period, java.util.concurrent.TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public java.util.concurrent.ScheduledFuture<?> scheduleWithFixedDelay(
+                Runnable command, long initialDelay, long delay, java.util.concurrent.TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void shutdown() {
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            return List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return false;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return false;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit) {
+            return false;
+        }
+
+        @Override
+        public <T> java.util.concurrent.Future<T> submit(java.util.concurrent.Callable<T> task) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> java.util.concurrent.Future<T> submit(Runnable task, T result) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public java.util.concurrent.Future<?> submit(Runnable task) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> List<java.util.concurrent.Future<T>> invokeAll(
+                java.util.Collection<? extends java.util.concurrent.Callable<T>> tasks) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> List<java.util.concurrent.Future<T>> invokeAll(
+                java.util.Collection<? extends java.util.concurrent.Callable<T>> tasks,
+                long timeout, java.util.concurrent.TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> T invokeAny(java.util.Collection<? extends java.util.concurrent.Callable<T>> tasks) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> T invokeAny(java.util.Collection<? extends java.util.concurrent.Callable<T>> tasks,
+                               long timeout, java.util.concurrent.TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     private static void send(EmbeddedChannel channel, byte[] plain) {
@@ -248,7 +385,7 @@ class LoginFlowTest {
         assertTrue(java.nio.file.Files.exists(tempDir.resolve("faculty.json")));
         // GM 面板会话：选角后挂快照，断连后摘除。
         com.nineyin.gm.GmHub hub = new com.nineyin.gm.GmHub();
-        EmbeddedChannel gmChannel = newChannel(store, faculty, hub);
+        EmbeddedChannel gmChannel = newChannel(store, faculty, hub, null);
         send(gmChannel, loginFrame());
         drain(gmChannel);
         send(gmChannel, new byte[]{0x03});
@@ -343,5 +480,84 @@ class LoginFlowTest {
         replies = drain(channel);
         assertTrue(replies.isEmpty());
         channel.close();
+    }
+
+    @Test
+    void parseMotionPositionAcceptsSixtySevenByteUpdate() {
+        byte[] frame = new byte[67];
+        frame[0] = 0x0A;
+        int offset = 0x26;
+        float[] values = {481.25f, 87.545f, 624.5f, 3.12f};
+        for (int i = 0; i < 4; i++) {
+            frame[offset + i * 5] = 4;
+            int bits = Float.floatToRawIntBits(values[i]);
+            frame[offset + 1 + i * 5] = (byte) bits;
+            frame[offset + 2 + i * 5] = (byte) (bits >>> 8);
+            frame[offset + 3 + i * 5] = (byte) (bits >>> 16);
+            frame[offset + 4 + i * 5] = (byte) (bits >>> 24);
+        }
+        float[] parsed = LoginFlow.parseMotionPosition(frame);
+        assertEquals(481.25f, parsed[0]);
+        assertEquals(87.545f, parsed[1]);
+        assertEquals(624.5f, parsed[2]);
+        assertEquals(3.12f, parsed[3]);
+        // 长目的地包不得当位置更新；越界坐标拒绝。
+        assertNull(LoginFlow.parseMotionPosition(new byte[82]));
+        byte[] far = frame.clone();
+        int farBits = Float.floatToRawIntBits(20000f);
+        far[0x27] = (byte) farBits;
+        far[0x28] = (byte) (farBits >>> 8);
+        far[0x29] = (byte) (farBits >>> 16);
+        far[0x2A] = (byte) (farBits >>> 24);
+        assertNull(LoginFlow.parseMotionPosition(far));
+    }
+
+    @Test
+    void npcViewportMaterializesAfterActivity(@TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(java.nio.file.Files.isDirectory(
+                GO_SERVER_ROOT.resolve("resources/modern/share/npc/npcconfig")),
+                "Go 仓库 share 资源不可用，跳过 NPC 物化 e2e");
+        com.nineyin.game.npc.SceneNpcRegistry registry = npcRegistry();
+        JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
+        RoleStoreFacade store = new RoleStoreFacade(repository);
+        FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
+        EmbeddedChannel channel = newChannel(store, faculty, new com.nineyin.gm.GmHub(), registry);
+        send(channel, loginFrame());
+        drain(channel);
+        send(channel, new byte[]{0x03});
+        drain(channel);
+        send(channel, createRoleFrame("金镶玉"));
+        drain(channel);
+        byte[] choose = new byte[0x54];
+        choose[0] = 0x04;
+        send(channel, choose);
+        drain(channel);
+        send(channel, new byte[]{0x09});
+        drain(channel);
+        // 首个 0x0A：物化视口 NPC（0x0D+0x1F 成对、按对象 ID 升序）。
+        send(channel, new byte[]{0x0A, 0x00});
+        List<byte[]> replies = drain(channel);
+        assertTrue(replies.size() >= 2, "school09 出生点 120 半径内应有可物化 NPC，实际帧数=" + replies.size());
+        int previousObjectId = 1;
+        int npcCount = 0;
+        for (int i = 0; i + 1 < replies.size(); i += 2) {
+            assertEquals(0x0D, replies.get(i)[0] & 0xFF, "偶数位 0x0D@" + i);
+            assertEquals(0x1F, replies.get(i + 1)[0] & 0xFF, "奇数位 0x1F@" + (i + 1));
+            int objectId = (int) u32(replies.get(i), 1);
+            assertEquals(objectId, (int) u32(replies.get(i + 1), 1), "0x0D/0x1F 同对象");
+            assertTrue(objectId > previousObjectId, "对象 ID 升序");
+            assertTrue(replies.get(i).length > 0x3f, "0x0D 含属性归档");
+            previousObjectId = objectId;
+            npcCount++;
+        }
+        assertTrue(npcCount > 0);
+        channel.close();
+    }
+
+    private static com.nineyin.game.npc.SceneNpcRegistry npcRegistry() throws Exception {
+        java.nio.file.Path share = GO_SERVER_ROOT.resolve("resources/modern/share");
+        return com.nineyin.game.npc.SceneNpcRegistry.open(share.resolve("npc/npcconfig"),
+                share.resolve("creator/npc_creator"),
+                com.nineyin.protocol.NpcSchema.visibleNpcModernV1());
     }
 }

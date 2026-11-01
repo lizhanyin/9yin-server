@@ -1,9 +1,15 @@
 package com.nineyin.server;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 
 import com.nineyin.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.game.npc.SceneNpcRegistry;
+import com.nineyin.game.scene.NpcViewport;
+import com.nineyin.game.scene.SceneLifecycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,17 +42,27 @@ public final class LoginFlow {
     static final int STARTER_SILVER = 99999;
     /** 选人界面实力档位种子（一期无实力持久化，固定 151=title027 返璞归真）。 */
     static final int ROLE_LIST_POWER_LEVEL = 151;
+    /** Go -npc-radius 默认 120 / -npc-patrol-count 默认 3。 */
+    static final float NPC_RADIUS = 120.0f;
+    static final int NPC_PATROL_COUNT = 3;
+    /** Go 位置保存节流（≥2s）。 */
+    static final Duration POSITION_SAVE_INTERVAL = Duration.ofSeconds(2);
 
     private final RoleStoreFacade roleStore;
     private final FacultyStore facultyStore;
     private final GmHub gmHub;
     private final Clock clock;
+    private final SceneNpcRegistry npcRegistry;
+    private final ScheduledExecutorService scheduler;
 
-    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock) {
+    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
+                     SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler) {
         this.roleStore = roleStore;
         this.facultyStore = facultyStore;
         this.gmHub = gmHub;
         this.clock = clock;
+        this.npcRegistry = npcRegistry;
+        this.scheduler = scheduler;
     }
 
     /** 处理一帧明文；返回 false 断连。 */
@@ -63,7 +79,7 @@ public final class LoginFlow {
             case SessionMachine.CLIENT_CREATE_ROLE -> onCreateRole(connection, session, plain);
             case SessionMachine.CLIENT_CHOOSE_ROLE -> onChooseRole(connection, session);
             case SessionMachine.CLIENT_READY -> onClientReady(connection, session);
-            case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session);
+            case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session, plain);
             default -> true; // 未分类 opcode 放行业务层（一期无业务层）
         };
     }
@@ -178,13 +194,32 @@ public final class LoginFlow {
         for (SceneMessages.ViewSpec view : SceneMessages.starterBagViews()) {
             connection.writeFrame(SceneMessages.createView(view));
         }
-        // Go world.begin：场景世代重置，不发帧；一期无 world 内核，等价空操作。
+        // Go world.begin：场景世代重置（清实体/停定时器），不发帧。
+        session.world = new SceneLifecycle(connection, scheduler);
+        session.world.begin(location.scene().config(), location.scene().resource());
         connection.writeFrame(SceneMessages.entryScene(location.scene()));
         connection.writeFrame(session.player.addObject(location.position(), session.visual));
         connection.writeFrame(SceneMessages.serverLocation(
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, location.position()));
         connection.writeFrame(session.player.vitalUpdate());
-        // NPC viewport 仅注册不上线（activity 屏障后物化）——一期无 NPC 目录，跳过。
+        // NPC viewport 仅注册不上线（ClientReady/首个 0x0A 屏障后物化）。
+        if (npcRegistry != null) {
+            try {
+                session.sceneNpcs = npcRegistry.catalogFor(location.scene()).spawns();
+            } catch (Exception e) {
+                log.warn("session={} load NPC catalog for {}: {}", session.machine.id(),
+                        location.scene().resource(), e.getMessage());
+                session.sceneNpcs = List.of();
+            }
+        }
+        if (!session.sceneNpcs.isEmpty()) {
+            try {
+                NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
+                        session.activeNpcs, location.position(), NPC_RADIUS);
+            } catch (RuntimeException e) {
+                log.warn("session={} register scene NPC viewport: {}", session.machine.id(), e.getMessage());
+            }
+        }
 
         SessionException transition = session.machine.roleChosen();
         if (transition != null) {
@@ -215,14 +250,24 @@ public final class LoginFlow {
         gmHub.attach(snapshot.sessionId, snapshot);
     }
 
-    /** 连接断开（含校验失败断连）：Go defer persistFaculty + gm.detach。 */
+    /** 连接断开（含校验失败断连）：Go defer（pendingLocation/persistFaculty/world.close）+ gm.detach。 */
     public void onDisconnect(LoginSession session) {
+        if (session.pendingLocation != null && session.selected != null) {
+            try {
+                session.selected = roleStore.saveLocation(session.selected, session.pendingLocation);
+            } catch (RuntimeException e) {
+                log.warn("persist pending movement: {}", e.getMessage());
+            }
+        }
         if (session.selected != null && session.player != null) {
             try {
                 facultyStore.save(session.selected.id(), session.player.facultySnapshot());
             } catch (RuntimeException e) {
                 log.warn("persist faculty progress: {}", e.getMessage());
             }
+        }
+        if (session.world != null) {
+            session.world.close();
         }
         gmHub.detach(session.machine.id());
     }
@@ -261,6 +306,10 @@ public final class LoginFlow {
             log.info("session={} ignored duplicate ClientReady in active scene", session.machine.id());
             return true;
         }
+        // Go world.clientReady()：armed 置位（RegisterCallBack 之前的窗口不发对象）。
+        if (session.world != null) {
+            session.world.clientReady();
+        }
         SessionException transition = session.machine.ready();
         if (transition != null) {
             log.info("complete client-ready transition: {}", transition.getMessage());
@@ -274,10 +323,14 @@ public final class LoginFlow {
 
     /**
      * Go 0x0A 分支：相位 ENTERING_WORLD 时按兼容就绪屏障提升（客户端省略 0x09
-     * 直发 0x0A：Ready + vital + 0x27 开关，不发 starter 链），再走 Activity 相位。
+     * 直发 0x0A：Ready + vital + 0x27 开关，不发 starter 链）；随后物化 NPC 视口
+     * （armed 一次）+ 启动巡逻，进 Activity 相位，再处理 67 字节位置更新包。
      */
-    private boolean onClientActivity(Connection connection, LoginSession session) {
+    private boolean onClientActivity(Connection connection, LoginSession session, byte[] plain) {
         if (session.machine.phase() == SessionMachine.Phase.ENTERING_WORLD) {
+            if (session.world != null) {
+                session.world.clientReady();
+            }
             SessionException readyTransition = session.machine.ready();
             if (readyTransition != null) {
                 log.info("complete compatibility ready transition: {}", readyTransition.getMessage());
@@ -289,12 +342,92 @@ public final class LoginFlow {
             }
             log.info("session={} promoted observed 0x0A to compatibility ClientReady", session.machine.id());
         }
+        if (session.world != null) {
+            try {
+                session.world.clientActivity();
+            } catch (RuntimeException e) {
+                log.warn("session={} activate ready scene objects: {}", session.machine.id(), e.getMessage());
+                return false;
+            }
+            session.world.startPatrol(NPC_PATROL_COUNT);
+        }
         SessionException transition = session.machine.activity();
         if (transition != null) {
             log.info("complete client-activity transition: {}", transition.getMessage());
             return false;
         }
+        handleMotionPosition(session, plain);
         return true;
+    }
+
+    /** Go 0x0A motion 段：视口跟随 + 2s 节流位置保存（越界/长包不落盘）。 */
+    private void handleMotionPosition(LoginSession session, byte[] plain) {
+        if (session.selected == null || session.world == null) {
+            return;
+        }
+        float[] position = parseMotionPosition(plain);
+        if (position == null) {
+            return;
+        }
+        Roles.Location location = new Roles.Location(session.selected.location().scene(),
+                new Roles.Position(position[0], position[1], position[2], position[3]),
+                session.selected.location().version());
+        boolean changed = false;
+        try {
+            changed = NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
+                    session.activeNpcs, location.position(), NPC_RADIUS);
+            if (changed) {
+                session.world.reconcileViewport();
+            }
+        } catch (RuntimeException e) {
+            log.warn("session={} synchronize moving NPC viewport: {}", session.machine.id(), e.getMessage());
+        }
+        session.pendingLocation = location;
+        Instant now = clock.instant();
+        if (session.lastPositionSave == null
+                || Duration.between(session.lastPositionSave, now).compareTo(POSITION_SAVE_INTERVAL) >= 0) {
+            savePosition(session, location, now);
+        }
+    }
+
+    private void savePosition(LoginSession session, Roles.Location location, Instant now) {
+        try {
+            session.selected = roleStore.saveLocation(session.selected, location);
+            session.lastPositionSave = now;
+            session.pendingLocation = null;
+        } catch (RuntimeException e) {
+            log.warn("persist movement: {}", e.getMessage());
+        }
+    }
+
+    /** Go motion.go parseMotionPosition：67 字节包 0x26 起四段 (tag=4,float)。 */
+    static float[] parseMotionPosition(byte[] plain) {
+        if (plain.length != 67) {
+            return null;
+        }
+        int offset = 0x26;
+        if (plain[offset] != 4 || plain[offset + 5] != 4
+                || plain[offset + 10] != 4 || plain[offset + 15] != 4) {
+            return null;
+        }
+        float[] values = new float[4];
+        for (int i = 0; i < 4; i++) {
+            int bits = (plain[offset + 1 + i * 5] & 0xFF)
+                    | (plain[offset + 2 + i * 5] & 0xFF) << 8
+                    | (plain[offset + 3 + i * 5] & 0xFF) << 16
+                    | (plain[offset + 4 + i * 5] & 0xFF) << 24;
+            values[i] = Float.intBitsToFloat(bits);
+        }
+        for (float value : values) {
+            if (value != value || value == Float.POSITIVE_INFINITY || value == Float.NEGATIVE_INFINITY) {
+                return null;
+            }
+        }
+        if (Math.abs(values[0]) > 10000 || Math.abs(values[1]) > 3000
+                || Math.abs(values[2]) > 10000 || Math.abs(values[3]) > 20) {
+            return null;
+        }
+        return values;
     }
 
     /** Go scene_catalog_registry.go normalizeClientScene 的三条地图特例。 */

@@ -90,19 +90,24 @@ def main() -> None:
     sock = socket.create_connection((host, port), timeout=5)
     records = []
 
-    def step(label: str, payload: bytes, expect_frames: bool = True) -> None:
+    def step(label: str, payload: bytes, expect_frames: bool = True,
+             full_limit: int = 64) -> None:
+        """full_limit 之后只记 (opcode,length)：ready/物化洪流可达数千帧。"""
         sock.sendall(payload)
         if not expect_frames:
             return
-        wire = recv_all(sock)
-        for frame in decode_frames(wire):
-            records.append({
+        wire = recv_all(sock, idle_ms=2500, total_s=20.0)
+        for index, frame in enumerate(decode_frames(wire)):
+            record = {
                 "after": label,
+                "i": index,
                 "opcode": frame[0],
                 "length": len(frame),
-                "sha1": hashlib.sha1(frame).hexdigest(),
-                "b64": __import__("base64").b64encode(frame).decode("ascii"),
-            })
+            }
+            if index < full_limit:
+                record["sha1"] = hashlib.sha1(frame).hexdigest()
+                record["b64"] = __import__("base64").b64encode(frame).decode("ascii")
+            records.append(record)
 
     # 抓包账号在两侧 seed 存档中已有角色：login(带角色) → world_info → choose → ready → activity。
     # （0x05 创角在 RoleSelection 相位会被状态机拒绝断连，故不在此序列中。）
@@ -112,7 +117,7 @@ def main() -> None:
     choose[0] = 0x04
     step("choose_role", encode(bytes(choose)))
     step("ready", encode(b"\x09"))
-    step("activity", encode(b"\x0a\x00"))
+    step("activity", encode(b"\x0a\x00"), full_limit=8)
     sock.close()
 
     with open(out_path, "w", encoding="utf-8") as out:

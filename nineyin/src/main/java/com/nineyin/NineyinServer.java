@@ -8,11 +8,14 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Clock;
 import java.util.Properties;
+import java.util.concurrent.ScheduledExecutorService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nineyin.game.ServerPaths;
+import com.nineyin.game.npc.SceneNpcRegistry;
+import com.nineyin.protocol.NpcSchema;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.gm.GmCatalog;
 import com.nineyin.gm.GmCatalogDb;
@@ -47,6 +50,8 @@ public final class NineyinServer implements SummerApp {
     private GmCatalog gmCatalog;
     private RoleStoreFacade roleStore;
     private FacultyStore facultyStore;
+    private SceneNpcRegistry npcRegistry;
+    private ScheduledExecutorService sceneScheduler;
 
     @Override
     public void init() {
@@ -58,14 +63,36 @@ public final class NineyinServer implements SummerApp {
         gmCatalog = GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share"));
         dsn.ifPresent(this::attachCatalogDatabase);
         gmServer = new GmHttpServer(gmHub, gmCatalog, gmHost(), gmPort());
+        // Go -npc-all-chengdu 默认 true：启动加载共享模板表 + 每 creator 目录懒加载。
+        npcRegistry = openNpcRegistry();
+        sceneScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "nineyin-scene");
+            thread.setDaemon(true);
+            return thread;
+        });
         GmHub.ServerStatus status = gmHub.status();
         status.serverRoot = ServerPaths.serverRoot().toString();
-        status.phase = "Go-replica phase 1 (transport+login+entry frames)";
+        status.phase = "Go-replica phase 2 (starter chain + NPC viewport)";
         ProtocolCustomMgr.get().setHandler(new NineyinProtocolHandler(
-                new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone()),
+                new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
+                        npcRegistry, sceneScheduler),
                 "127.0.0.1", gamePort()));
-        log.info("nineyin server initialized: root={} storage={} gmPanel={}",
-                ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url());
+        log.info("nineyin server initialized: root={} storage={} gmPanel={} npcRegistry={}",
+                ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url(),
+                npcRegistry != null);
+    }
+
+    /** Go newSceneNPCRegistry(npcconfig, creator 根)；失败仅告警（无 NPC 可进世界）。 */
+    private SceneNpcRegistry openNpcRegistry() {
+        try {
+            java.nio.file.Path share = ServerPaths.projectPath("resources", "modern", "share");
+            return SceneNpcRegistry.open(share.resolve("npc").resolve("npcconfig"),
+                    share.resolve("creator").resolve("npc_creator"),
+                    NpcSchema.visibleNpcModernV1());
+        } catch (Exception e) {
+            log.warn("modern scene NPC registry unavailable: {}", e.getMessage());
+            return null;
+        }
     }
 
     /** GM 目录 data/*.json 来源切 MySQL（角色库同一 DSN）；打开失败仅告警回退文件源。 */

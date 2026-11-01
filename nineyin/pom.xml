@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.nineyin</groupId>
+        <artifactId>nineyin-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>nineyin-server</artifactId>
+    <packaging>jar</packaging>
+
+    <name>nineyin-server</name>
+    <description>九阴真经 Java 游戏服务端主体（基于 Summer 框架重写，功能蓝本：9yin-go-server1 Go 源码逐文件复刻（登录链字节级对齐））</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.swingfrog</groupId>
+            <artifactId>summer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.nineyin</groupId>
+            <artifactId>gm-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+        </dependency>
+        <!-- 技能/公式 Lua 脚本引擎（scripts/ 目录，GM 可热重载） -->
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>luajava</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>lua55</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>party.iroiro.luajava</groupId>
+            <artifactId>lua55-platform</artifactId>
+            <classifier>natives-desktop</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.nineyin.NineyinServer</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

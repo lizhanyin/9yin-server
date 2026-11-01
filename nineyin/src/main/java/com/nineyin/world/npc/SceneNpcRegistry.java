@@ -117,6 +117,10 @@ public final class SceneNpcRegistry {
                 try {
                     npc = NpcResolver.resolve(schema, table, instance, NpcResolver.spawnDefaultsCompatV1());
                 } catch (RuntimeException e) {
+                    if (unresolved == 0) {
+                        System.out.println("[resolver-first-failure] " + creatorName
+                                + " " + instance.templateId + ": " + e);
+                    }
                     unresolved++;
                     continue;
                 }
@@ -266,7 +270,7 @@ public final class SceneNpcRegistry {
     private static final Map<String, String> PREFERRED_SCENE_CONFIG_FOLDER = Map.of(
             "ini\\scene\\clone002_yx", "clone002_yx");
 
-    String resolveFolder(Roles.Scene scene) throws IOException {
+    public String resolveFolder(Roles.Scene scene) throws IOException {
         String configKey = scene.config().trim().toLowerCase(Locale.ROOT);
         String preferred = PREFERRED_SCENE_CONFIG_FOLDER.get(configKey);
         if (preferred != null && dirs.containsKey(preferred)) {

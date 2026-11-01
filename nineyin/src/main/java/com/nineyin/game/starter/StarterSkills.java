@@ -3,7 +3,8 @@ package com.nineyin.game.starter;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.nineyin.protocol.PropertyIndex;
+import com.nineyin.protocol.Props;
+import com.nineyin.protocol.PropertyValues;
 import com.nineyin.protocol.SceneMessages;
 
 /**
@@ -59,16 +60,17 @@ public final class StarterSkills {
                 new SceneMessages.ViewSpec(VIEWPORT_SKILL, STARTER_SKILL_VIEWS.size())));
         for (int index = 0; index < STARTER_SKILL_VIEWS.size(); index++) {
             LearnedSkill skill = STARTER_SKILL_VIEWS.get(index);
-            frames.add(SceneMessages.viewAdd(VIEWPORT_SKILL, index + 1, List.of(
-                    SceneMessages.ViewProperty.ofString(7, skill.configId()),
-                    SceneMessages.ViewProperty.ofInt(PropertyIndex.STATIC_DATA, skill.staticData()),
-                    SceneMessages.ViewProperty.ofInt(PropertyIndex.ITEM_TYPE, skill.itemType()),
-                    SceneMessages.ViewProperty.ofInt(6, skill.level()),
-                    SceneMessages.ViewProperty.ofInt(PropertyIndex.MAX_LEVEL, skill.maxLevel()),
-                    SceneMessages.ViewProperty.ofInt(PropertyIndex.CUR_FILL_VALUE, skill.fill()),
-                    SceneMessages.ViewProperty.ofInt(PropertyIndex.TOTAL_FILL_VALUE, skill.total()),
-                    SceneMessages.ViewProperty.ofFloat(PropertyIndex.PAUSE_TIME, skill.pauseTime()),
-                    SceneMessages.ViewProperty.ofByte(PropertyIndex.SKILL_CAN_USE, 1))));
+            List<SceneMessages.ViewProperty> properties = new ArrayList<>(9);
+            Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(skill.configId()));
+            Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(skill.staticData()));
+            Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(skill.itemType()));
+            Props.addView(properties, "CurLevel", PropertyValues.Value.ofInt32(skill.level()));
+            Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(skill.maxLevel()));
+            Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(skill.fill()));
+            Props.addView(properties, "TotalFillValue", PropertyValues.Value.ofInt32(skill.total()));
+            Props.addView(properties, "PauseTime", PropertyValues.Value.ofFloat32(skill.pauseTime()));
+            Props.addView(properties, "CanUse", PropertyValues.Value.ofByte(1));
+            frames.add(SceneMessages.viewAdd(VIEWPORT_SKILL, index + 1, properties));
         }
         return frames;
     }

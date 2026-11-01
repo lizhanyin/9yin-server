@@ -147,8 +147,9 @@ public final class SceneLifecycle {
             if (entity == null) {
                 throw new IllegalStateException("missing property encoder for scene object " + update.id);
             }
-            connection.writeFrame(NpcMessages.sceneObjectTransformProperties(
-                    entity.id, entity.ownerId, entity.transform.x(), entity.transform.y(),
+            // 官方表无 Pos* 属性：移动实体的权威更新走 0x1F（与官服一致）。
+            connection.writeFrame(NpcMessages.serverLocation(entity.id, entity.ownerId,
+                    entity.transform.x(), entity.transform.y(),
                     entity.transform.z(), entity.transform.orient()));
         }
         if (delta.previousGeneration == delta.generation) {

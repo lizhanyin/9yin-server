@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 import com.nineyin.protocol.NpcSchema;
+import com.nineyin.protocol.PropertyTable;
+import com.nineyin.protocol.Props;
 import com.nineyin.protocol.PropertyValues;
 import com.nineyin.protocol.PropertyValues.Value;
 import com.nineyin.protocol.WireType;
@@ -71,7 +73,23 @@ public final class NpcResolver {
         NpcTemplateTable.Row row = table.lookup(instance.templateId);
         ResolvedNpc resolved = new ResolvedNpc(instance.instanceKey(), instance.templateId,
                 row.scriptClass, instance.transform);
-        applyLayer(schema, resolved.properties, defaults, "default", schema.toString());
+        java.util.Set<String> schemaNames = new java.util.HashSet<>();
+        for (NpcSchema.FieldSpec field : schema) {
+            schemaNames.add(field.name());
+        }
+        Map<String, Value> knownDefaults = new HashMap<>();
+        for (Map.Entry<String, Value> entry : defaults.entrySet()) {
+            if (!schemaNames.contains(entry.getKey())) {
+                continue;
+            }
+            try {
+                knownDefaults.put(entry.getKey(), Props.coerce(entry.getKey(),
+                        PropertyTable.type(entry.getKey()), entry.getValue()));
+            } catch (RuntimeException ignored) {
+                // 官方方言线型与 Go 默认值不可桥接 → 放弃该默认（模板/creator 仍可覆盖）。
+            }
+        }
+        applyLayer(schema, resolved.properties, knownDefaults, "default", schema.toString());
 
         Map<Integer, Boolean> consumedTemplate = new HashMap<>();
         for (NpcSchema.FieldSpec field : schema) {
@@ -99,7 +117,11 @@ public final class NpcResolver {
             if (cell == null || !cell.set()) {
                 continue;
             }
-            resolved.properties.put(field.name(), parseWireValue(field.type(), cell.raw()));
+            try {
+                resolved.properties.put(field.name(), parseWireValue(field.type(), cell.raw()));
+            } catch (RuntimeException e) {
+                // 官方方言线型变化导致个别单元格不可解析：跳过该字段保留默认值。
+            }
         }
 
         java.util.Set<String> consumedCreator = new java.util.HashSet<>();
@@ -108,7 +130,11 @@ public final class NpcResolver {
             if (raw == null || !raw.present()) {
                 continue;
             }
-            resolved.properties.put(field.name(), parseWireValue(field.type(), raw.raw()));
+            try {
+                resolved.properties.put(field.name(), parseWireValue(field.type(), raw.raw()));
+            } catch (RuntimeException e) {
+                continue; // 同上：跳过不可解析的 creator 覆盖。
+            }
             consumedCreator.add(field.name());
         }
 
@@ -120,6 +146,7 @@ public final class NpcResolver {
         if (instance.transform.ay != null) {
             placement.put("Orient", Value.ofFloat32(instance.transform.ay));
         }
+        placement.keySet().retainAll(schemaNames); // 官方方言无 Pos*/Orient 属性
         applyLayer(schema, resolved.properties, placement, "runtime", instance.source);
 
         for (int index = 0; index < row.cells.size(); index++) {

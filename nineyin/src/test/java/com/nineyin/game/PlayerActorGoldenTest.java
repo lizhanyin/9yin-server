@@ -66,9 +66,10 @@ class PlayerActorGoldenTest {
         PlayerProgress.Snapshot snapshot = withLastAdvance(player.facultySnapshot(), GOLDEN_NOW.minusSeconds(3600));
         player.restoreFaculty(snapshot, GOLDEN_NOW);
 
-        assertArrayEquals(golden("player_add_object_default.bin"),
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("player_add_object_official_default.bin",
                 player.addObject(RoleStoreFacade.defaultRoleLocation().position(), visual));
-        assertArrayEquals(golden("vital_update_default.bin"), player.vitalUpdate());
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("vital_update_official_default.bin",
+                player.vitalUpdate());
     }
 
     @Test
@@ -80,8 +81,8 @@ class PlayerActorGoldenTest {
         List<byte[]> frames = player.progress().viewFrames();
         assertEquals(7, frames.size());
         assertArrayEquals(golden("view43_create.bin"), frames.get(0));
-        assertArrayEquals(golden("view43_book_1.bin"), frames.get(1));
-        assertArrayEquals(golden("view43_book_last.bin"), frames.get(6));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view43_book_official_1.bin", frames.get(1));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view43_book_official_last.bin", frames.get(6));
     }
 
     @Test
@@ -101,9 +102,10 @@ class PlayerActorGoldenTest {
                 "ng_yh_001", base.fillSpeed(), GOLDEN_NOW.minusSeconds(90 * 60), books);
         player.restoreFaculty(snapshot, GOLDEN_NOW);
 
-        assertArrayEquals(golden("player_add_object_custom.bin"),
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("player_add_object_official_custom.bin",
                 player.addObject(RoleStoreFacade.defaultRoleLocation().position(), visual));
-        assertArrayEquals(golden("vital_update_custom.bin"), player.vitalUpdate());
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("vital_update_official_custom.bin",
+                player.vitalUpdate());
     }
 
     private static PlayerProgress.Snapshot withLastAdvance(PlayerProgress.Snapshot snapshot, Instant value) {

@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -74,9 +75,27 @@ class ProtocolGoldenTest {
     }
 
     @Test
-    void propertyTableMatchesGolden() throws Exception {
-        assertArrayEquals(golden("property_table.bin"),
-                SceneMessages.visiblePropertyTable(NpcSchema.sceneVisiblePropertyFields()));
+    void propertyTableMatchesOfficialSnapshot() {
+        byte[] frame = SceneMessages.propertyTableFrame();
+        assertEquals(0x09, frame[0]);
+        assertEquals(2426, frame[1] | frame[2] << 8, "官方整表 verbatim（2426 行含 None 行，bak 同）");
+        SnapshotGoldens.assertOrRegen("property_table_official.bin", frame);
+    }
+
+    @Test
+    void propertyTableKnownEntries() {
+        // bak 真机验证过的关键索引抽检（客户端按名绑定，索引错位即渲染失败）。
+        assertEquals(1439, PropertyTable.idx("ConfigID"));
+        assertEquals(WireType.STRING, PropertyTable.type("ConfigID"));
+        assertEquals(1891, PropertyTable.idx("UniqueID"));
+        assertEquals(1936, PropertyTable.idx("EquipType"));
+        assertEquals(1597, PropertyTable.idx("WeaponMode"));
+        assertEquals(WireType.STRING, PropertyTable.type("WeaponMode"));
+        assertEquals(1464, PropertyTable.idx("Level"));
+        assertEquals(WireType.BYTE, PropertyTable.type("Level"));
+        assertEquals(416, PropertyTable.idx("CapitalType1"));
+        assertEquals(WireType.FLOAT64, PropertyTable.type("CapitalType1"));
+        assertEquals(772, PropertyTable.idx("FillSpeed"));
     }
 
     @Test
@@ -97,8 +116,8 @@ class ProtocolGoldenTest {
     }
 
     @Test
-    void entrySceneMatchesGolden() throws Exception {
-        assertArrayEquals(golden("entry_scene.bin"),
+    void entrySceneMatchesOfficialSnapshot() {
+        SnapshotGoldens.assertOrRegen("entry_scene_official.bin",
                 SceneMessages.entryScene(RoleStoreFacade.defaultRoleLocation().scene()));
     }
 
@@ -158,12 +177,16 @@ class ProtocolGoldenTest {
     }
 
     @Test
-    void view46CreateAndAddsMatchGolden() throws Exception {
+    void view46CreateAndAddsMatchSnapshots() throws Exception {
         assertArrayEquals(golden("view46_create.bin"),
                 SceneMessages.createView(new SceneMessages.ViewSpec(46, 70)));
-        assertArrayEquals(golden("view46_add_first.bin"),
-                SceneMessages.viewAdd(46, 1, List.of(SceneMessages.ViewProperty.ofString(7, "qinggong_1"))));
-        assertArrayEquals(golden("view46_add_last.bin"),
-                SceneMessages.viewAdd(46, 70, List.of(SceneMessages.ViewProperty.ofString(7, "QG_JH_gjskill_001"))));
+        List<SceneMessages.ViewProperty> first = new ArrayList<>(1);
+        Props.addView(first, "ConfigID", PropertyValues.Value.ofString("qinggong_1"));
+        SnapshotGoldens.assertOrRegen("view46_add_official_first.bin",
+                SceneMessages.viewAdd(46, 1, first));
+        List<SceneMessages.ViewProperty> last = new ArrayList<>(1);
+        Props.addView(last, "ConfigID", PropertyValues.Value.ofString("QG_JH_gjskill_001"));
+        SnapshotGoldens.assertOrRegen("view46_add_official_last.bin",
+                SceneMessages.viewAdd(46, 70, last));
     }
 }

@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.nineyin.protocol.Props;
 import com.nineyin.protocol.RecordMessages;
 import com.nineyin.protocol.SceneMessages;
 
@@ -18,9 +19,6 @@ import com.nineyin.protocol.SceneMessages;
 public final class StarterQingGong {
 
     public static final int VIEWPORT_QING_GONG = 46;
-    /** 视图对象用场景属性 ConfigID（7）；105 是仅商店的同名兼容字段，勿混用。 */
-    static final int QING_GONG_CONFIG_PROPERTY = 7;
-
     /** 当前客户端的基础轻功类目（配置 ID，客户端自行解析 QGDefine/QGSkill）。 */
     public static final List<String> STARTER_QING_GONG_IDS = List.of(
             "qinggong_1", "qinggong_2", "qinggong_3", "qinggong_4", "qinggong_5",
@@ -63,8 +61,10 @@ public final class StarterQingGong {
         frames.add(SceneMessages.createView(
                 new SceneMessages.ViewSpec(VIEWPORT_QING_GONG, viewItems.size())));
         for (int slot = 0; slot < viewItems.size(); slot++) {
-            frames.add(SceneMessages.viewAdd(VIEWPORT_QING_GONG, slot + 1,
-                    List.of(SceneMessages.ViewProperty.ofString(QING_GONG_CONFIG_PROPERTY, viewItems.get(slot)))));
+            List<SceneMessages.ViewProperty> properties = new ArrayList<>(1);
+            Props.addView(properties, "ConfigID",
+                    com.nineyin.protocol.PropertyValues.Value.ofString(viewItems.get(slot)));
+            frames.add(SceneMessages.viewAdd(VIEWPORT_QING_GONG, slot + 1, properties));
         }
         return frames;
     }

@@ -28,6 +28,8 @@ class GmHttpServerTest {
         GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
         snapshot.sessionId = 7;
         snapshot.name = "GM冒烟角色";
+        snapshot.faction = "force_yihua";
+        snapshot.sceneConfig = "ini\\scene\\school09_YiHuaGong";
         hub.attach(7, snapshot);
 
         try {
@@ -35,6 +37,10 @@ class GmHttpServerTest {
             assertTrue(status.contains("\"running\""), "status 应包含 running 字段: " + status);
             String sessions = get("http://127.0.0.1:" + port + "/api/sessions");
             assertTrue(sessions.contains("GM冒烟角色"), "sessions 应包含挂接的会话: " + sessions);
+            // 面板显示名字段必须存在（资源表缺失时回退原编码，值不在此断言）。
+            assertTrue(sessions.contains("\"factionName\""), "sessions 应含 factionName: " + sessions);
+            assertTrue(sessions.contains("\"scene\"") && sessions.contains("\"name\""),
+                    "sessions 的 scene 应含显示名: " + sessions);
 
             hub.detach(7);
             String afterDetach = get("http://127.0.0.1:" + port + "/api/sessions");

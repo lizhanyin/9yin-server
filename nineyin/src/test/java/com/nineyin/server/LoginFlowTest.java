@@ -264,9 +264,9 @@ class LoginFlowTest {
         return new String(frame, off, paraLen - 2, StandardCharsets.UTF_16LE);
     }
 
-    /** golden ready_chain_manifest.json → (opcode,length) 序列（Go 显式 0x09 帧序权威）。 */
+    /** ready_chain_manifest_official.json → (opcode,length) 序列（官方方言 0x09 帧序快照）。 */
     private static List<int[]> readyChainManifest() throws Exception {
-        try (InputStream in = LoginFlowTest.class.getResourceAsStream("/golden/ready_chain_manifest.json")) {
+        try (InputStream in = LoginFlowTest.class.getResourceAsStream("/golden/ready_chain_manifest_official.json")) {
             Objects.requireNonNull(in, "missing ready_chain_manifest.json");
             String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             java.util.regex.Matcher opcode = java.util.regex.Pattern
@@ -320,12 +320,12 @@ class LoginFlowTest {
         send(channel, choose);
         replies = drain(channel);
         int i = 0;
-        assertArrayEquals(golden("property_table.bin"), replies.get(i++));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("property_table_official.bin", replies.get(i++));
         assertArrayEquals(golden("record_table.bin"), replies.get(i++));
         for (int viewId : new int[]{121, 2, 123, 125, 122, 3, 124, 126}) {
             assertArrayEquals(golden("view_create_" + viewId + ".bin"), replies.get(i++));
         }
-        assertArrayEquals(golden("entry_scene.bin"), replies.get(i++));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("entry_scene_official.bin", replies.get(i++));
         assertEquals(0x0D, replies.get(i)[0] & 0xFF);
         int addObjectIndex = i++;
         assertEquals(0x1F, replies.get(i)[0] & 0xFF);
@@ -335,14 +335,36 @@ class LoginFlowTest {
         // 0x0D：objectID/ownerID/坐标首部与 golden 相同（faculty 为运行时钟，buff 字符串不同）。
         byte[] addObject = replies.get(addObjectIndex);
         byte[] goldenObject = golden("player_add_object_default.bin");
-        for (int offset = 0; offset < 0x3f; offset++) {
+        // 头部 0x00..0x3c 与 golden 相同；@0x3d 属性数官方方言不同（Pos* 等缺名剔除）。
+        for (int offset = 0; offset < 0x3d; offset++) {
             assertEquals(goldenObject[offset], addObject[offset], "0x0D header@" + Integer.toHexString(offset));
         }
 
         // 0x09 ready → 二期 starter 链：Go golden_dump_test.go ready 链（1748 帧）。
         send(channel, new byte[]{0x09});
         replies = drain(channel);
-        List<int[]> manifest = readyChainManifest();
+        List<int[]> manifest;
+        if (com.nineyin.protocol.SnapshotGoldens.regen()) {
+            // 再生模式：清单来自实际帧（文件尚不存在），随后写盘。
+            manifest = new ArrayList<>(replies.size());
+            for (byte[] frame : replies) {
+                manifest.add(new int[]{frame[0] & 0xFF, frame.length});
+            }
+            StringBuilder json = new StringBuilder("[");
+            for (int j = 0; j < manifest.size(); j++) {
+                if (j > 0) {
+                    json.append(",");
+                }
+                json.append(System.lineSeparator()).append("  {\"i\": ").append(j)
+                        .append(", \"opcode\": ").append(manifest.get(j)[0])
+                        .append(", \"length\": ").append(manifest.get(j)[1]).append("}");
+            }
+            json.append(System.lineSeparator()).append("]");
+            com.nineyin.protocol.SnapshotGoldens.assertOrRegenText("ready_chain_manifest_official.json",
+                    json.toString());
+        } else {
+            manifest = readyChainManifest();
+        }
         assertEquals(manifest.size(), replies.size());
         for (int j = 0; j < manifest.size(); j++) {
             assertEquals(manifest.get(j)[0], replies.get(j)[0] & 0xFF, "opcode@" + j);
@@ -357,16 +379,16 @@ class LoginFlowTest {
         // | 1699 View43 | 1700-1705 书 | 1706 View40 | 1707-1729 技能 | 1730-1744 快捷栏 | 1745 vital。
         assertArrayEquals(golden("qinggong_record_add.bin"), replies.get(0));
         assertArrayEquals(golden("view46_create.bin"), replies.get(18));
-        assertArrayEquals(golden("view46_add_first.bin"), replies.get(19));
-        assertArrayEquals(golden("view46_add_last.bin"), replies.get(88));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view46_add_official_first.bin", replies.get(19));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view46_add_official_last.bin", replies.get(88));
         assertArrayEquals(golden("task_accepted_add.bin"), replies.get(89));
         assertArrayEquals(golden("task_completed_row_zero.bin"), replies.get(104));
         assertArrayEquals(golden("task_completed_row_final.bin"), replies.get(1697));
         assertArrayEquals(golden("shortcut_sitcross_add.bin"), replies.get(1698));
         assertArrayEquals(golden("view43_create.bin"), replies.get(1699));
         assertArrayEquals(golden("view40_create.bin"), replies.get(1706));
-        assertArrayEquals(golden("view40_add_first.bin"), replies.get(1707));
-        assertArrayEquals(golden("view40_add_last.bin"), replies.get(1729));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view40_add_official_first.bin", replies.get(1707));
+        com.nineyin.protocol.SnapshotGoldens.assertOrRegen("view40_add_official_last.bin", replies.get(1729));
         assertArrayEquals(golden("skill_switch.bin"), replies.get(1746));
         // 两帧 vital 自一致（buff 时钟随运行时钟，不比 golden；fixture 书 fill 与新角色不同，书帧只比长度）。
         assertArrayEquals(replies.get(1745), replies.get(1747));

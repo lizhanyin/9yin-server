@@ -9,6 +9,7 @@ import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.util.CharsetUtil;
+import com.nineyin.protocol.SceneNames;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -154,6 +155,7 @@ public final class GmRequestHandler {
                 JSONObject scene = new JSONObject(true);
                 scene.put("config", s.sceneConfig);
                 scene.put("resource", s.sceneResource);
+                scene.put("name", sceneDisplayName(s.sceneConfig, s.sceneResource));
                 JSONObject pos = new JSONObject(true);
                 pos.put("x", s.x);
                 pos.put("y", s.y);
@@ -165,6 +167,7 @@ public final class GmRequestHandler {
                 o.put("remote", s.remote);
                 o.put("name", s.name);
                 o.put("faction", s.faction);
+                o.put("factionName", FactionNames.displayName(s.faction));
                 o.put("scene", scene);
                 o.put("position", pos);
                 o.put("silver", s.silver);
@@ -180,6 +183,15 @@ public final class GmRequestHandler {
             }
         }
         return arr;
+    }
+
+    /**
+     * GM 面板场景显示名：复用选角界面的 {@link SceneNames} 解析；其兜底值是客户端
+     * 本地化键（scene_name_NNN），对网页面板无意义，此时回退原配置码。
+     */
+    private static String sceneDisplayName(String config, String resource) {
+        String name = SceneNames.sceneDisplayName(config, resource);
+        return name != null && name.matches("scene_name_\\d+") ? (config == null ? "" : config) : name;
     }
 
     private HttpResponse handleCommand(String path, String body) {

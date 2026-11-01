@@ -6,8 +6,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.nineyin.protocol.PropertyIndex;
 import com.nineyin.protocol.PropertyValues;
+import com.nineyin.protocol.Props;
 import com.nineyin.protocol.SceneMessages;
 
 /**
@@ -261,41 +261,41 @@ public final class PlayerProgress {
             minMagicDefAdd = equipped.minMagicDefAdd;
         }
         List<PropertyValues.Indexed> properties = new ArrayList<>(40);
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_NEIGONG, "CurNeiGong", PropertyValues.Value.ofString(curNeiGong)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.FACULTY, "Faculty", PropertyValues.Value.ofInt32(faculty)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.FACULTY_STATE, "FacultyState", PropertyValues.Value.ofInt32(facultyState)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.FACULTY_STYLE, "FacultyStyle", PropertyValues.Value.ofInt32(facultyStyle)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.FACULTY_NAME, "FacultyName", PropertyValues.Value.ofString(facultyName)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_FILL_VALUE, "CurFillValue", PropertyValues.Value.ofInt32(fill)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.TOTAL_FILL_VALUE, "TotalFillValue", PropertyValues.Value.ofInt32(total)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_LEVEL, "CurLevel", PropertyValues.Value.ofInt32(level)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.FILL_SPEED, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.POWER_VALUE, "PowerValue", PropertyValues.Value.ofInt32(power)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_POWER_VALUE, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.SP, "SP", PropertyValues.Value.ofInt32(a.sp)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.STR, "Str", PropertyValues.Value.ofInt32(a.str)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.STA, "Sta", PropertyValues.Value.ofInt32(a.sta)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.DEX, "Dex", PropertyValues.Value.ofInt32(a.dex)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.ING, "Ing", PropertyValues.Value.ofInt32(a.ing)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.SPI, "Spi", PropertyValues.Value.ofInt32(a.spi)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MELEE_POWER, "MeleePower", PropertyValues.Value.ofInt32(a.meleePower)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAGIC_POWER, "MagicPower", PropertyValues.Value.ofInt32(a.magicPower)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.PHY_HIT, "PhyHit", PropertyValues.Value.ofInt32(a.phyHit)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAGIC_HIT, "MagicHit", PropertyValues.Value.ofInt32(a.magicHit)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.DODGE, "Dodge", PropertyValues.Value.ofInt32(a.dodge)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_PARRY, "MaxParry", PropertyValues.Value.ofInt32(a.maxParry)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.PHY_DEF, "PhyDef", PropertyValues.Value.ofInt32(a.phyDef)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.STI_DEF, "StiDef", PropertyValues.Value.ofInt32(a.stiDef)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.NEG_DEF, "NegDef", PropertyValues.Value.ofInt32(a.negDef)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAS_DEF, "MasDef", PropertyValues.Value.ofInt32(a.masDef)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.JUJ_DEF, "JujDef", PropertyValues.Value.ofInt32(a.jujDef)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MIN_MELEE_DAMAGE, "MinMeleeDamage", PropertyValues.Value.ofInt32(a.minMeleeDamage)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_MELEE_DAMAGE, "MaxMeleeDamage", PropertyValues.Value.ofInt32(a.maxMeleeDamage)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_HP_ADD, "MaxHPAdd", PropertyValues.Value.ofInt32(a.maxHpAdd)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_MP_ADD, "MaxMPAdd", PropertyValues.Value.ofInt32(a.maxMpAdd)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_PARRY_ADD, "MaxParryAdd", PropertyValues.Value.ofInt32(maxParryAdd)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MIN_MAGIC_DEF_ADD, "MinMagicDefAdd", PropertyValues.Value.ofInt32(minMagicDefAdd)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MAX_LEVEL, "MaxLevel", PropertyValues.Value.ofInt32(maxLevel)));
+        Props.add(properties, "CurNeiGong", PropertyValues.Value.ofString(curNeiGong));
+        Props.add(properties, "Faculty", PropertyValues.Value.ofInt32(faculty));
+        Props.add(properties, "FacultyState", PropertyValues.Value.ofInt32(facultyState));
+        Props.add(properties, "FacultyStyle", PropertyValues.Value.ofInt32(facultyStyle));
+        Props.add(properties, "FacultyName", PropertyValues.Value.ofString(facultyName));
+        Props.add(properties, "CurFillValue", PropertyValues.Value.ofInt32(fill));
+        Props.add(properties, "TotalFillValue", PropertyValues.Value.ofInt32(total));
+        Props.add(properties, "CurLevel", PropertyValues.Value.ofInt32(level));
+        Props.add(properties, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed));
+        Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
+        Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
+        Props.add(properties, "SP", PropertyValues.Value.ofInt32(a.sp));
+        Props.add(properties, "Str", PropertyValues.Value.ofInt32(a.str));
+        Props.add(properties, "Sta", PropertyValues.Value.ofInt32(a.sta));
+        Props.add(properties, "Dex", PropertyValues.Value.ofInt32(a.dex));
+        Props.add(properties, "Ing", PropertyValues.Value.ofInt32(a.ing));
+        Props.add(properties, "Spi", PropertyValues.Value.ofInt32(a.spi));
+        Props.add(properties, "MeleePower", PropertyValues.Value.ofInt32(a.meleePower));
+        Props.add(properties, "MagicPower", PropertyValues.Value.ofInt32(a.magicPower));
+        Props.add(properties, "PhyHit", PropertyValues.Value.ofInt32(a.phyHit));
+        Props.add(properties, "MagicHit", PropertyValues.Value.ofInt32(a.magicHit));
+        Props.add(properties, "Dodge", PropertyValues.Value.ofInt32(a.dodge));
+        Props.add(properties, "MaxParry", PropertyValues.Value.ofInt32(a.maxParry));
+        Props.add(properties, "PhyDef", PropertyValues.Value.ofInt32(a.phyDef));
+        Props.add(properties, "StiDef", PropertyValues.Value.ofInt32(a.stiDef));
+        Props.add(properties, "NegDef", PropertyValues.Value.ofInt32(a.negDef));
+        Props.add(properties, "MasDef", PropertyValues.Value.ofInt32(a.masDef));
+        Props.add(properties, "JujDef", PropertyValues.Value.ofInt32(a.jujDef));
+        Props.add(properties, "MinMeleeDamage", PropertyValues.Value.ofInt32(a.minMeleeDamage));
+        Props.add(properties, "MaxMeleeDamage", PropertyValues.Value.ofInt32(a.maxMeleeDamage));
+        Props.add(properties, "MaxHPAdd", PropertyValues.Value.ofInt32(a.maxHpAdd));
+        Props.add(properties, "MaxMPAdd", PropertyValues.Value.ofInt32(a.maxMpAdd));
+        Props.add(properties, "MaxParryAdd", PropertyValues.Value.ofInt32(maxParryAdd));
+        Props.add(properties, "MinMagicDefAdd", PropertyValues.Value.ofInt32(minMagicDefAdd));
+        Props.add(properties, "MaxLevel", PropertyValues.Value.ofInt32(maxLevel));
         return properties;
     }
 
@@ -328,16 +328,17 @@ public final class PlayerProgress {
             throw new IllegalArgumentException("invalid neigong slot " + slot);
         }
         Book book = books.get(slot - 1);
-        return SceneMessages.viewAdd(VIEWPORT_NEI_GONG, slot, List.of(
-                SceneMessages.ViewProperty.ofString(7, book.configId),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.STATIC_DATA, book.staticData),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.ITEM_TYPE, book.itemType),
-                SceneMessages.ViewProperty.ofInt(6, book.level),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.MAX_LEVEL, book.maxLevel),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.CUR_FILL_VALUE, book.fill),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.TOTAL_FILL_VALUE, book.total),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.POWER_VALUE, book.power),
-                SceneMessages.ViewProperty.ofInt(PropertyIndex.MAX_POWER_VALUE, book.maxPower)));
+        List<SceneMessages.ViewProperty> properties = new ArrayList<>(9);
+        Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(book.configId));
+        Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(book.staticData));
+        Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(book.itemType));
+        Props.addView(properties, "CurLevel", PropertyValues.Value.ofInt32(book.level));
+        Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(book.maxLevel));
+        Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(book.fill));
+        Props.addView(properties, "TotalFillValue", PropertyValues.Value.ofInt32(book.total));
+        Props.addView(properties, "PowerValue", PropertyValues.Value.ofInt32(book.power));
+        Props.addView(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(book.maxPower));
+        return SceneMessages.viewAdd(VIEWPORT_NEI_GONG, slot, properties);
     }
 
     public Snapshot snapshot() {

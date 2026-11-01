@@ -1,5 +1,6 @@
 package com.nineyin.protocol;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import com.nineyin.role.Roles;
@@ -62,36 +63,42 @@ public final class SceneMessages {
                 new ViewSpec(126, 16)); // VIEWPORT_TASK_ADDTOOLBOX
     }
 
-    /** 视图属性（0x15/0x18 共用），对齐 Go serverViewProperty。 */
+    /** 视图属性（0x15/0x18 共用）：官方表线型（byte/word/i32/f32/串）。 */
     public static final class ViewProperty {
         final int index;
         final Byte byte1;
+        final Integer word;
         final String text;
         final Integer int32;
         final Float real32;
 
-        private ViewProperty(int index, Byte byte1, String text, Integer int32, Float real32) {
+        private ViewProperty(int index, Byte byte1, Integer word, String text, Integer int32, Float real32) {
             this.index = index;
             this.byte1 = byte1;
+            this.word = word;
             this.text = text;
             this.int32 = int32;
             this.real32 = real32;
         }
 
         public static ViewProperty ofByte(int index, int value) {
-            return new ViewProperty(index, (byte) value, null, null, null);
+            return new ViewProperty(index, (byte) value, null, null, null, null);
+        }
+
+        public static ViewProperty ofWord(int index, int value) {
+            return new ViewProperty(index, null, value, null, null, null);
         }
 
         public static ViewProperty ofString(int index, String value) {
-            return new ViewProperty(index, null, value, null, null);
+            return new ViewProperty(index, null, null, value, null, null);
         }
 
         public static ViewProperty ofInt(int index, int value) {
-            return new ViewProperty(index, null, null, value, null);
+            return new ViewProperty(index, null, null, null, value, null);
         }
 
         public static ViewProperty ofFloat(int index, float value) {
-            return new ViewProperty(index, null, null, null, value);
+            return new ViewProperty(index, null, null, null, null, value);
         }
     }
 
@@ -107,6 +114,12 @@ public final class SceneMessages {
         return writer.toBytes();
     }
 
+    /** ServerViewRemove（0x19，5 字节）：视图内按 objectIndex 摘除一行。 */
+    public static byte[] viewRemove(int viewId, int objectIndex) {
+        PacketWriter writer = PacketWriter.ofCapacity(5);
+        return writer.writeU8(0x19).writeU16(viewId).writeU16(objectIndex).toBytes();
+    }
+
     /** Go serverViewAdd（0x18）：viewID + objectIndex + 归档。 */
     public static byte[] viewAdd(int viewId, int objectIndex, List<ViewProperty> properties) {
         PacketWriter writer = PacketWriter.ofCapacity(16 + properties.size() * 8);
@@ -119,6 +132,8 @@ public final class SceneMessages {
         for (ViewProperty property : properties) {
             if (property.byte1 != null) {
                 writer.writeU16(property.index).writeU8(property.byte1);
+            } else if (property.word != null) {
+                writer.writeU16(property.index).writeU16(property.word);
             } else if (property.text != null) {
                 byte[] data = property.text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 writer.writeU16(property.index).writeU32(data.length + 1)
@@ -138,9 +153,11 @@ public final class SceneMessages {
         PacketWriter writer = PacketWriter.ofCapacity(96);
         writer.writeU8(0x0B)
                 .writeU32(PLAYER_OBJECT_ID).writeU32(PLAYER_OWNER_ID).writeU32(1).writeU16(3);
-        writer.appendStringProperty(7, scene.config());
-        writer.appendStringProperty(8, scene.resource());
-        writer.writeU16(99).writeU32(1000000);
+        Props.append(writer, "ConfigID", PropertyValues.Value.ofString(scene.config()));
+        Props.append(writer, "Resource", PropertyValues.Value.ofString(scene.resource()));
+        // MaxVisuals 官方语义=画质档位（u16，官方真服发 100；capture-fxgame-op2 0x0B 实证），
+        // Go 复刻时按字面当"最大可见数"发 1000000 属私设，已纠正。
+        Props.append(writer, "MaxVisuals", PropertyValues.Value.ofInt32(100));
         return writer.toBytes();
     }
 
@@ -174,15 +191,16 @@ public final class SceneMessages {
         return writer.toBytes();
     }
 
-    /** 碎银单属性帧（GM/starter 用），对齐 Go sceneObjectStringProperty 同族。 */
+    /** 碎银单属性帧（GM/starter 用）：官方 CapitalType1 为 f64。 */
     public static byte[] silverUpdate(int objectId, int ownerId, int silver) {
-        return objectProperties(objectId, ownerId, 0, List.of(
-                PropertyValues.Indexed.of(111, "CapitalType1", PropertyValues.Value.ofInt32(silver))));
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "CapitalType1", PropertyValues.Value.ofInt32(silver));
+        return objectProperties(objectId, ownerId, 0, properties);
     }
 
-    /** 选角后 0x09/0x0A/0x15 序列的总入口便于测试断言。 */
+    /** 三期：0x09 协商表 = 官方 2424 项整表。 */
     public static byte[] propertyTableFrame() {
-        return visiblePropertyTable(NpcSchema.sceneVisiblePropertyFields());
+        return PropertyTable.propertyTableFrame();
     }
 
     public static byte[] recordTableFrame() {

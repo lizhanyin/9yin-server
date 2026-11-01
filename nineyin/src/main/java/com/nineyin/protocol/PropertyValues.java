@@ -24,6 +24,10 @@ public final class PropertyValues {
             return new Value(WireType.FLOAT32, 0, 0, 0, value, 0, null);
         }
 
+        public static Value ofFloat64(double value) {
+            return new Value(WireType.FLOAT64, 0, 0, 0, 0, Double.doubleToRawLongBits(value), null);
+        }
+
         public static Value ofString(String value) {
             return new Value(WireType.STRING, 0, 0, 0, 0, 0, value);
         }

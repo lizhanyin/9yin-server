@@ -52,18 +52,6 @@ public final class NpcMessages {
         return writer.toBytes();
     }
 
-    /** Go sceneObjectTransformProperties：PosiX/Y/Z/Orient 四 float 的紧凑坐标更新。 */
-    public static byte[] sceneObjectTransformProperties(int objectId, int ownerId,
-                                                        float x, float y, float z, float orient) {
-        PacketWriter writer = PacketWriter.ofCapacity(36);
-        writer.writeU8(0x10).writeU8(0).writeU32(objectId).writeU32(ownerId).writeU16(4);
-        writer.writeU16(9).writeF32(x);
-        writer.writeU16(10).writeF32(y);
-        writer.writeU16(11).writeF32(z);
-        writer.writeU16(12).writeF32(orient);
-        return writer.toBytes();
-    }
-
     /** Go sceneRemoveObject（0x0E，9 字节）。 */
     public static byte[] sceneRemoveObject(int objectId, int ownerId) {
         PacketWriter writer = PacketWriter.ofCapacity(9);

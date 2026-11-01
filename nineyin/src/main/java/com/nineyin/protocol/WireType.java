@@ -1,10 +1,11 @@
 package com.nineyin.protocol;
 
-/** 协商属性线型，对齐 Go clientdata.WireType。 */
+/** 协商属性线型，对齐 Go clientdata.WireType + 官方表 type=4 的 double。 */
 public enum WireType {
     BYTE(1),
     WORD(2),
     INT32(3),
+    FLOAT64(4),
     FLOAT32(5),
     STRING(7),
     WIDE_STRING(8),

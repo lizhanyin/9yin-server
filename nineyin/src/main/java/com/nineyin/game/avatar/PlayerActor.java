@@ -10,8 +10,8 @@ import java.util.Locale;
 import com.nineyin.game.avatar.neigong.PlayerProgress;
 import com.nineyin.protocol.NpcSchema;
 import com.nineyin.protocol.PacketWriter;
-import com.nineyin.protocol.PropertyIndex;
 import com.nineyin.protocol.PropertyValues;
+import com.nineyin.protocol.Props;
 import com.nineyin.protocol.SceneMessages;
 import com.nineyin.role.Roles;
 
@@ -26,6 +26,8 @@ public final class PlayerActor {
     public static final int PLAYER_OWNER_ID = 1;
     public static final int MAX_PLAYER_SP = 100;
     static final Duration INNER_POWER_BUFF_LEASE = Duration.ofHours(24);
+    /** Go innerPowerBuffSlot：内功 BuffStore 槽（BufferInfo4）。 */
+    static final int INNER_POWER_BUFF_SLOT = 4;
 
     static final class Motion {
         float moveSpeed = 25;
@@ -163,10 +165,10 @@ public final class PlayerActor {
     void syncEquippedNeiGongBuff(Instant now) {
         PlayerProgress.Book book = progress.book(progress.curNeiGong);
         if (book == null || book.buffId.isEmpty() || book.buffStaticData == 0 || book.buffLevel <= 0) {
-            buffs.remove(PropertyIndex.INNER_POWER_BUFF_SLOT);
+            buffs.remove(INNER_POWER_BUFF_SLOT);
             return;
         }
-        buffs.put(PropertyIndex.INNER_POWER_BUFF_SLOT, new ActiveBuff(
+        buffs.put(INNER_POWER_BUFF_SLOT, new ActiveBuff(
                 book.buffStaticData, now.plus(INNER_POWER_BUFF_LEASE), book.buffId, book.buffLevel));
     }
 
@@ -227,76 +229,71 @@ public final class PlayerActor {
         }
         int[] count = {0};
         Runnable bump = () -> count[0]++;
-        addByte(writer, 0, 2, bump);                    // Type = TYPE_PLAYER
-        addByte(writer, 1, visual.sex(), bump);
-        addString(writer, 2, visual.photo(), bump);
-        addInt(writer, 3, 0, bump);                     // Camp
-        addInt(writer, 4, 0, bump);                     // Race
-        addInt(writer, 5, 0, bump);                     // Job
-        addInt(writer, 6, 1, bump);                     // Level
-        addFloat(writer, 9, location.x(), bump);
-        addFloat(writer, 10, location.y(), bump);
-        addFloat(writer, 11, location.z(), bump);
-        addFloat(writer, 12, location.orient(), bump);
-        addString(writer, 13, visual.hair(), bump);
-        addString(writer, 14, visual.face(), bump);
-        addString(writer, 15, visual.cloth(), bump);
-        addString(writer, 16, visual.pants(), bump);
-        addString(writer, 17, visual.shoes(), bump);
-        addString(writer, 18, visual.actionSet(), bump);
-        addString(writer, 19, "stand", bump);
-        addInt(writer, 20, 0, bump);
-        addByte(writer, 21, effectiveLogicState(state), bump);
-        addFloat(writer, 22, 8.0f, bump);
-        addFloat(writer, 23, currentMotion.moveSpeed, bump);
-        addFloat(writer, 24, 7.5f, bump);
-        addFloat(writer, 25, currentMotion.runSpeed, bump);
-        addInt(writer, 26, state.speedRatio(), bump);
-        addByte(writer, 27, 0, bump);
-        addInt(writer, 28, ratio(state.hp(), state.maxHp()), bump);
-        addInt(writer, 29, ratio(state.mp(), state.maxMp()), bump);
-        addInt(writer, 30, state.baseMaxHp(), bump);
-        addInt(writer, 31, state.baseMaxMp(), bump);
-        addInt(writer, 32, state.hp(), bump);
-        addInt(writer, 33, state.mp(), bump);
-        addInt(writer, 112, state.hitHp(), bump);
-        addInt(writer, 113, ratio(state.hitHp(), state.maxHp()), bump);
-        addInt(writer, 114, state.qingGongPoint(), bump);
-        addInt(writer, 115, state.maxQingGongPoint(), bump);
-        addInt(writer, 116, state.maxQingGongPointAdd(), bump);
-        addInt(writer, PropertyIndex.NEIGONG_PK_STATUS, 0, bump);
-        addInt(writer, PropertyIndex.DEAD, state.hp() <= 0 ? 1 : 0, bump);
-        addInt(writer, PropertyIndex.CANT_USE_SKILL, 0, bump);
-        addString(writer, PropertyIndex.CUR_SKILL_ID, "", bump);
-        addString(writer, PropertyIndex.CUR_SKILL_EFFECT_ID, "", bump);
-        addInt(writer, PropertyIndex.CUR_SKILL_LEVEL, 0, bump);
-        writer.writeU16(PropertyIndex.CUR_SKILL_TARGET);
-        writer.writeU64(0);
-        bump.run();
-        addInt(writer, PropertyIndex.MODIFY_SKILL_LOCK_TIME, 5000, bump);
-        addString(writer, NpcSchema.BUFFER_LIST_PROPERTY_INDEX, bufferListString(now), bump);
+        prop(writer, "Type", PropertyValues.Value.ofByte(2), bump);                    // Type = TYPE_PLAYER
+        prop(writer, "Sex", PropertyValues.Value.ofByte(visual.sex()), bump);
+        prop(writer, "Photo", PropertyValues.Value.ofString(visual.photo()), bump);
+        prop(writer, "Camp", PropertyValues.Value.ofInt32(0), bump);                     // Camp
+        prop(writer, "Race", PropertyValues.Value.ofInt32(0), bump);                     // Race
+        prop(writer, "Job", PropertyValues.Value.ofInt32(0), bump);                     // Job
+        prop(writer, "Level", PropertyValues.Value.ofInt32(1), bump);                     // Level
+        prop(writer, "PosiX", PropertyValues.Value.ofFloat32(location.x()), bump);
+        prop(writer, "PosiY", PropertyValues.Value.ofFloat32(location.y()), bump);
+        prop(writer, "PosiZ", PropertyValues.Value.ofFloat32(location.z()), bump);
+        prop(writer, "Orient", PropertyValues.Value.ofFloat32(location.orient()), bump);
+        prop(writer, "Hair", PropertyValues.Value.ofString(visual.hair()), bump);
+        prop(writer, "Face", PropertyValues.Value.ofString(visual.face()), bump);
+        prop(writer, "Cloth", PropertyValues.Value.ofString(visual.cloth()), bump);
+        prop(writer, "Pants", PropertyValues.Value.ofString(visual.pants()), bump);
+        prop(writer, "Shoes", PropertyValues.Value.ofString(visual.shoes()), bump);
+        prop(writer, "ActionSet", PropertyValues.Value.ofString(visual.actionSet()), bump);
+        prop(writer, "State", PropertyValues.Value.ofString("stand"), bump);
+        prop(writer, "FloatingState", PropertyValues.Value.ofInt32(0), bump);
+        prop(writer, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)), bump);
+        prop(writer, "JumpSpeed", PropertyValues.Value.ofFloat32(8.0f), bump);
+        prop(writer, "MoveSpeed", PropertyValues.Value.ofFloat32(currentMotion.moveSpeed), bump);
+        prop(writer, "WalkSpeed", PropertyValues.Value.ofFloat32(7.5f), bump);
+        prop(writer, "RunSpeed", PropertyValues.Value.ofFloat32(currentMotion.runSpeed), bump);
+        prop(writer, "SpeedRatio", PropertyValues.Value.ofInt32(state.speedRatio()), bump);
+        prop(writer, "CantJump", PropertyValues.Value.ofByte(0), bump);
+        prop(writer, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())), bump);
+        prop(writer, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())), bump);
+        prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()), bump);
+        prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()), bump);
+        prop(writer, "HP", PropertyValues.Value.ofInt32(state.hp()), bump);
+        prop(writer, "MP", PropertyValues.Value.ofInt32(state.mp()), bump);
+        prop(writer, "HitHP", PropertyValues.Value.ofInt32(state.hitHp()), bump);
+        prop(writer, "HitHPRatio", PropertyValues.Value.ofInt32(ratio(state.hitHp(), state.maxHp())), bump);
+        prop(writer, "QingGongPoint", PropertyValues.Value.ofInt32(state.qingGongPoint()), bump);
+        prop(writer, "MaxQingGongPoint", PropertyValues.Value.ofInt32(state.maxQingGongPoint()), bump);
+        prop(writer, "MaxQingGongPointAdd", PropertyValues.Value.ofInt32(state.maxQingGongPointAdd()), bump);
+        prop(writer, "NeigongPKStatus", PropertyValues.Value.ofInt32(0), bump);
+        prop(writer, "Dead", PropertyValues.Value.ofInt32(state.hp() <= 0 ? 1 : 0), bump);
+        prop(writer, "CantUseSkill", PropertyValues.Value.ofInt32(0), bump);
+        prop(writer, "CurSkillID", PropertyValues.Value.ofString(""), bump);
+        prop(writer, "CurSkillEffectID", PropertyValues.Value.ofString(""), bump);
+        prop(writer, "CurSkillLevel", PropertyValues.Value.ofInt32(0), bump);
+        prop(writer, "CurSkillTarget", PropertyValues.Value.ofObject(0), bump);
+        prop(writer, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000), bump);
+        prop(writer, "BufferListStr", PropertyValues.Value.ofString(bufferListString(now)), bump);
         for (PropertyValues.Indexed property : baseMotionProperties(currentMotion)) {
-            writer.writeU16(property.int16Index()).writeF32(property.value().f32());
+            writer.appendIndexed(property);
             bump.run();
         }
         for (PropertyValues.Indexed property : qinggongMotionProperties()) {
-            writer.writeU16(property.int16Index()).writeF32(property.value().f32());
+            writer.appendIndexed(property);
             bump.run();
         }
-        addInt(writer, 111, silver, bump); // CapitalType1 碎银
+        prop(writer, "CapitalType1", PropertyValues.Value.ofInt32(silver), bump); // CapitalType1 碎银
         for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
-            addString(writer, bufferInfoPropertyIndex(slot), bufferInfo(slot, now), bump);
+            prop(writer, NpcSchema.bufferInfoPropertyName(slot), PropertyValues.Value.ofString(bufferInfo(slot, now)), bump);
         }
         for (PropertyValues.Indexed property : progress.properties()) {
             writer.appendIndexed(property);
             bump.run();
         }
-        addString(writer, 35, visual.hair(), bump);
-        writer.appendWideStringProperty(36, state.name());
-        bump.run();
-        writer.writeU16(100);
-        writer.writeU64(0);
-        bump.run();
+        prop(writer, "Hat", PropertyValues.Value.ofString(visual.hair()), bump);
+        prop(writer, "Name", PropertyValues.Value.ofWideString(state.name()), bump);
+        prop(writer, "LastObject", PropertyValues.Value.ofObject(0), bump);
         byte[] frame = writer.toBytes();
         // count 回填到 0x3d
         frame[0x3d] = (byte) count[0];
@@ -324,43 +321,42 @@ public final class PlayerActor {
         int hpRecovery = sitcrossRecoveryPerSecond(state.maxHp());
         int mpRecovery = sitcrossRecoveryPerSecond(state.maxMp());
         List<PropertyValues.Indexed> properties = new ArrayList<>(60);
-        properties.add(PropertyValues.Indexed.of(21, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state))));
-        properties.add(PropertyValues.Indexed.of(28, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp()))));
-        properties.add(PropertyValues.Indexed.of(29, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp()))));
-        properties.add(PropertyValues.Indexed.of(30, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp())));
-        properties.add(PropertyValues.Indexed.of(31, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp())));
-        properties.add(PropertyValues.Indexed.of(32, "HP", PropertyValues.Value.ofInt32(state.hp())));
-        properties.add(PropertyValues.Indexed.of(33, "MP", PropertyValues.Value.ofInt32(state.mp())));
-        properties.add(PropertyValues.Indexed.of(26, "SpeedRatio", PropertyValues.Value.ofInt32(state.speedRatio())));
-        properties.add(PropertyValues.Indexed.of(112, "HitHP", PropertyValues.Value.ofInt32(state.hitHp())));
-        properties.add(PropertyValues.Indexed.of(113, "HitHPRatio", PropertyValues.Value.ofInt32(ratio(state.hitHp(), state.maxHp()))));
-        properties.add(PropertyValues.Indexed.of(114, "QingGongPoint", PropertyValues.Value.ofInt32(state.qingGongPoint())));
-        properties.add(PropertyValues.Indexed.of(115, "MaxQingGongPoint", PropertyValues.Value.ofInt32(state.maxQingGongPoint())));
-        properties.add(PropertyValues.Indexed.of(116, "MaxQingGongPointAdd", PropertyValues.Value.ofInt32(state.maxQingGongPointAdd())));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.NEIGONG_PK_STATUS, "NeigongPKStatus", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.DEAD, "Dead", PropertyValues.Value.ofInt32(state.hp() <= 0 ? 1 : 0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CANT_USE_SKILL, "CantUseSkill", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_SKILL_ID, "CurSkillID", PropertyValues.Value.ofString("")));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_SKILL_EFFECT_ID, "CurSkillEffectID", PropertyValues.Value.ofString("")));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_SKILL_LEVEL, "CurSkillLevel", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.CUR_SKILL_TARGET, "CurSkillTarget", PropertyValues.Value.ofObject(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MODIFY_SKILL_LOCK_TIME, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.HP_HEART_SPEED, "HPHeartSpeed", PropertyValues.Value.ofInt32(1000)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.HP_HEART_SPEED_ADD, "HPHeartSpeedAdd", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MP_HEART_SPEED, "MPHeartSpeed", PropertyValues.Value.ofInt32(1000)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MP_HEART_SPEED_ADD, "MPHeartSpeedAdd", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.HP_UP_SPEED, "HPUpSpeed", PropertyValues.Value.ofInt32(hpRecovery)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.HP_UP_SPEED_ADD, "HPUpSpeedAdd", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MP_UP_SPEED, "MPUpSpeed", PropertyValues.Value.ofInt32(mpRecovery)));
-        properties.add(PropertyValues.Indexed.of(PropertyIndex.MP_UP_SPEED_ADD, "MPUpSpeedAdd", PropertyValues.Value.ofInt32(0)));
-        properties.add(PropertyValues.Indexed.of(36, "Name", PropertyValues.Value.ofWideString(state.name())));
-        properties.add(PropertyValues.Indexed.of(111, "CapitalType1", PropertyValues.Value.ofInt32(silver)));
-        properties.add(PropertyValues.Indexed.of(NpcSchema.BUFFER_LIST_PROPERTY_INDEX, "BufferListStr",
-                PropertyValues.Value.ofString(bufferListString(now))));
+        Props.add(properties, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)));
+        Props.add(properties, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())));
+        Props.add(properties, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())));
+        Props.add(properties, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()));
+        Props.add(properties, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()));
+        Props.add(properties, "HP", PropertyValues.Value.ofInt32(state.hp()));
+        Props.add(properties, "MP", PropertyValues.Value.ofInt32(state.mp()));
+        Props.add(properties, "SpeedRatio", PropertyValues.Value.ofInt32(state.speedRatio()));
+        Props.add(properties, "HitHP", PropertyValues.Value.ofInt32(state.hitHp()));
+        Props.add(properties, "HitHPRatio", PropertyValues.Value.ofInt32(ratio(state.hitHp(), state.maxHp())));
+        Props.add(properties, "QingGongPoint", PropertyValues.Value.ofInt32(state.qingGongPoint()));
+        Props.add(properties, "MaxQingGongPoint", PropertyValues.Value.ofInt32(state.maxQingGongPoint()));
+        Props.add(properties, "MaxQingGongPointAdd", PropertyValues.Value.ofInt32(state.maxQingGongPointAdd()));
+        Props.add(properties, "NeigongPKStatus", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "Dead", PropertyValues.Value.ofInt32(state.hp() <= 0 ? 1 : 0));
+        Props.add(properties, "CantUseSkill", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "CurSkillID", PropertyValues.Value.ofString(""));
+        Props.add(properties, "CurSkillEffectID", PropertyValues.Value.ofString(""));
+        Props.add(properties, "CurSkillLevel", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "CurSkillTarget", PropertyValues.Value.ofObject(0));
+        Props.add(properties, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000));
+        Props.add(properties, "HPHeartSpeed", PropertyValues.Value.ofInt32(1000));
+        Props.add(properties, "HPHeartSpeedAdd", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "MPHeartSpeed", PropertyValues.Value.ofInt32(1000));
+        Props.add(properties, "MPHeartSpeedAdd", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "HPUpSpeed", PropertyValues.Value.ofInt32(hpRecovery));
+        Props.add(properties, "HPUpSpeedAdd", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "MPUpSpeed", PropertyValues.Value.ofInt32(mpRecovery));
+        Props.add(properties, "MPUpSpeedAdd", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "Name", PropertyValues.Value.ofWideString(state.name()));
+        Props.add(properties, "CapitalType1", PropertyValues.Value.ofInt32(silver));
+        Props.add(properties, "BufferListStr", PropertyValues.Value.ofString(bufferListString(now)));
         properties.addAll(factionProperties(faction));
         for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
-            properties.add(PropertyValues.Indexed.of(bufferInfoPropertyIndex(slot),
-                    NpcSchema.bufferInfoPropertyName(slot), PropertyValues.Value.ofString(bufferInfo(slot, now))));
+            Props.add(properties, NpcSchema.bufferInfoPropertyName(slot),
+                    PropertyValues.Value.ofString(bufferInfo(slot, now)));
         }
         properties.addAll(baseMotionProperties(motionSnapshot()));
         properties.addAll(qinggongMotionProperties());
@@ -380,18 +376,20 @@ public final class PlayerActor {
             school = "";
             newSchool = faction;
         }
-        return List.of(
-                PropertyValues.Indexed.of(53, "School", PropertyValues.Value.ofString(school)),
-                PropertyValues.Indexed.of(PropertyIndex.FORCE, "Force", PropertyValues.Value.ofString(force)),
-                PropertyValues.Indexed.of(PropertyIndex.NEW_SCHOOL, "NewSchool", PropertyValues.Value.ofString(newSchool)));
+        List<PropertyValues.Indexed> properties = new ArrayList<>(3);
+        Props.add(properties, "School", PropertyValues.Value.ofString(school));
+        Props.add(properties, "Force", PropertyValues.Value.ofString(force));
+        Props.add(properties, "NewSchool", PropertyValues.Value.ofString(newSchool));
+        return properties;
     }
 
     /** Go baseMotionProperties：Gravity/GravityAdd/DropHeightPub。 */
     static List<PropertyValues.Indexed> baseMotionProperties(Motion motion) {
-        return List.of(
-                PropertyValues.Indexed.of(168, "Gravity", PropertyValues.Value.ofFloat32(motion.gravity)),
-                PropertyValues.Indexed.of(169, "GravityAdd", PropertyValues.Value.ofFloat32(0)),
-                PropertyValues.Indexed.of(170, "DropHeightPub", PropertyValues.Value.ofFloat32(100000)));
+        List<PropertyValues.Indexed> properties = new ArrayList<>(3);
+        Props.add(properties, "Gravity", PropertyValues.Value.ofFloat32(motion.gravity));
+        Props.add(properties, "GravityAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "DropHeightPub", PropertyValues.Value.ofFloat32(100000));
+        return properties;
     }
 
     /** Go qinggongMotionProperties：117..142 的速度/距离族（值取自 QGDefine Para）。 */
@@ -406,37 +404,33 @@ public final class PlayerActor {
         float landRushDist = 6.5f;    // qinggong_7 Para2
         float climbSpeed = 7.5f;      // qinggong_11 Para1
         List<PropertyValues.Indexed> properties = new ArrayList<>(26);
-        properties.add(floatProp(117, "RunSpeedAdd", 0));
-        properties.add(floatProp(118, "JumpSpeedAdd", 0));
-        properties.add(floatProp(119, "DriftSpeed", waterSpeed));
-        properties.add(floatProp(120, "DriftSpeedAdd", 0));
-        properties.add(floatProp(121, "DriftJumpSpeed", waterJumpSpeed));
-        properties.add(floatProp(122, "DriftJumpSpeedAdd", 0));
-        properties.add(floatProp(123, "SndJumpSpeed", secondJumpSpeed));
-        properties.add(floatProp(124, "SndJumpSpeedAdd", 0));
-        properties.add(floatProp(125, "ThdJumpSpeed", thirdJumpSpeed));
-        properties.add(floatProp(126, "ThdJumpSpeedAdd", 0));
-        properties.add(floatProp(127, "AirRushSpeed", airRushSpeed));
-        properties.add(floatProp(128, "AirRushSpeedAdd", 0));
-        properties.add(floatProp(129, "AirRushDist", airRushDist));
-        properties.add(floatProp(130, "AirRushDistAdd", 0));
-        properties.add(floatProp(131, "LandRushSpeed", landRushSpeed));
-        properties.add(floatProp(132, "LandRushSpeedAdd", 0));
-        properties.add(floatProp(133, "LandRushDist", landRushDist));
-        properties.add(floatProp(134, "LandRushDistAdd", 0));
-        properties.add(floatProp(135, "ClimbSpeed", climbSpeed));
-        properties.add(floatProp(136, "ClimbSpeedAdd", 0));
-        properties.add(floatProp(137, "GRushRange", 5.0f));
-        properties.add(floatProp(138, "GRushRangeAdd", 1.5f));
-        properties.add(floatProp(139, "ARushRange", 8.0f));
-        properties.add(floatProp(140, "ARushRangeAdd", 6.5f));
-        properties.add(floatProp(141, "WRushRange", 8.0f));
-        properties.add(floatProp(142, "WRushRangeAdd", 6.5f));
+        Props.add(properties, "RunSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "JumpSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "DriftSpeed", PropertyValues.Value.ofFloat32(waterSpeed));
+        Props.add(properties, "DriftSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "DriftJumpSpeed", PropertyValues.Value.ofFloat32(waterJumpSpeed));
+        Props.add(properties, "DriftJumpSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "SndJumpSpeed", PropertyValues.Value.ofFloat32(secondJumpSpeed));
+        Props.add(properties, "SndJumpSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "ThdJumpSpeed", PropertyValues.Value.ofFloat32(thirdJumpSpeed));
+        Props.add(properties, "ThdJumpSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "AirRushSpeed", PropertyValues.Value.ofFloat32(airRushSpeed));
+        Props.add(properties, "AirRushSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "AirRushDist", PropertyValues.Value.ofFloat32(airRushDist));
+        Props.add(properties, "AirRushDistAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "LandRushSpeed", PropertyValues.Value.ofFloat32(landRushSpeed));
+        Props.add(properties, "LandRushSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "LandRushDist", PropertyValues.Value.ofFloat32(landRushDist));
+        Props.add(properties, "LandRushDistAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "ClimbSpeed", PropertyValues.Value.ofFloat32(climbSpeed));
+        Props.add(properties, "ClimbSpeedAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "GRushRange", PropertyValues.Value.ofFloat32(5.0f));
+        Props.add(properties, "GRushRangeAdd", PropertyValues.Value.ofFloat32(1.5f));
+        Props.add(properties, "ARushRange", PropertyValues.Value.ofFloat32(8.0f));
+        Props.add(properties, "ARushRangeAdd", PropertyValues.Value.ofFloat32(6.5f));
+        Props.add(properties, "WRushRange", PropertyValues.Value.ofFloat32(8.0f));
+        Props.add(properties, "WRushRangeAdd", PropertyValues.Value.ofFloat32(6.5f));
         return properties;
-    }
-
-    private static PropertyValues.Indexed floatProp(int index, String name, float value) {
-        return PropertyValues.Indexed.of(index, name, PropertyValues.Value.ofFloat32(value));
     }
 
     private static int sitcrossRecoveryPerSecond(int maximum) {
@@ -446,23 +440,12 @@ public final class PlayerActor {
         return (maximum + 10 - 1) / 10;
     }
 
-    private static void addByte(PacketWriter writer, int index, int value, Runnable bump) {
-        writer.writeU16(index).writeU8(value);
-        bump.run();
-    }
-
-    private static void addInt(PacketWriter writer, int index, int value, Runnable bump) {
-        writer.writeU16(index).writeU32(value & 0xFFFFFFFFL);
-        bump.run();
-    }
-
-    private static void addFloat(PacketWriter writer, int index, float value, Runnable bump) {
-        writer.writeU16(index).writeF32(value);
-        bump.run();
-    }
-
-    private static void addString(PacketWriter writer, int index, String value, Runnable bump) {
-        writer.appendStringProperty(index, value);
-        bump.run();
+    /** 官方方言属性写入：索引/线型按名查表，缺名跳过（不计数）。 */
+    private static boolean prop(PacketWriter writer, String name, PropertyValues.Value value, Runnable bump) {
+        if (Props.append(writer, name, value)) {
+            bump.run();
+            return true;
+        }
+        return false;
     }
 }

@@ -239,11 +239,12 @@ class SceneLifecycleTest {
         int replayTasks = env.scheduler().tasks.size(); // 物化重放批次（5）
         env.world().moveNpc(2, new WorldScene.Transform(21.5f, 0, 20, 0), 1500);
         List<byte[]> frames = env.drain();
-        // 0x20 ServerMoving + 0x10 紧凑坐标更新（revision 变化）。
+        // 0x20 ServerMoving + 0x1F 权威坐标（官方表无 Pos* 属性，更新走 0x1F）。
         assertEquals(2, frames.size());
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
         assertEquals(45, frames.get(0).length);
-        assertEquals(0x10, frames.get(1)[0] & 0xFF);
+        assertEquals(0x1F, frames.get(1)[0] & 0xFF);
+        assertEquals(25, frames.get(1).length);
         assertEquals(2, u32(frames.get(0), 1));
         // 到点 0x1F 定时任务已登记（在重放批次之后）。
         assertEquals(replayTasks + 1, env.scheduler().tasks.size());

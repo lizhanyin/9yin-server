@@ -13,9 +13,10 @@ import java.nio.charset.StandardCharsets;
  */
 public final class CustomMessages {
 
-    /** 与 Go serverCustomValue 一致：至多一种值非空。 */
+    /** 与 Go serverCustomValue 一致：至多一种值非空（wideText 为 F 盘 exe 扩展的 tag7）。 */
     public static final class Value {
         final String text;
+        final String wideText;
         final Integer int32;
         final Long int64;
         final Float float32;
@@ -24,12 +25,18 @@ public final class CustomMessages {
         final long ownerId;
 
         private Value(String text, Integer int32, Long int64, Float float32, long objectId, long ownerId) {
-            this(text, int32, int64, float32, null, objectId, ownerId);
+            this(text, null, int32, int64, float32, null, objectId, ownerId);
         }
 
         private Value(String text, Integer int32, Long int64, Float float32,
                       Double float64, long objectId, long ownerId) {
+            this(text, null, int32, int64, float32, float64, objectId, ownerId);
+        }
+
+        private Value(String text, String wideText, Integer int32, Long int64, Float float32,
+                      Double float64, long objectId, long ownerId) {
             this.text = text;
+            this.wideText = wideText;
             this.int32 = int32;
             this.int64 = int64;
             this.float32 = float32;
@@ -68,6 +75,11 @@ public final class CustomMessages {
 
         public static Value ofString(String value) {
             return new Value(value, null, null, null, 0, 0);
+        }
+
+        /** F 盘 exe 的 tag7 宽字符串（msg169 双角色名等），对齐老分支 appendUcs2。 */
+        public static Value ofWideString(String value) {
+            return new Value(null, value, null, null, null, null, 0, 0);
         }
 
         public static Value ofInt32(int value) {
@@ -115,7 +127,11 @@ public final class CustomMessages {
         PacketWriter writer = PacketWriter.ofCapacity(64);
         writer.writeU8(opcode).writeU16(args.length);
         for (Value value : args) {
-            if (value.text != null) {
+            if (value.wideText != null) {
+                // tag7 宽字符串：u32(字节数+2) + UTF-16LE 文本 + u16 NUL（F 盘抓包 msg169 双名实证）。
+                byte[] data = value.wideText.getBytes(StandardCharsets.UTF_16LE);
+                writer.writeU8(7).writeU32(data.length + 2).writeBytes(data).writeU16(0);
+            } else if (value.text != null) {
                 byte[] data = value.text.getBytes(StandardCharsets.UTF_8);
                 writer.writeU8(6).writeU32(data.length + 1).writeBytes(data).writeU8(0);
             } else if (value.int32 != null) {

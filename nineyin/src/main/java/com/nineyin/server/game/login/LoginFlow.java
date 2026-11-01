@@ -27,6 +27,7 @@ import com.nineyin.server.game.starter.StarterQingGong;
 import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmHub;
 import com.nineyin.server.protocol.CustomC2S;
+import com.nineyin.server.protocol.CustomMessages;
 import com.nineyin.server.protocol.LoginMessages;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
@@ -393,11 +394,28 @@ public final class LoginFlow {
         session.facultyTicker = scheduler.scheduleWithFixedDelay(() -> {
             try {
                 drainGmCommands(connection, session);
+                connection.writeFrame(timeSyncFrame(clock.instant()));
                 facultyTickOnce(connection, session);
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
         }, 1, 1, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    /**
+     * 0x1E msg294 服务端时间广播（F 盘抓包 1s 一帧实证，连续帧 +1000/+1 递增）：
+     * [服务器运行毫秒 i32, 时钟毫秒 i64, unix 秒 i64, 游戏日 f64]。
+     * v1 对齐 F 的"服务器启动后 ms"口径（JVM uptime 截 i32，回绕无害）；v2 用挂钟毫秒
+     * （F 为系统 uptime ms，语义未完全钉死，挂钟对客户端校时更有用）；v3 unix 秒；
+     * v4 F 恒 46327.464（游戏日，语义未钉），先常数跟齐。
+     */
+    public static byte[] timeSyncFrame(Instant now) {
+        long uptimeMs = java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime();
+        return CustomMessages.customIntMessage(294,
+                CustomMessages.Value.ofInt32((int) uptimeMs),
+                CustomMessages.Value.ofInt64(now.toEpochMilli()),
+                CustomMessages.Value.ofInt64(now.getEpochSecond()),
+                CustomMessages.Value.ofFloat64(46327.464));
     }
 
     // -------------------------------------------------------------------- GM 队列
@@ -855,9 +873,69 @@ public final class LoginFlow {
             case 200, 201, 240, 211, 216, 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
+            case 54 -> handleManualParry(connection, session, custom);
             default -> log.info("session={} unrecognized custom msgId={} via {}",
                     session.machine.id(), messageId, route);
         }
+    }
+
+    /**
+     * 54 右键格挡（F 盘抓包 + 老分支 handleManualParry，2026-10-31）：int64 参数
+     * 0=按下、1=松开，按值幂等落态；状态未变（客户端 500ms 重发、松开连发 2-3 个 1）
+     * 直接吞掉不回帧——状态变化才回两帧，这是客户端格挡动画的触发条件：
+     * ① 0x1E msg169 BuffInParry 九值帧；② 0x10 InParry/InManualParry + BufferInfo11。
+     * 游离 release（服务端本就非格挡态）必须回一帧确认：跨服/重连客户端带着旧会话
+     * "已格挡"认知时只发 1 等确认、永不再发按下(0)——老分支 2026-10-31 晚实抓
+     * 141 个 release/0 个 engage 的死锁根因。F 盘实证 78 发按值去重=50 沿=50 回帧。
+     */
+    private void handleManualParry(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null) {
+            log.info("manual parry before scene player exists");
+            return;
+        }
+        if (custom.values.size() < 2) {
+            log.info("manual parry arg missing, keep parrying={}", session.player.parrying());
+            return;
+        }
+        CustomC2S.Value state = custom.values.get(1);
+        if (state == null || state.exactInt32() != 0 && state.exactInt32() != 1) {
+            log.info("manual parry arg invalid, keep parrying={}", session.player.parrying());
+            return;
+        }
+        PlayerActor actor = session.player;
+        boolean engage = state.exactInt32() == 0;
+        long now = clock.instant().toEpochMilli();
+        if (actor.parrying() == engage) {
+            if (!engage) {
+                sendParryStateFrames(connection, actor, false, "", clock.instant());
+                log.info("ack stray manual parry release (client state resync)");
+            }
+            return;
+        }
+        Instant nowInstant = clock.instant();
+        String buffInfo = engage ? actor.engageParryBuff(nowInstant) : actor.releaseParryBuff();
+        sendParryStateFrames(connection, actor, engage, buffInfo, nowInstant);
+        log.info("publish manual parry state={} (arg={})", actor.parrying(), state.exactInt32());
+    }
+
+    /**
+     * 格挡状态两帧：① 0x1E msg169 BuffInParry（end 标志 + 窄串 + 双 ObjRef + 双宽串
+     * 角色名 + int64 毫秒 + 0，F 盘抓包 84B 九值帧逐字段对齐）② 0x10 属性帧
+     * InParry/InManualParry + BufferInfo11。
+     */
+    private void sendParryStateFrames(Connection connection, PlayerActor actor,
+                                      boolean engage, String buffInfo, Instant now) {
+        String name = actor.snapshotName();
+        connection.writeFrame(CustomMessages.customIntMessage(169,
+                CustomMessages.Value.ofInt32(engage ? 0 : 1),
+                CustomMessages.Value.ofString("BuffInParry"),
+                CustomMessages.Value.ofObject(PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID),
+                CustomMessages.Value.ofObject(PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID),
+                CustomMessages.Value.ofWideString(name),
+                CustomMessages.Value.ofWideString(name),
+                CustomMessages.Value.ofInt64(now.toEpochMilli()),
+                CustomMessages.Value.ofInt32(0)));
+        connection.writeFrame(actor.parryStateFrame(engage, buffInfo));
     }
 
     /** Go 1s ticker：整分钟结算变化时 [0x18 书帧, 0x10 vital] + 持久化；静默秒零帧。 */

@@ -51,10 +51,17 @@ public final class PlayerActor {
     private String faction;
     private final Motion motion = new Motion();
     private final java.util.Map<Integer, ActiveBuff> buffs = new java.util.HashMap<>();
+    /** 右键格挡：54 按值幂等落态（0=按下/1=松开），状态变化才回帧（F 盘抓包 78 发→50 沿）。 */
+    private volatile boolean parrying;
     final PlayerProgress progress;
     /** 面板实时状态（身份块字段 + 装备词缀累积层，四期）。 */
     private final PanelState panel = new PanelState();
     private int logicStateOverride = -1;
+
+    /** 右键格挡 BuffInParry：buff 槽 11（BufferInfo11@639）、StaticData 4558、24h（老分支+参考 setPlayerBlock）。 */
+    public static final int PARRY_BUFF_SLOT = 11;
+    public static final long PARRY_BUFF_STATIC_DATA = 4558L;
+    public static final long PARRY_BUFF_DURATION_MS = 24L * 60 * 60 * 1000;
 
     public static PlayerActor create(String name, int silver, Clock clock) {
         return new PlayerActor(name, silver, clock);
@@ -371,6 +378,47 @@ public final class PlayerActor {
                     buff.expiresUtc().toEpochMilli()));
         }
         return list.toString();
+    }
+
+    // ------------------------------------------------------------------- manual parry
+
+    public boolean parrying() {
+        return parrying;
+    }
+
+    /** 角色名（msg169 双宽串等帧用）。 */
+    public String snapshotName() {
+        return actor.snapshot().name();
+    }
+
+    /** 按下格挡：挂 BuffInParry 到槽 11，返回 BufferInfo 串；幂等由调用方（状态变化才调用）。 */
+    public String engageParryBuff(Instant now) {
+        ActiveBuff existing = buffs.get(PARRY_BUFF_SLOT);
+        ActiveBuff buff = new ActiveBuff(PARRY_BUFF_STATIC_DATA,
+                now.plusMillis(PARRY_BUFF_DURATION_MS), "BuffInParry", 1);
+        if (existing != null && existing.expiresUtc().isAfter(now)) {
+            buff = existing; // 已在格挡：保留原到期时间
+        }
+        buffs.put(PARRY_BUFF_SLOT, buff);
+        parrying = true;
+        return bufferInfo(PARRY_BUFF_SLOT, now);
+    }
+
+    /** 松开格挡：清槽 11，返回空 BufferInfo 串。 */
+    public String releaseParryBuff() {
+        buffs.remove(PARRY_BUFF_SLOT);
+        parrying = false;
+        return "";
+    }
+
+    /** 格挡属性帧（0x10）：InParry/InManualParry 置位 + BufferInfo11（槽串）。 */
+    public byte[] parryStateFrame(boolean engage, String buffInfo) {
+        int flag = engage ? 1 : 0;
+        List<PropertyValues.Indexed> properties = new ArrayList<>(3);
+        Props.add(properties, "InParry", PropertyValues.Value.ofInt32(flag));
+        Props.add(properties, "InManualParry", PropertyValues.Value.ofInt32(flag));
+        Props.add(properties, "BufferInfo" + PARRY_BUFF_SLOT, PropertyValues.Value.ofString(buffInfo));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     // ------------------------------------------------------------------- frames

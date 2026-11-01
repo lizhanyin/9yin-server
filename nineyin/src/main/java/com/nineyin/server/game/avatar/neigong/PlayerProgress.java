@@ -356,8 +356,13 @@ public final class PlayerProgress {
         // CurLevel(763)：当前书层数（面板"第 N 层"之源）。
         Props.add(properties, "CurLevel", PropertyValues.Value.ofInt32(level));
         // FillSpeed(773)：每分钟修炼速度。普通内修初始 200（NORMAL_FACULTY_FILL_PER_MINUTE），
-        // 地点/道具加成后可变（F 盘实证 516）；演武为 0。
+        // 地点/道具加成后可变（F 盘实证 516）；演武为 0。客户端按值分档显示 ui_train_speed_0..5
+        //（0=停止，实证 FillSpeed=0 对应停止档）。
         Props.add(properties, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed));
+        // NorFacultyAdd(774)：基准修速（普通内修每分钟 200），与加成后的 FillSpeed 分列下发；
+        // F 盘实证 FillSpeed=516 时此值恒 200。
+        Props.add(properties, "NorFacultyAdd", PropertyValues.Value.ofInt32(
+                facultyStyle == FACULTY_STYLE_ACT ? 0 : NORMAL_FACULTY_FILL_PER_MINUTE));
         // PowerValue/MaxPowerValue：当前/上限功力（书行 power，如 ng_jh_201 满级 680）。
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));

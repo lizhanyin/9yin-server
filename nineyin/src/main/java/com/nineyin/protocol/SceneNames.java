@@ -7,7 +7,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import com.nineyin.game.ServerPaths;
-import com.nineyin.util.ResourceCache;
+import com.nineyin.cache.ResourceCache;
 
 /**
  * 角色选择界面所在场景显示名（选角 0x04 rolePara 的 f24），数据源：

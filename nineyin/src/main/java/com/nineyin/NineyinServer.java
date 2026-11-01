@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import com.nineyin.game.ServerPaths;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.gm.GmCatalog;
+import com.nineyin.gm.GmCatalogDb;
 import com.nineyin.gm.GmHttpServer;
 import com.nineyin.gm.GmHub;
 import com.nineyin.role.JsonRoleRepository;
@@ -43,17 +44,20 @@ public final class NineyinServer implements SummerApp {
 
     private final GmHub gmHub = new GmHub();
     private GmHttpServer gmServer;
+    private GmCatalog gmCatalog;
     private RoleStoreFacade roleStore;
     private FacultyStore facultyStore;
 
     @Override
     public void init() {
         // Go openRoleStore：MySQL DSN 优先，否则 data/roles.json；DSN 来源见 MySqlEnv（env > mysql.env）。
-        RoleRepository repository = openRoleRepository();
+        java.util.Optional<String> dsn = MySqlEnv.loadDsn();
+        RoleRepository repository = openRoleRepository(dsn);
         roleStore = new RoleStoreFacade(repository);
         facultyStore = FacultyStore.open(ServerPaths.projectPath("data", "faculty.json"));
-        gmServer = new GmHttpServer(gmHub, GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share")),
-                gmHost(), gmPort());
+        gmCatalog = GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share"));
+        dsn.ifPresent(this::attachCatalogDatabase);
+        gmServer = new GmHttpServer(gmHub, gmCatalog, gmHost(), gmPort());
         GmHub.ServerStatus status = gmHub.status();
         status.serverRoot = ServerPaths.serverRoot().toString();
         status.phase = "Go-replica phase 1 (transport+login+entry frames)";
@@ -64,8 +68,17 @@ public final class NineyinServer implements SummerApp {
                 ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url());
     }
 
-    private static RoleRepository openRoleRepository() {
-        java.util.Optional<String> dsn = MySqlEnv.loadDsn();
+    /** GM 目录 data/*.json 来源切 MySQL（角色库同一 DSN）；打开失败仅告警回退文件源。 */
+    private void attachCatalogDatabase(String dsn) {
+        try {
+            gmCatalog.useDatabase(GmCatalogDb.open(dsn));
+            log.info("GM catalog sources attached to MySQL");
+        } catch (RuntimeException e) {
+            log.warn("GM catalog MySQL unavailable, fallback to data/ files: {}", e.getMessage());
+        }
+    }
+
+    private static RoleRepository openRoleRepository(java.util.Optional<String> dsn) {
         if (dsn.isPresent()) {
             return MySqlRoleRepository.open(dsn.get());
         }
@@ -104,6 +117,7 @@ public final class NineyinServer implements SummerApp {
     public void stop() {
         gmServer.stop();
         roleStore.close();
+        gmCatalog.close();
         log.info("nineyin server stopped");
     }
 

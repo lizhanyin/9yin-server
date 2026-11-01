@@ -1,7 +1,7 @@
 package com.nineyin.game.avatar.equipment;
 
 import com.nineyin.game.ServerPaths;
-import com.nineyin.util.ResourceCache;
+import com.nineyin.cache.ResourceCache;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;

@@ -19,6 +19,7 @@ import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
 import com.nineyin.game.avatar.neigong.FacultyCustomHandler;
 import com.nineyin.game.starter.StarterGrants;
+import com.nineyin.world.db.RoleInventoryStore;
 import com.nineyin.game.starter.StarterQingGong;
 import com.nineyin.gm.GmHub;
 import com.nineyin.protocol.CustomC2S;
@@ -56,15 +57,24 @@ public final class LoginFlow {
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
     private final ScheduledExecutorService scheduler;
+    /** 三期物品域 DB 源（可空=回退 starter 行为）。 */
+    private final com.nineyin.world.db.RoleInventoryStore inventoryStore;
 
     public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
                      SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler) {
+        this(roleStore, facultyStore, gmHub, clock, npcRegistry, scheduler, null);
+    }
+
+    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
+                     SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler,
+                     com.nineyin.world.db.RoleInventoryStore inventoryStore) {
         this.roleStore = roleStore;
         this.facultyStore = facultyStore;
         this.gmHub = gmHub;
         this.clock = clock;
         this.npcRegistry = npcRegistry;
         this.scheduler = scheduler;
+        this.inventoryStore = inventoryStore;
     }
 
     /** 处理一帧明文；返回 false 断连。 */
@@ -194,8 +204,14 @@ public final class LoginFlow {
 
         connection.writeFrame(SceneMessages.propertyTableFrame());
         connection.writeFrame(SceneMessages.recordTableFrame());
-        for (SceneMessages.ViewSpec view : SceneMessages.starterBagViews()) {
-            connection.writeFrame(SceneMessages.createView(view));
+        // 三期官方方言：17 视图容器（8 主页 BaseCap=18 + 8 扩展页 + View1 纸娃娃）。
+        java.util.List<RoleInventoryStore.Bagpack> bagpacks = loadBagpacks(session);
+        for (byte[] frame : com.nineyin.protocol.InventoryMessages.bagViewCreateFrames()) {
+            connection.writeFrame(frame);
+        }
+        for (byte[] frame : com.nineyin.protocol.InventoryMessages.itemBagFrames(
+                session.selected.id(), bagpacks, clock.instant())) {
+            connection.writeFrame(frame);
         }
         // Go world.begin：场景世代重置（清实体/停定时器），不发帧。
         session.world = new SceneLifecycle(connection, scheduler);
@@ -205,6 +221,23 @@ public final class LoginFlow {
         connection.writeFrame(SceneMessages.serverLocation(
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, location.position()));
         connection.writeFrame(session.player.vitalUpdate());
+        // 三期物品下发（DB 模式）：纸娃娃 + 背包成对行 + WeaponMode；无 DB 行回退空。
+        if (inventoryStore != null && inventoryStore.hasRoleData(session.selected.id())) {
+            try {
+                int sex = session.visual.sex();
+                var equips = inventoryStore.equips(session.selected.id());
+                var bagItems = inventoryStore.bagItems(session.selected.id());
+                for (byte[] frame : com.nineyin.protocol.InventoryMessages.inventoryFrames(
+                        session.selected.id(), sex, equips, bagItems,
+                        EquipmentResolver.loadDefault())) {
+                    connection.writeFrame(frame);
+                }
+                log.info("session={} pushed inventory equips={} bagItems={} role={}",
+                        session.machine.id(), equips.size(), bagItems.size(), session.selected.id());
+            } catch (RuntimeException e) {
+                log.warn("session={} push inventory: {}", session.machine.id(), e.getMessage());
+            }
+        }
         // NPC viewport 仅注册不上线（ClientReady/首个 0x0A 屏障后物化）。
         if (npcRegistry != null) {
             try {
@@ -234,6 +267,44 @@ public final class LoginFlow {
         log.info("session={} sent property/record tables, views, entry scene and player spawn; waiting for ClientReady",
                 session.machine.id());
         return true;
+    }
+
+    private java.util.List<RoleInventoryStore.Skill> loadDbSkills(LoginSession session) {
+        if (inventoryStore == null || session.selected == null
+                || !inventoryStore.hasRoleData(session.selected.id())) {
+            return null;
+        }
+        try {
+            return inventoryStore.skills(session.selected.id(), "wuxue");
+        } catch (RuntimeException e) {
+            log.warn("session={} load db skills: {}", session.machine.id(), e.getMessage());
+            return null;
+        }
+    }
+
+    private java.util.List<RoleInventoryStore.Shortcut> loadDbShortcuts(LoginSession session) {
+        if (inventoryStore == null || session.selected == null
+                || !inventoryStore.hasRoleData(session.selected.id())) {
+            return null;
+        }
+        try {
+            return inventoryStore.shortcuts(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load db shortcuts: {}", session.machine.id(), e.getMessage());
+            return null;
+        }
+    }
+
+    private java.util.List<RoleInventoryStore.Bagpack> loadBagpacks(LoginSession session) {
+        if (inventoryStore == null) {
+            return java.util.List.of();
+        }
+        try {
+            return inventoryStore.bagpacks(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load bagpacks: {}", session.machine.id(), e.getMessage());
+            return java.util.List.of();
+        }
     }
 
     private void startFacultyTicker(Connection connection, LoginSession session) {
@@ -313,7 +384,8 @@ public final class LoginFlow {
             }
         }
         if (session.player != null && !session.neigongGranted) {
-            StarterGrants.grantStarterProgress(connection, session.player);
+            StarterGrants.grantStarterProgress(connection, session.player,
+                    loadDbSkills(session), loadDbShortcuts(session));
             session.neigongGranted = true;
             log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady",
                     session.machine.id());

@@ -82,9 +82,18 @@ public final class NineyinServer implements SummerApp {
         GmHub.ServerStatus status = gmHub.status();
         status.serverRoot = ServerPaths.serverRoot().toString();
         status.phase = "Go-replica phase 2 (starter chain + NPC viewport)";
+        com.nineyin.world.db.RoleInventoryStore inventoryStore = null;
+        if (dsn.isPresent()) {
+            try {
+                inventoryStore = com.nineyin.world.db.RoleInventoryStore.open(dsn.get());
+                log.info("role inventory store attached to MySQL");
+            } catch (RuntimeException e) {
+                log.warn("role inventory MySQL unavailable, starter fallback: {}", e.getMessage());
+            }
+        }
         ProtocolCustomMgr.get().setHandler(new NineyinProtocolHandler(
                 new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
-                        npcRegistry, sceneScheduler),
+                        npcRegistry, sceneScheduler, inventoryStore),
                 "127.0.0.1", gamePort()));
         log.info("nineyin server initialized: root={} storage={} gmPanel={} npcRegistry={}",
                 ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url(),

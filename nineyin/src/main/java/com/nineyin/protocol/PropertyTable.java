@@ -82,6 +82,16 @@ public final class PropertyTable {
         return ENTRIES;
     }
 
+    /** 索引反查（测试/调试）。 */
+    public static Entry byIndex(int index) {
+        for (Entry entry : ENTRIES) {
+            if (entry.index() == index) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
     public static Entry byName(String name) {
         return BY_NAME.get(name);
     }

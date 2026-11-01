@@ -1,9 +1,11 @@
 package com.nineyin.game.starter;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.protocol.CustomMessages;
+import com.nineyin.protocol.Props;
 import com.nineyin.protocol.RecordMessages;
 import com.nineyin.protocol.SceneMessages;
 import com.nineyin.transport.Connection;
@@ -64,17 +66,59 @@ public final class StarterGrants {
         return true;
     }
 
-    /** Go grantStarterProgress 闭包体：View43 → View40 → 两组快捷栏 → 收尾 vital。 */
+    /** Go grantStarterProgress 闭包体（starter 回退）：View43 → View40 → 两组快捷栏 → 收尾 vital。 */
     public static void grantStarterProgress(Connection connection, PlayerActor player) {
+        grantStarterProgress(connection, player, null, null);
+    }
+
+    /**
+     * 三期 DB 模式：View43（role_faculty 快照恢复后的真书）→ View40（role_skills 十属性行，
+     * cap=行数）→ 快捷栏（role_shortcuts 全行）→ 收尾 vital；任一 DB 列表为空回退 starter 表。
+     */
+    public static void grantStarterProgress(Connection connection, PlayerActor player,
+                                            java.util.List<com.nineyin.world.db.RoleInventoryStore.Skill> dbSkills,
+                                            java.util.List<com.nineyin.world.db.RoleInventoryStore.Shortcut> dbShortcuts) {
         for (byte[] frame : player.progress().viewFrames()) {
             connection.writeFrame(frame);
         }
-        for (byte[] frame : StarterSkills.starterSkillViewFrames()) {
-            connection.writeFrame(frame);
+        if (dbSkills != null && !dbSkills.isEmpty()) {
+            connection.writeFrame(SceneMessages.createView(
+                    new SceneMessages.ViewSpec(StarterSkills.VIEWPORT_SKILL, dbSkills.size())));
+            for (int index = 0; index < dbSkills.size(); index++) {
+                connection.writeFrame(dbSkillViewAdd(dbSkills.get(index), index + 1));
+            }
+        } else {
+            for (byte[] frame : StarterSkills.starterSkillViewFrames()) {
+                connection.writeFrame(frame);
+            }
         }
-        grantHeartBuddhaPalmShortcuts(connection, player);
-        grantTaiJiQuanGuPuShortcuts(connection, player);
+        if (dbShortcuts != null && !dbShortcuts.isEmpty()) {
+            for (com.nineyin.world.db.RoleInventoryStore.Shortcut shortcut : dbShortcuts) {
+                connection.writeFrame(shortcutAddFrame(new PlayerActor.PlayerShortcut(
+                        shortcut.shortcutIndex(), shortcut.kind(), shortcut.id())));
+            }
+        } else {
+            grantHeartBuddhaPalmShortcuts(connection, player);
+            grantTaiJiQuanGuPuShortcuts(connection, player);
+        }
         connection.writeFrame(player.vitalUpdate());
+    }
+
+    /** DB 技能行（bak roleSkillViewAdd 十属性：等级 1/上限 1/修为 0/WuXing 0/前摇 1000/范围 50）。 */
+    static byte[] dbSkillViewAdd(com.nineyin.world.db.RoleInventoryStore.Skill skill, int slot) {
+        List<SceneMessages.ViewProperty> props = new ArrayList<>(10);
+        Props.addView(props, "ConfigID", com.nineyin.protocol.PropertyValues.Value.ofString(skill.skillId()));
+        Props.addView(props, "StaticData", com.nineyin.protocol.PropertyValues.Value.ofInt32(skill.staticData()));
+        Props.addView(props, "ItemType",
+                com.nineyin.protocol.PropertyValues.Value.ofInt32(skill.itemType() == 0 ? 1000 : skill.itemType()));
+        Props.addView(props, "Level", com.nineyin.protocol.PropertyValues.Value.ofInt32(1));
+        Props.addView(props, "MaxLevel", com.nineyin.protocol.PropertyValues.Value.ofInt32(1));
+        Props.addView(props, "CurFillValue", com.nineyin.protocol.PropertyValues.Value.ofInt32(0));
+        Props.addView(props, "TotalFillValue", com.nineyin.protocol.PropertyValues.Value.ofInt32(0));
+        Props.addView(props, "WuXing", com.nineyin.protocol.PropertyValues.Value.ofInt32(0));
+        Props.addView(props, "PrepareTime", com.nineyin.protocol.PropertyValues.Value.ofInt32(1000));
+        Props.addView(props, "TargetShapePara2", com.nineyin.protocol.PropertyValues.Value.ofFloat32(50.0f));
+        return SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, slot, props);
     }
 
     /** Go grantHeartBuddhaPalmShortcuts：数字条第二页 1..7 格填满心佛掌。 */

@@ -251,6 +251,10 @@ class LoginFlowTest {
         return frame;
     }
 
+    private static int u16(byte[] frame, int off) {
+        return (frame[off] & 0xFF) | (frame[off + 1] & 0xFF) << 8;
+    }
+
     private static int u32(byte[] frame, int off) {
         return (frame[off] & 0xFF) | (frame[off + 1] & 0xFF) << 8
                 | (frame[off + 2] & 0xFF) << 16 | (frame[off + 3] & 0xFF) << 24;
@@ -324,9 +328,26 @@ class LoginFlowTest {
         int i = 0;
         com.nineyin.protocol.SnapshotGoldens.assertOrRegen("property_table_official.bin", replies.get(i++));
         assertArrayEquals(golden("record_table.bin"), replies.get(i++));
-        for (int viewId : new int[]{121, 2, 123, 125, 122, 3, 124, 126}) {
-            assertArrayEquals(golden("view_create_" + viewId + ".bin"), replies.get(i++));
+        // 三期 17 视图容器：8 主页（cap90+BaseCap18，12 字节）+ 8 扩展页（cap2）+ View1 纸娃娃。
+        int[] mainPages = {121, 2, 123, 125, 176, 174, 178, 180};
+        for (int viewId : mainPages) {
+            byte[] frame = replies.get(i++);
+            assertEquals(0x15, frame[0] & 0xFF, "主页视图@" + viewId);
+            assertEquals(viewId, u16(frame, 1));
+            assertEquals(90, u16(frame, 3), "主页 cap=90");
+            assertEquals(1, u16(frame, 5), "主页携带 BaseCap 属性");
         }
+        int[] extPages = {122, 3, 124, 126, 177, 175, 179, 181};
+        for (int viewId : extPages) {
+            byte[] frame = replies.get(i++);
+            assertEquals(0x15, frame[0] & 0xFF, "扩展页@" + viewId);
+            assertEquals(viewId, u16(frame, 1));
+            assertEquals(7, frame.length, "扩展页 7 字节空容器");
+        }
+        byte[] doll = replies.get(i++);
+        assertEquals(0x15, doll[0] & 0xFF);
+        assertEquals(1, u16(doll, 1), "View1 纸娃娃");
+        assertEquals(48, u16(doll, 3));
         com.nineyin.protocol.SnapshotGoldens.assertOrRegen("entry_scene_official.bin", replies.get(i++));
         assertEquals(0x0D, replies.get(i)[0] & 0xFF);
         int addObjectIndex = i++;

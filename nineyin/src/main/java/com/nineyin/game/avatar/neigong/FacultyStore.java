@@ -27,6 +27,8 @@ public final class FacultyStore {
     private final Path path;
     private final Map<Long, PlayerProgress.Snapshot> roles = new TreeMap<>();
     private final ReentrantLock lock = new ReentrantLock();
+    /** 三期可选 DB 源（role_faculty.snapshot）：读优先、写同步 best-effort。 */
+    private com.zaxxer.hikari.HikariDataSource database;
 
     public static FacultyStore open(Path path) {
         FacultyStore store = new FacultyStore(path.toAbsolutePath().normalize());
@@ -88,15 +90,59 @@ public final class FacultyStore {
                 books);
     }
 
+    /** Go 风格 DSN（user:pass@tcp(host:port)/db）→ 独立小池；失败仅告警（JSON 仍可用）。 */
+    public void attachDatabase(String dsn) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "^([^:@/]+):([^@]*)@tcp\\(([^):]+):(\\d+)\\)/([^?]+)$").matcher(dsn.trim());
+        if (!matcher.matches()) {
+            throw new IllegalArgumentException("faculty store: invalid MySQL DSN");
+        }
+        com.zaxxer.hikari.HikariConfig config = new com.zaxxer.hikari.HikariConfig();
+        config.setJdbcUrl(String.format(
+                "jdbc:mysql://%s:%s/%s?useSSL=false&characterEncoding=UTF-8&connectionTimeZone=UTC"
+                        + "&connectTimeout=5000&socketTimeout=5000&allowPublicKeyRetrieval=true",
+                matcher.group(3), matcher.group(4), matcher.group(5)));
+        config.setUsername(matcher.group(1));
+        config.setPassword(matcher.group(2));
+        config.setMaximumPoolSize(2);
+        config.setMinimumIdle(0);
+        config.setPoolName("nineyin-faculty");
+        this.database = new com.zaxxer.hikari.HikariDataSource(config);
+    }
+
     public PlayerProgress.Snapshot load(long roleId) {
         if (roleId == 0) {
             return null;
+        }
+        PlayerProgress.Snapshot fromDb = loadFromDatabase(roleId);
+        if (fromDb != null) {
+            return fromDb;
         }
         lock.lock();
         try {
             return roles.get(roleId);
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** role_faculty.snapshot（JSON 超集，宽松解析子集字段）。 */
+    private PlayerProgress.Snapshot loadFromDatabase(long roleId) {
+        if (database == null) {
+            return null;
+        }
+        try (java.sql.Connection connection = database.getConnection();
+             java.sql.PreparedStatement statement = connection.prepareStatement(
+                     "SELECT snapshot FROM role_faculty WHERE role_id = ?")) {
+            statement.setLong(1, roleId);
+            try (java.sql.ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return null;
+                }
+                return parseSnapshot(JSON.parseObject(result.getString(1)));
+            }
+        } catch (Exception e) {
+            return null; // DB 不可用回退 JSON（与 GM 目录同策略）
         }
     }
 
@@ -109,6 +155,7 @@ public final class FacultyStore {
             PlayerProgress.Snapshot previous = roles.put(roleId, value);
             try {
                 persist();
+                upsertDatabase(roleId, value);
             } catch (RuntimeException e) {
                 if (previous == null) {
                     roles.remove(roleId);
@@ -119,6 +166,32 @@ public final class FacultyStore {
             }
         } finally {
             lock.unlock();
+        }
+    }
+
+    /** DB 同步 best-effort：失败不回滚文件（文件是主档）。 */
+    private void upsertDatabase(long roleId, PlayerProgress.Snapshot value) {
+        if (database == null) {
+            return;
+        }
+        String snapshot = renderSnapshot(value, 0);
+        try (java.sql.Connection connection = database.getConnection();
+             java.sql.PreparedStatement statement = connection.prepareStatement(
+                     "INSERT INTO role_faculty (role_id, snapshot, version, updated_at) "
+                             + "VALUES (?, ?, 1, UTC_TIMESTAMP(6)) "
+                             + "ON DUPLICATE KEY UPDATE snapshot = VALUES(snapshot), "
+                             + "version = version + 1, updated_at = UTC_TIMESTAMP(6)")) {
+            statement.setLong(1, roleId);
+            statement.setString(2, snapshot);
+            statement.executeUpdate();
+        } catch (Exception ignored) {
+            // 文件已持久化；DB 侧下次登录前可重试。
+        }
+    }
+
+    public void close() {
+        if (database != null) {
+            database.close();
         }
     }
 

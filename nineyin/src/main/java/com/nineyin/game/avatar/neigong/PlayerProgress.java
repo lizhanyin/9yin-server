@@ -385,19 +385,20 @@ public final class PlayerProgress {
         refreshAllModernEffects();
     }
 
-    /** Go advanceFaculty：按整分钟以 FillSpeed 结算修炼，余数留在 lastAdvance。 */
-    void advanceFaculty(Instant now) {
+    /** Go advanceFaculty：按整分钟以 FillSpeed 结算修炼，余数留在 lastAdvance。
+     * 返回是否发生结算（ticker 变化检测）。 */
+    public boolean advanceFaculty(Instant now) {
         if (facultyState != FACULTY_STATE_CONVERT || facultyStyle != FACULTY_STYLE_NORMAL || fillSpeed <= 0) {
             lastAdvance = now;
-            return;
+            return false;
         }
         if (lastAdvance == null || now.isBefore(lastAdvance)) {
             lastAdvance = now;
-            return;
+            return false;
         }
         long minutes = Duration.between(lastAdvance, now).toMinutes();
         if (minutes <= 0) {
-            return;
+            return false;
         }
         lastAdvance = lastAdvance.plus(Duration.ofMinutes(minutes));
         for (Book item : books) {
@@ -413,7 +414,7 @@ public final class PlayerProgress {
             if (fill <= 0) {
                 facultyState = FACULTY_STATE_NONE;
                 fillSpeed = 0;
-                return;
+                return false;
             }
             faculty -= (int) cost;
             item.fill += (int) fill;
@@ -430,7 +431,79 @@ public final class PlayerProgress {
                 facultyState = FACULTY_STATE_NONE;
                 fillSpeed = 0;
             }
-            return;
+            return true;
         }
+        return false;
+    }
+
+    /** Go facultyReady：选书；未知 id 静默接受（零帧零变更）。返回书槽（1 基），未知 -1。 */
+    public int facultyReady(String configId, Instant now) {
+        Book target = book(configId);
+        if (target == null) {
+            return -1;
+        }
+        facultyName = configId;
+        facultyState = FACULTY_STATE_NONE;
+        facultyStyle = FACULTY_STYLE_NORMAL;
+        fillSpeed = 0;
+        lastAdvance = now;
+        return books.indexOf(target) + 1;
+    }
+
+    /** Go facultyBegin：普通内修 200/min；演武不计每分钟（fillSpeed=0）。 */
+    public void facultyBegin(boolean actStyle, Instant now) {
+        facultyState = FACULTY_STATE_CONVERT;
+        facultyStyle = actStyle ? FACULTY_STYLE_ACT : FACULTY_STYLE_NORMAL;
+        fillSpeed = actStyle ? 0 : NORMAL_FACULTY_FILL_PER_MINUTE;
+        lastAdvance = now;
+    }
+
+    /** Go facultyExit：停修（状态/风格/修速归零）。 */
+    public void facultyExit(Instant now) {
+        facultyState = FACULTY_STATE_NONE;
+        facultyStyle = FACULTY_STYLE_NORMAL;
+        fillSpeed = 0;
+        lastAdvance = now;
+    }
+
+    /** Go activeFacultyCardReward：演武单卡奖励修炼度。 */
+    public static final int ACTIVE_FACULTY_CARD_REWARD = 20_000;
+    /** Go normalFacultyFillPerMinute。 */
+    public static final int NORMAL_FACULTY_FILL_PER_MINUTE = 200;
+
+    /** Go awardActiveFaculty：演武卡结算。返回 [槽位(1 基,-1 无), 是否发放, 是否升级, 是否满级]。 */
+    public int[] awardActiveFaculty() {
+        if (facultyState != FACULTY_STATE_CONVERT || facultyStyle != FACULTY_STYLE_ACT) {
+            return new int[]{-1, 0, 0, 0}; // 演武态外的陈旧请求：吞掉不处罚
+        }
+        Book target = book(facultyName);
+        if (target == null) {
+            return new int[]{-1, 0, 0, 0};
+        }
+        int slot = books.indexOf(target) + 1;
+        boolean levelUp = false;
+        if (target.level < target.maxLevel) {
+            target.fill += ACTIVE_FACULTY_CARD_REWARD;
+            while (target.fill >= target.total && target.level < target.maxLevel) {
+                target.fill -= target.total;
+                target.level++;
+                target.total += 200;
+                target.maxPower += 20;
+                target.power = target.maxPower;
+                levelUp = true;
+            }
+            applyModernEffect(target);
+        }
+        boolean maxLevel = target.level >= target.maxLevel;
+        if (maxLevel) {
+            target.fill = 0;
+        }
+        return new int[]{slot, 1, levelUp ? 1 : 0, maxLevel ? 1 : 0};
+    }
+
+    /** facultyName 书的 1 基槽位（ticker bookFrame 用），无 → -1。 */
+    public int facultyBookSlot() {
+        Book target = book(facultyName);
+        return target == null ? -1 : books.indexOf(target) + 1;
     }
 }

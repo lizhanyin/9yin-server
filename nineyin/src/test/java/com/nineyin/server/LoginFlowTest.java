@@ -135,7 +135,9 @@ class LoginFlowTest {
         @Override
         public java.util.concurrent.ScheduledFuture<?> scheduleWithFixedDelay(
                 Runnable command, long initialDelay, long delay, java.util.concurrent.TimeUnit unit) {
-            throw new UnsupportedOperationException();
+            // 内修 1s ticker：记录任务不自动跑（e2e 直接调 flow.facultyTickOnce）。
+            tasks.add(command);
+            return NONE;
         }
 
         @Override
@@ -575,6 +577,55 @@ class LoginFlowTest {
         }
         assertTrue(npcCount > 0);
         channel.close();
+    }
+
+    @Test
+    void customDirect1006DrivesFacultyLoop(@TempDir Path tempDir) throws Exception {
+        JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
+        RoleStoreFacade store = new RoleStoreFacade(repository);
+        FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
+        EmbeddedChannel channel = newChannel(store, faculty, new com.nineyin.gm.GmHub(), null);
+        send(channel, loginFrame());
+        drain(channel);
+        send(channel, new byte[]{0x03});
+        drain(channel);
+        send(channel, createRoleFrame("金镶玉"));
+        drain(channel);
+        byte[] choose = new byte[0x54];
+        choose[0] = 0x04;
+        send(channel, choose);
+        drain(channel);
+        send(channel, new byte[]{0x09});
+        drain(channel);
+        send(channel, new byte[]{0x0A, 0x00});
+        drain(channel);
+
+        // 0x1E 直达 1006/21 演武开始 → [0x10, 0x1E msg191/(22,0)]。
+        byte[] actBegin = clientCustomFrame(1006, 21);
+        send(channel, actBegin);
+        List<byte[]> replies = drain(channel);
+        assertEquals(2, replies.size());
+        assertEquals(0x10, replies.get(0)[0] & 0xFF);
+        assertEquals(0x1E, replies.get(1)[0] & 0xFF);
+        assertEquals(22, replies.get(1)[9] & 0xFF);
+
+        // 1006/22 停 → [0x10]。
+        byte[] actExit = clientCustomFrame(1006, 22);
+        send(channel, actExit);
+        replies = drain(channel);
+        assertEquals(1, replies.size());
+        assertEquals(0x10, replies.get(0)[0] & 0xFF);
+        assertTrue(channel.isActive());
+        channel.close();
+    }
+
+    /** 客户端 0x1E 帧构造（C2S id 无 [1,764] S2C 限制）。 */
+    private static byte[] clientCustomFrame(int messageId, int subcommand) {
+        com.nineyin.protocol.PacketWriter writer = com.nineyin.protocol.PacketWriter.ofCapacity(16);
+        writer.writeU8(0x1E).writeU16(2);
+        writer.writeU8(2).writeU32(messageId & 0xFFFFFFFFL);
+        writer.writeU8(2).writeU32(subcommand & 0xFFFFFFFFL);
+        return writer.toBytes();
     }
 
     private static SceneNpcRegistry npcRegistry() throws Exception {

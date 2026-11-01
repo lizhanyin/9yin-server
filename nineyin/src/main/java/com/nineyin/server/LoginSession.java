@@ -29,6 +29,8 @@ final class LoginSession {
     Set<Integer> activeNpcs = new java.util.HashSet<>();
     Instant lastPositionSave;
     Roles.Location pendingLocation;
+    /** 三期内修 1s ticker 句柄（断连取消）。 */
+    java.util.concurrent.ScheduledFuture<?> facultyTicker;
 
     LoginSession() {
     }

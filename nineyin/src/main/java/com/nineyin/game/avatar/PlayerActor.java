@@ -162,6 +162,31 @@ public final class PlayerActor {
         syncEquippedNeiGongResources();
     }
 
+    /** Go equipNeiGong（215）：换装内功（未学会抛错=断连），重挂 Buff 槽4 与资源上限。 */
+    public void equipNeiGong(String configId) {
+        if (progress.book(configId) == null) {
+            throw new IllegalStateException("not learned neigong " + configId);
+        }
+        progress.curNeiGong = configId;
+        syncEquippedNeiGongBuff(clock.instant());
+        syncEquippedNeiGongResources();
+    }
+
+    /** Go facultyTick：整分钟结算；变化时重挂 Buff/资源。返回 [槽位, 是否变化]。 */
+    public int[] facultyTick(java.time.Instant now) {
+        boolean advanced = progress.advanceFaculty(now);
+        if (advanced) {
+            syncEquippedNeiGongBuff(now);
+            syncEquippedNeiGongResources();
+        }
+        return new int[]{progress.facultyBookSlot(), advanced ? 1 : 0};
+    }
+
+    /** Go SetLogicState：演武 108 / 常规 0（背景内修绝不进 LS_FACULTY）。 */
+    public void setLogicStateOverride(int state) {
+        logicStateOverride = state;
+    }
+
     void syncEquippedNeiGongBuff(Instant now) {
         PlayerProgress.Book book = progress.book(progress.curNeiGong);
         if (book == null || book.buffId.isEmpty() || book.buffStaticData == 0 || book.buffLevel <= 0) {
@@ -301,7 +326,7 @@ public final class PlayerActor {
         return frame;
     }
 
-    private int effectiveLogicState(Actor.State state) {
+    public int effectiveLogicState(Actor.State state) {
         return logicStateOverride >= 0 ? logicStateOverride : state.logicState();
     }
 

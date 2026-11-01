@@ -60,6 +60,15 @@ public final class NineyinServer implements SummerApp {
         RoleRepository repository = openRoleRepository(dsn);
         roleStore = new RoleStoreFacade(repository);
         facultyStore = FacultyStore.open(ServerPaths.projectPath("data", "faculty.json"));
+        // 三期：内功进度 DB 双源（role_faculty 快照读优先/写同步，JSON 仍为主档）。
+        dsn.ifPresent(d -> {
+            try {
+                facultyStore.attachDatabase(d);
+                log.info("faculty store attached to MySQL role_faculty");
+            } catch (RuntimeException e) {
+                log.warn("faculty store MySQL unavailable, JSON only: {}", e.getMessage());
+            }
+        });
         gmCatalog = GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share"));
         dsn.ifPresent(this::attachCatalogDatabase);
         gmServer = new GmHttpServer(gmHub, gmCatalog, gmHost(), gmPort());
@@ -144,6 +153,7 @@ public final class NineyinServer implements SummerApp {
     public void stop() {
         gmServer.stop();
         roleStore.close();
+        facultyStore.close();
         gmCatalog.close();
         log.info("nineyin server stopped");
     }

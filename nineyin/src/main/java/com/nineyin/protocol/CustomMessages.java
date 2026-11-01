@@ -19,16 +19,51 @@ public final class CustomMessages {
         final Integer int32;
         final Long int64;
         final Float float32;
+        final Double float64;
         final long objectId;
         final long ownerId;
 
         private Value(String text, Integer int32, Long int64, Float float32, long objectId, long ownerId) {
+            this(text, int32, int64, float32, null, objectId, ownerId);
+        }
+
+        private Value(String text, Integer int32, Long int64, Float float32,
+                      Double float64, long objectId, long ownerId) {
             this.text = text;
             this.int32 = int32;
             this.int64 = int64;
             this.float32 = float32;
+            this.float64 = float64;
             this.objectId = objectId;
             this.ownerId = ownerId;
+        }
+
+        public String text() {
+            return text;
+        }
+
+        public boolean isText() {
+            return text != null;
+        }
+
+        public boolean isFloat64() {
+            return float64 != null;
+        }
+
+        public double float64() {
+            return float64 == null ? 0 : float64;
+        }
+
+        public int int32() {
+            return int32 == null ? 0 : int32;
+        }
+
+        public long int64() {
+            return int64 == null ? 0 : int64;
+        }
+
+        public float float32() {
+            return float32 == null ? 0 : float32;
         }
 
         public static Value ofString(String value) {
@@ -41,6 +76,10 @@ public final class CustomMessages {
 
         public static Value ofInt64(long value) {
             return new Value(null, null, value, null, 0, 0);
+        }
+
+        public static Value ofFloat64(double value) {
+            return new Value(null, null, null, null, value, 0L, 0L);
         }
 
         public static Value ofFloat32(float value) {
@@ -85,6 +124,8 @@ public final class CustomMessages {
                 writer.writeU8(3).writeU64(value.int64);
             } else if (value.float32 != null) {
                 writer.writeU8(4).writeU32(Float.floatToRawIntBits(value.float32) & 0xFFFFFFFFL);
+            } else if (value.float64 != null) {
+                writer.writeU8(5).writeU64(Double.doubleToRawLongBits(value.float64));
             } else if (value.objectId != 0 || value.ownerId != 0) {
                 writer.writeU8(8).writeU32(value.objectId).writeU32(value.ownerId);
             } else {

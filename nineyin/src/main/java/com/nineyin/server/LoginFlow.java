@@ -17,9 +17,11 @@ import com.nineyin.auth.LoginIdentity;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
+import com.nineyin.game.avatar.neigong.FacultyCustomHandler;
 import com.nineyin.game.starter.StarterGrants;
 import com.nineyin.game.starter.StarterQingGong;
 import com.nineyin.gm.GmHub;
+import com.nineyin.protocol.CustomC2S;
 import com.nineyin.protocol.LoginMessages;
 import com.nineyin.protocol.SceneNames;
 import com.nineyin.protocol.SceneMessages;
@@ -80,6 +82,7 @@ public final class LoginFlow {
             case SessionMachine.CLIENT_CHOOSE_ROLE -> onChooseRole(connection, session);
             case SessionMachine.CLIENT_READY -> onClientReady(connection, session);
             case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session, plain);
+            case 0x1E, 0x27 -> onCustomDirect(connection, session, plain);
             default -> true; // 未分类 opcode 放行业务层（一期无业务层）
         };
     }
@@ -227,9 +230,23 @@ public final class LoginFlow {
             return false;
         }
         attachGmSnapshot(connection, session, location);
+        startFacultyTicker(connection, session);
         log.info("session={} sent property/record tables, views, entry scene and player spawn; waiting for ClientReady",
                 session.machine.id());
         return true;
+    }
+
+    private void startFacultyTicker(Connection connection, LoginSession session) {
+        if (scheduler == null) {
+            return;
+        }
+        session.facultyTicker = scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                facultyTickOnce(connection, session);
+            } catch (RuntimeException e) {
+                log.warn("faculty tick: {}", e.getMessage());
+            }
+        }, 1, 1, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     /** Go main.go gm.attach：选角完成即挂面板会话快照。 */
@@ -265,6 +282,9 @@ public final class LoginFlow {
             } catch (RuntimeException e) {
                 log.warn("persist faculty progress: {}", e.getMessage());
             }
+        }
+        if (session.facultyTicker != null) {
+            session.facultyTicker.cancel(false);
         }
         if (session.world != null) {
             session.world.close();
@@ -357,7 +377,80 @@ public final class LoginFlow {
             return false;
         }
         handleMotionPosition(session, plain);
+        handleActivityCustom(connection, session, plain);
         return true;
+    }
+
+    /** Go 0x0A 信封 CustomSend：21 字节头后 TVarList；白名单外/解析失败静默放行。 */
+    private void handleActivityCustom(Connection connection, LoginSession session, byte[] plain) {
+        CustomC2S.Message custom = CustomC2S.parseActivityEnvelope(plain);
+        if (custom == null) {
+            return;
+        }
+        dispatchCustom(connection, session, custom, "activity-envelope");
+    }
+
+    /** Go 0x1E/0x27 直达自定义消息路由。 */
+    private boolean onCustomDirect(Connection connection, LoginSession session, byte[] plain) {
+        CustomC2S.Message custom = CustomC2S.parseDirect(plain);
+        if (custom == null) {
+            log.info("session={} tolerated unparsable direct custom frame len={}",
+                    session.machine.id(), plain.length);
+            return true;
+        }
+        dispatchCustom(connection, session, custom, "direct");
+        return true;
+    }
+
+    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}；本期实现 215/1006，其余受理记日志。 */
+    private void dispatchCustom(Connection connection, LoginSession session,
+                                CustomC2S.Message custom, String route) {
+        int messageId = custom.messageId();
+        switch (messageId) {
+            case 215, 1006 -> {
+                try {
+                    FacultyCustomHandler.handle(connection, session.player, custom);
+                } catch (RuntimeException e) {
+                    log.info("session={} reject custom {} via {}: {}",
+                            session.machine.id(), messageId, route, e.getMessage());
+                    return;
+                }
+                persistFaculty(session);
+            }
+            case 200, 201, 240, 211, 216, 217, 218 ->
+                    log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
+                            session.machine.id(), messageId, route);
+            default -> log.info("session={} unrecognized custom msgId={} via {}",
+                    session.machine.id(), messageId, route);
+        }
+    }
+
+    /** Go 1s ticker：整分钟结算变化时 [0x18 书帧, 0x10 vital] + 持久化；静默秒零帧。 */
+    void facultyTickOnce(Connection connection, LoginSession session) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        int[] tick = session.player.facultyTick(clock.instant());
+        if (tick[1] == 0) {
+            return;
+        }
+        if (tick[0] > 0) {
+            connection.writeFrame(session.player.progress().bookFrame(tick[0]));
+        }
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+    }
+
+    /** Go persistFaculty 闭包。 */
+    private void persistFaculty(LoginSession session) {
+        if (session.selected == null || session.player == null) {
+            return;
+        }
+        try {
+            facultyStore.save(session.selected.id(), session.player.facultySnapshot());
+        } catch (RuntimeException e) {
+            log.warn("persist faculty progress: {}", e.getMessage());
+        }
     }
 
     /** Go 0x0A motion 段：视口跟随 + 2s 节流位置保存（越界/长包不落盘）。 */

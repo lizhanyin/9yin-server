@@ -21,7 +21,7 @@ import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONObject;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.server.RemoteDispatchMgr;
 import com.swingfrog.summer.server.ServerContext;

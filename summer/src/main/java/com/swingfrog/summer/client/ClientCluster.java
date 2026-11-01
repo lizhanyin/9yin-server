@@ -25,7 +25,11 @@ public class ClientCluster {
 		clientGroupList.add(clientGroup);
 		nameToClientGroup.put(name, clientGroup);
 	}
-	
+
+	public boolean containsClient(String name) {
+		return nameToClientGroup.containsKey(name);
+	}
+
 	public Client getClientByName(String name) {
 		return nameToClientGroup.get(name).getClientWithNext();
 	}

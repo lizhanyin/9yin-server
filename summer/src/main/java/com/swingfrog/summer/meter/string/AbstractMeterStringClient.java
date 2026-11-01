@@ -1,6 +1,6 @@
 package com.swingfrog.summer.meter.string;
 
-import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson2.JSON;
 import com.swingfrog.summer.meter.MeterClient;
 import com.swingfrog.summer.protocol.ProtocolConst;
 import com.swingfrog.summer.protocol.SessionRequest;

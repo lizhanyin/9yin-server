@@ -31,9 +31,14 @@ if errorlevel 1 (
     echo [错误] 未找到 nineyin\target\nineyin-server-*.jar！
     exit /b 1
 )
-copy /y "tools\data-import\target\data-import-*.jar" "build\" >nul
+copy /y "tools\data-import\target\nineyin-data-import-*.jar" "build\" >nul
 if errorlevel 1 (
-    echo [错误] 未找到 tools\data-import\target\data-import-*.jar！
+    echo [错误] 未找到 tools\data-import\target\nineyin-data-import-*.jar！
+    exit /b 1
+)
+copy /y "gm-web\target\nineyin-gm-*.jar" "build\" >nul
+if errorlevel 1 (
+    echo [错误] 未找到 gm-web\target\nineyin-gm-*.jar！
     exit /b 1
 )
 
@@ -42,5 +47,6 @@ echo 构建完成，build 目录内容：
 dir /b "build"
 echo.
 echo 主服务启动示例: java -jar build\nineyin-server-0.1.0-SNAPSHOT.jar
+echo GM 面板示例: java -jar build\nineyin-gm-0.1.0-SNAPSHOT.jar
 
 endlocal

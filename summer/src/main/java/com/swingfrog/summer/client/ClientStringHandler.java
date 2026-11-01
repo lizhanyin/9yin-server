@@ -4,7 +4,7 @@ import com.swingfrog.summer.protocol.ProtocolConst;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson2.JSON;
 import com.swingfrog.summer.config.ConfigMgr;
 import com.swingfrog.summer.protocol.SessionRequest;
 import com.swingfrog.summer.protocol.SessionResponse;

@@ -31,12 +31,12 @@ final class GmHttpUtil {
     }
 
     static HttpResponse json(HttpResponseStatus status, Object json) {
-        return response(status, com.alibaba.fastjson.JSON.toJSONString(json),
+        return response(status, com.alibaba.fastjson2.JSON.toJSONString(json),
                 "application/json; charset=utf-8");
     }
 
     static HttpResponse jsonError(HttpResponseStatus status, String error) {
-        com.alibaba.fastjson.JSONObject o = new com.alibaba.fastjson.JSONObject();
+        com.alibaba.fastjson2.JSONObject o = new com.alibaba.fastjson2.JSONObject();
         o.put("error", error);
         return json(status, o);
     }

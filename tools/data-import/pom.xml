@@ -11,10 +11,10 @@
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
-    <artifactId>data-import</artifactId>
+    <artifactId>nineyin-data-import</artifactId>
     <packaging>jar</packaging>
 
-    <name>data-import</name>
+    <name>nineyin-data-import</name>
     <description>数据导入工具：data 目录 JSON → MySQL（apply-schema 建表，导入器逐步补齐）</description>
 
     <dependencies>
@@ -23,8 +23,8 @@
             <artifactId>mysql-connector-j</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>fastjson</artifactId>
+            <groupId>com.alibaba.fastjson2</groupId>
+            <artifactId>fastjson2</artifactId>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

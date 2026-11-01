@@ -1,7 +1,7 @@
 package com.nineyin.tools.dataimport.importer;
 
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -606,7 +606,7 @@ public final class RoleDataImporters {
                 rows = eachRole(ctx, root.getJSONObject("roles"), (id, v) -> {
                     try {
                         b.ps().setLong(1, id);
-                        b.ps().setString(2, com.alibaba.fastjson.JSON.toJSONString(v));
+                        b.ps().setString(2, com.alibaba.fastjson2.JSON.toJSONString(v));
                         b.add();
                     } catch (SQLException e) {
                         throw new RuntimeException(e);
@@ -733,7 +733,7 @@ public final class RoleDataImporters {
                             b.ps().setInt(4, s.getIntValue("max_level"));
                             b.ps().setLong(5, s.getLongValue("fill"));
                             b.ps().setLong(6, s.getLongValue("total"));
-                            JSONObject extra = new JSONObject(true);
+                            JSONObject extra = new JSONObject();
                             for (String k : new String[]{"static_data", "item_type", "pause_time",
                                     "max_distance", "cool_down_time", "inner_force"}) {
                                 if (s.containsKey(k)) {

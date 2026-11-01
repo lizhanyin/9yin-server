@@ -132,12 +132,33 @@ public final class PlayerActor {
         return false;
     }
 
-    public Motion motionSnapshot() {
+    public synchronized Motion motionSnapshot() {
         Motion snapshot = new Motion();
         snapshot.moveSpeed = motion.moveSpeed;
         snapshot.runSpeed = motion.runSpeed;
         snapshot.gravity = motion.gravity;
         return snapshot;
+    }
+
+    /**
+     * Go setMoveSpeed：MoveSpeed 与 RunSpeed 同值联动变更（GM 控件对走/跑一个
+     * 明确含义），返回单帧普通 0x10 属性归档（index 23/25）。
+     */
+    public synchronized byte[] setMoveSpeed(float value) {
+        motion.moveSpeed = value;
+        motion.runSpeed = value;
+        List<PropertyValues.Indexed> properties = new ArrayList<>(2);
+        Props.add(properties, "MoveSpeed", PropertyValues.Value.ofFloat32(motion.moveSpeed));
+        Props.add(properties, "RunSpeed", PropertyValues.Value.ofFloat32(motion.runSpeed));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /** Go setGravity：Gravity 变更（index 168），下一次起跳生效；返回单帧 0x10 归档。 */
+    public synchronized byte[] setGravity(float value) {
+        motion.gravity = value;
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "Gravity", PropertyValues.Value.ofFloat32(motion.gravity));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     public Actor.State actorState() {

@@ -20,27 +20,41 @@
     └── reference/           # Summer 官方 ECS 游戏服示例（登录/玩家/队伍模块参考）
 ```
 
-依赖方向：`nineyin → gm-web → summer`；`tools/data-import` 独立无内部依赖。
+依赖方向：`nineyin → summer`、`gm-web → summer`（gm-web 与游戏服已拆分为两个独立进程，
+经 summer RPC 交互）；`tools/data-import` 独立无内部依赖。
 
 ## 端口规划（对齐 go 版）
 
-| 端口  | 用途               |
-|-------|--------------------|
-| 4000  | 区服列表（纯文本 svrlist） |
-| 19061 | 游戏主协议（FxNet2 帧：XOR 0xFA6D3BCC + 0xEE 转义 + EE EE 终止） |
-| 19080 | GM HTTP 控制台（仅本机） |
+| 端口  | 归属进程 | 用途               |
+|-------|---------|--------------------|
+| 4000  | 游戏服   | 区服列表（纯文本 svrlist） |
+| 19061 | 游戏服   | 游戏主协议（FxNet2 帧：XOR 0xFA6D3BCC + 0xEE 转义 + EE EE 终止） |
+| 19081 | 游戏服   | GM RPC（summer StringLine，仅 127.0.0.1，`@Remote(filter)` 端口隔离） |
+| 19080 | gm-web   | GM 管理页 `/` + 控制台 `/console.html`（仅本机） |
+| 19083 | gm-web   | summer 框架自身端口（无外部用途） |
 
-## GM 面板（gm-web 模块）
+## GM 面板（gm-web 模块，独立进程）
 
-浏览器打开 `http://127.0.0.1:19080/`。面板与游戏服同进程运行（无需 RPC）：目录接口
-（道具/卡牌/称号/经脉/坐骑/时装/礼包/天气/禁地/声望/身份/词条等 17 个）由 `GmCatalog`
-从部署目录懒加载（share 根的 GBK INI + data/ 的 JSON，编码自动处理）；命令按钮走
-`POST /api/sessions/{id}/command` 入 `GmHub` 队列，由服务器 tick 消费——任意参数透传，
-已实现 kick 与 minimal_login 开关，其余动作随对应游戏系统落地逐个补。
+浏览器打开 `http://127.0.0.1:19080/`——**管理页**（index.html）管理多台游戏服：服务器
+列表存浏览器 localStorage（`gm_servers`），按 `host:RPC端口` 添加；面板按需经
+`ClientMgr.register` 动态注册 summer 客户端（断线自动重连、失败 5s 退避），轮询在线状态。
+选中服务器后进入 **控制台**（console.html，URL 带 `?s=host:port`；无参数自动跳回管理页）。
 
-依赖的部署数据：share 根（`NINEYIN_SERVER_ROOT` 或 CWD 上溯定位）与 `data/` 目录
-（CWD/data → 环境变量 → share 根上溯三级自动解析），两者缺失时面板仍可用，目录接口
-返回空列表。
+- **动态数据**（在线会话/服务器状态/命令下发/minimal-login 开关）经 summer RPC 调游戏服
+  `GmRemote`（`@Remote(filter=true, serverName="gm")`，仅 19081 端口可达；方法返回 JSON
+  字符串，两模块不共享类）。会话数据含门派/场景中文显示名（游戏服侧 FactionNames/SceneNames
+  解析）。
+- **17 个目录接口**（道具/卡牌/称号/经脉/坐骑/时装/礼包/天气/禁地/声望/身份/词条等）由
+  gm-web 本地 `GmCatalog` 供给（share 根 GBK INI + MySQL 优先 + data/ JSON 回退；本机
+  所有游戏服共享数据源）。
+- 命令按钮走 `POST /api/sessions/{id}/command` → RPC `GmRemote.command` 入 `GmHub` 队列，
+  消费侧与拆分前一致。
+- 游戏服离线时面板降级：管理页显示未连接、控制台 sessions 空列表 / status `game_connected:false`。
+
+两进程启动：仓库根 `启动本地九阴服务.bat`（游戏 jar → gm-web jar，继承
+`NINEYIN_SERVER_ROOT`/`NINEYIN_MYSQL_DSN`）；面板端口可用 `-Dnineyin.gm.host/port` 覆盖。
+依赖的部署数据：share 根（`NINEYIN_SERVER_ROOT` 或 CWD 上溯定位）与 `data/` 目录，
+两者缺失时面板仍可用，目录接口返回空列表。
 
 ## Lua 脚本（技能效果与伤害公式）
 

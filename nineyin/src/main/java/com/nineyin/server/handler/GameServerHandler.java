@@ -12,7 +12,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
 /** 19061 主协议入口：明文帧 → LoginFlow；任何处理错误按 Go 语义断连。 */
-final class GameServerHandler extends SimpleChannelInboundHandler<byte[]> {
+public final class GameServerHandler extends SimpleChannelInboundHandler<byte[]> {
 
     private static final Logger log = LoggerFactory.getLogger(GameServerHandler.class);
 
@@ -20,7 +20,7 @@ final class GameServerHandler extends SimpleChannelInboundHandler<byte[]> {
     private final Connection connection;
     private final LoginSession session = new LoginSession();
 
-    GameServerHandler(LoginFlow flow, Connection connection) {
+    public GameServerHandler(LoginFlow flow, Connection connection) {
         this.flow = flow;
         this.connection = connection;
     }

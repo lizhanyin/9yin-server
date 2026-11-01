@@ -18,10 +18,8 @@ import com.nineyin.util.ServerPaths;
 import com.nineyin.server.world.npc.SceneNpcRegistry;
 import com.nineyin.server.protocol.NpcSchema;
 import com.nineyin.server.game.avatar.neigong.FacultyStore;
-import com.nineyin.server.gm.GmCatalog;
-import com.nineyin.server.gm.GmCatalogDb;
-import com.nineyin.server.gm.GmHttpServer;
 import com.nineyin.server.gm.GmHub;
+import com.nineyin.server.gm.GmRemote;
 import com.nineyin.server.db.role.JsonRoleRepository;
 import com.nineyin.server.db.role.MySqlRoleRepository;
 import com.nineyin.server.db.role.RoleRepository;
@@ -37,18 +35,15 @@ import com.swingfrog.summer.protocol.custom.ProtocolCustomMgr;
 /**
  * 九阴服务端入口（一期：按 Go 源码 9yin-go-server1 复刻登录链）。
  * 装配：serverRoot 定位 → 角色存档（DSN→MySQL / 默认 JSON）→ faculty.json →
- * Summer 网络模块接管（19061 登录链 + 4000 svrlist）→ GM HTTP 面板（默认 127.0.0.1:19080）。
+ * Summer 网络模块接管（19061 登录链 + 4000 svrlist）→ GM RPC 端口
+ * （minor.gm，默认 127.0.0.1:19081，供独立 gm-web 面板经 summer RPC 调 GmRemote）。
+ * GM HTTP 面板已拆分至 gm-web 模块独立进程（19080）。
  */
 public final class NineyinServer implements SummerApp {
 
     private static final Logger log = LoggerFactory.getLogger(NineyinServer.class);
 
-    public static final String GM_HOST_PROPERTY = "nineyin.gm.host";
-    public static final String GM_PORT_PROPERTY = "nineyin.gm.port";
-
     private final GmHub gmHub = new GmHub();
-    private GmHttpServer gmServer;
-    private GmCatalog gmCatalog;
     private RoleStoreFacade roleStore;
     private FacultyStore facultyStore;
     private SceneNpcRegistry npcRegistry;
@@ -70,9 +65,8 @@ public final class NineyinServer implements SummerApp {
                 log.warn("faculty store MySQL unavailable, JSON only: {}", e.getMessage());
             }
         });
-        gmCatalog = GmCatalog.create(ServerPaths.projectPath("resources", "modern", "share"));
-        dsn.ifPresent(this::attachCatalogDatabase);
-        gmServer = new GmHttpServer(gmHub, gmCatalog, gmHost(), gmPort());
+        // GM RPC：会话中枢挂到 GmRemote（minor.gm 端口，供 gm-web 独立面板调用）。
+        GmRemote.attach(gmHub);
         // Go -npc-all-chengdu 默认 true：启动加载共享模板表 + 每 creator 目录懒加载。
         npcRegistry = openNpcRegistry();
         sceneScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(task -> {
@@ -82,6 +76,7 @@ public final class NineyinServer implements SummerApp {
         });
         GmHub.ServerStatus status = gmHub.status();
         status.serverRoot = ServerPaths.serverRoot().toString();
+        status.listenAddr = "game:" + gamePort();
         status.phase = "Go-replica phase 2 (starter chain + NPC viewport)";
         RoleInventoryStore inventoryStore = null;
         if (dsn.isPresent()) {
@@ -96,9 +91,9 @@ public final class NineyinServer implements SummerApp {
                 new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
                         npcRegistry, sceneScheduler, inventoryStore),
                 "127.0.0.1", gamePort()));
-        log.info("nineyin server initialized: root={} storage={} gmPanel={} npcRegistry={}",
-                ServerPaths.serverRoot(), repository.getClass().getSimpleName(), gmServer.url(),
-                npcRegistry != null);
+        log.info("nineyin server initialized: root={} storage={} gmRpc=127.0.0.1:{} npcRegistry={}",
+                ServerPaths.serverRoot(), repository.getClass().getSimpleName(),
+                System.getProperty("minor.gm.port", "19081"), npcRegistry != null);
     }
 
     /** Go newSceneNPCRegistry(npcconfig, creator 根)；失败仅告警（无 NPC 可进世界）。 */
@@ -114,30 +109,11 @@ public final class NineyinServer implements SummerApp {
         }
     }
 
-    /** GM 目录 data/*.json 来源切 MySQL（角色库同一 DSN）；打开失败仅告警回退文件源。 */
-    private void attachCatalogDatabase(String dsn) {
-        try {
-            gmCatalog.useDatabase(GmCatalogDb.open(dsn));
-            log.info("GM catalog sources attached to MySQL");
-        } catch (RuntimeException e) {
-            log.warn("GM catalog MySQL unavailable, fallback to data/ files: {}", e.getMessage());
-        }
-    }
-
     private static RoleRepository openRoleRepository(java.util.Optional<String> dsn) {
         if (dsn.isPresent()) {
             return MySqlRoleRepository.open(dsn.get());
         }
         return JsonRoleRepository.open(ServerPaths.projectPath("data", "roles.json"));
-    }
-
-    /** GM 面板监听地址：系统属性覆盖，默认仅 127.0.0.1（对齐 Go/C++ 控制台不对外暴露）。 */
-    static String gmHost() {
-        return System.getProperty(GM_HOST_PROPERTY, GmHttpServer.DEFAULT_HOST);
-    }
-
-    static int gmPort() {
-        return Integer.parseInt(System.getProperty(GM_PORT_PROPERTY, String.valueOf(GmHttpServer.DEFAULT_PORT)));
     }
 
     private static int gamePort() {
@@ -154,17 +130,13 @@ public final class NineyinServer implements SummerApp {
 
     @Override
     public void start() {
-        gmServer.start();
-        gmHub.status().listenAddr = gmServer.url();
         log.info("nineyin server started");
     }
 
     @Override
     public void stop() {
-        gmServer.stop();
         roleStore.close();
         facultyStore.close();
-        gmCatalog.close();
         log.info("nineyin server stopped");
     }
 

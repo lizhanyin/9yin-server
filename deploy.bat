@@ -11,7 +11,7 @@ rem    [2] MySQL 就绪（mysql-26 实例，端口 3306，未启动则自动拉起）
 rem    [3] 数据库升级（按序重放 sql\*.sql.gz 权威存档，缺表补建/配置以存档为准）
 rem    [4] 部署 jar 到服务器目录（旧份自动备份）
 rem    [5] 同步运行时文件（scripts/ Lua 脚本镜像、缺失时补 roles.json）
-rem    [6] 启动 Java 服务端（游戏 19061 / 区服列表 4000 / GM 19080）
+rem    [6] 启动 Java 服务端（游戏 19061/4000/19081 + GM 面板独立进程 19080）
 rem
 rem  用法：deploy.bat [--skip-build] [--no-start] [--import-config]
 rem    --skip-build     跳过构建，直接使用 build\ 下现有 jar
@@ -70,8 +70,13 @@ if not exist "build\nineyin-server-*.jar" (
     pause
     exit /b 1
 )
-if not exist "build\data-import-*.jar" (
-    echo [错误] build\ 下没有 data-import jar，请去掉 --skip-build 重新运行。
+if not exist "build\nineyin-data-import-*.jar" (
+    echo [错误] build\ 下没有 nineyin-data-import jar，请去掉 --skip-build 重新运行。
+    pause
+    exit /b 1
+)
+if not exist "build\nineyin-gm-*.jar" (
+    echo [错误] build\ 下没有 nineyin-gm jar，请去掉 --skip-build 重新运行。
     pause
     exit /b 1
 )
@@ -136,7 +141,7 @@ if errorlevel 1 (
 if "%IMPORT_CONFIG%"=="1" (
     echo [信息] --import-config：导入配置数据（数据源 %DATA_SRC%）...
     set "DI_JAR="
-    for %%f in ("build\data-import-*.jar") do set "DI_JAR=%%~ff"
+    for %%f in ("build\nineyin-data-import-*.jar") do set "DI_JAR=%%~ff"
     java -jar "%DI_JAR%" -dsn "%MYSQL_DSN%" -data "%DATA_SRC%" import config
     if errorlevel 1 (
         echo [错误] 配置数据导入失败，可修复后重跑（sql\ 升级结果不受影响）。
@@ -167,8 +172,15 @@ if errorlevel 1 (
     exit /b 1
 )
 set "SRC_DI="
-for %%f in ("build\data-import-*.jar") do set "SRC_DI=%%~nxf"
+for %%f in ("build\nineyin-data-import-*.jar") do set "SRC_DI=%%~nxf"
 copy /y "build\%SRC_DI%" "%SERVER_ROOT%\" >nul
+for %%f in ("build\nineyin-gm-*.jar") do set "SRC_GM=%%~nxf"
+copy /y "build\%SRC_GM%" "%SERVER_ROOT%\" >nul
+rem 启动脚本镜像为仓库双进程版（游戏服 + gm-web 面板），旧份带时间戳备份
+if exist "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" (
+    copy /y "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" "%SERVER_ROOT%\启动本地九阴服务-Java版.bat.bak-%TS%" >nul
+)
+copy /y "%~dp0启动本地九阴服务.bat" "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" >nul
 if errorlevel 1 (
     echo [错误] 复制 %SRC_DI% 失败。
     pause
@@ -209,7 +221,7 @@ echo 部署完成。
 echo   游戏      : 127.0.0.1:19061
 echo   区服列表  : 127.0.0.1:4000
 echo   GM 面板   : http://127.0.0.1:19080/
-echo   日志      : %SERVER_ROOT%\logs\nineyin-java.current.log
+echo   日志      : %SERVER_ROOT%\logs\nineyin-java.current.log , gm-web.current.log
 echo ==========================================
 endlocal
 exit /b 0

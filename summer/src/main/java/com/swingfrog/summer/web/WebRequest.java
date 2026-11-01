@@ -2,7 +2,7 @@ package com.swingfrog.summer.web;
 
 import java.util.Map;
 
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONObject;
 import com.google.common.collect.Maps;
 import com.swingfrog.summer.protocol.SessionRequest;
 

@@ -1,7 +1,7 @@
 package com.nineyin.tools.dataimport.importer;
 
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -324,7 +324,7 @@ public final class ConfigImporters {
                         b.ps().setInt(5, s.getIntValue("need_sex"));
                         b.ps().setInt(6, s.getIntValue("color_level"));
                         b.ps().setInt(7, s.getIntValue("condition_id"));
-                        JSONObject parts = new JSONObject(true);
+                        JSONObject parts = new JSONObject();
                         for (String part : new String[]{"cloth", "hat", "pants", "shoes", "hair"}) {
                             parts.put(part, s.get(part));
                         }
@@ -414,7 +414,7 @@ public final class ConfigImporters {
                         b.ps().setInt(8, o.getIntValue("material"));
                         b.ps().setInt(9, o.getIntValue("bodyType"));
                         setJson(b, 10, o.get("line"));
-                        JSONObject cond = new JSONObject(true);
+                        JSONObject cond = new JSONObject();
                         for (String k : new String[]{"activeCondIDs", "activeCondText", "getCondIDs", "getCondText"}) {
                             if (o.containsKey(k)) {
                                 cond.put(k, o.get(k));
@@ -628,7 +628,7 @@ public final class ConfigImporters {
             del.setString(1, key);
             del.executeUpdate();
             ins.setString(1, key);
-            ins.setString(2, com.alibaba.fastjson.JSON.toJSONString(value));
+            ins.setString(2, com.alibaba.fastjson2.JSON.toJSONString(value));
             ins.executeUpdate();
         }
     }
@@ -639,7 +639,7 @@ public final class ConfigImporters {
         } else if (value instanceof String s) {
             b.ps().setString(index, s);
         } else {
-            b.ps().setString(index, com.alibaba.fastjson.JSON.toJSONString(value));
+            b.ps().setString(index, com.alibaba.fastjson2.JSON.toJSONString(value));
         }
     }
 

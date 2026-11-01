@@ -94,6 +94,50 @@ public class ClientMgr {
 		}
 	}
 
+	/**
+	 * 运行时动态注册客户端（gm-web 多服务器面板：按管理页 localStorage 列表按需连接，
+	 * server.clientList 留空、不经过 init() 的配置驱动路径）。
+	 * 幂等：同 cluster+serverName 已注册直接返回；线程资源懒建（init() 未建时），
+	 * 结构与 init() 一致（ClientCluster → ClientGroup → connectNum × Client）。
+	 */
+	public synchronized void register(ClientConfig config) throws NotFoundException {
+		ensureRuntime();
+		ClientCluster clientCluster = nameToCluster.get(config.getCluster());
+		if (clientCluster == null) {
+			log.info("client create cluster {}", config.getCluster());
+			clientCluster = new ClientCluster();
+			nameToCluster.put(config.getCluster(), clientCluster);
+		}
+		if (clientCluster.containsClient(config.getServerName())) {
+			log.info("client already registered {} {}", config.getCluster(), config.getServerName());
+			return;
+		}
+		ClientGroup clientGroup = new ClientGroup();
+		for (int j = 0; j < config.getConnectNum(); j++) {
+			clientGroup.addClient(new Client(j, config, workerGroup));
+		}
+		clientCluster.addClient(config.getServerName(), clientGroup);
+		log.info("client registered {} {} -> {}:{}",
+				config.getCluster(), config.getServerName(), config.getAddress(), config.getPort());
+		for (Client client : clientGroup.listClients()) {
+			client.connect();
+		}
+	}
+
+	private void ensureRuntime() throws NotFoundException {
+		if (workerGroup == null) {
+			workerGroup = new NioEventLoopGroup(0, new DefaultThreadFactory("ClientWorker"));
+		}
+		if (eventExecutors == null) {
+			int count = ThreadCountUtil.cpuDenseness(0);
+			eventExecutors = new ExecutorService[count];
+			for (int i = 0; i < count; i++) {
+				eventExecutors[i] = Executors.newSingleThreadExecutor(new DefaultThreadFactory("ClientEvent_" + i));
+			}
+			PushDispatchMgr.get().init();
+		}
+	}
+
 	public void shutdown() {
 		if (nameToCluster.size() > 0) {
 			log.info("clients shutdown...");

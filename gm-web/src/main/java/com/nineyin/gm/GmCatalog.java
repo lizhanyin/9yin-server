@@ -1,8 +1,8 @@
 package com.nineyin.gm;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,11 +16,14 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * GM 面板目录数据服务：从部署目录（share 根 + data/）懒加载并缓存各下拉框数据源。
- * 所有加载器对文件缺失/损坏均优雅降级（空列表或 loaded=false）。
+ * GM 面板目录数据服务：懒加载并缓存各下拉框数据源。
+ * data/*.json 来源（卡牌/身份装/礼包/经脉/称号/假人/出身）在注入 {@link #useDatabase}
+ * 后优先读 MySQL（GmCatalogDb），查询失败或未注入回退 data/ 文件；
+ * ini/idres 来源仍从部署目录（share 根）读取。所有加载器对缺失/损坏均优雅降级。
  *
  * <p>数据源（编码已核实）：equipment.ini / tool_item.ini / cloneinfo.ini / weathereffect.ini /
  * repute_level.ini / school_taolu.ini 为 GBK；stringname.idres / interface.idres 为 UTF-8+BOM；
@@ -62,6 +65,8 @@ public final class GmCatalog {
     private volatile JSONArray bots;
     private volatile JSONObject originStatus;
     private volatile JSONObject recastAffixes;
+    /** MySQL 数据源（data/*.json 对应配置表）；null 表示未注入，全部走文件。 */
+    private volatile GmCatalogDb db;
 
     private GmCatalog(Path shareRoot, Path dataDir) {
         this.shareRoot = shareRoot;
@@ -81,6 +86,27 @@ public final class GmCatalog {
     /** 直接指定 share/data 目录（测试用；data 自动解析链不适用）。 */
     static GmCatalog createForTest(Path shareRoot, Path dataDir) {
         return new GmCatalog(shareRoot, dataDir);
+    }
+
+    /** 注入 MySQL 目录数据源；注入即失效 data/ 来源缓存（ini 来源缓存不受影响）。 */
+    public void useDatabase(GmCatalogDb database) {
+        this.db = database;
+        this.cards = null;
+        this.hairCards = null;
+        this.fashionCatalog = null;
+        this.giftBoxes = null;
+        this.meridians = null;
+        this.titles = null;
+        this.bots = null;
+        this.originStatus = null;
+    }
+
+    /** 释放目录数据源连接池（如有）。 */
+    public void close() {
+        GmCatalogDb database = db;
+        if (database != null) {
+            database.close();
+        }
     }
 
     /** data/ 解析链：CWD/data → NINEYIN_SERVER_ROOT/data → share 根上溯三级/data。 */
@@ -130,7 +156,7 @@ public final class GmCatalog {
             if (view > 0 && r.viewId() != view) {
                 continue;
             }
-            JSONObject o = new JSONObject(true);
+            JSONObject o = new JSONObject();
             o.put("configId", r.configId());
             o.put("name", r.name());
             o.put("viewId", r.viewId());
@@ -191,7 +217,8 @@ public final class GmCatalog {
         if (c == null) {
             synchronized (this) {
                 if (cards == null) {
-                    cards = loadCards();
+                    JSONArray fromDb = db != null ? db.cards() : null;
+                    cards = fromDb != null ? fromDb : loadCards();
                 }
                 return cards;
             }
@@ -204,6 +231,11 @@ public final class GmCatalog {
         if (c == null) {
             synchronized (this) {
                 if (hairCards == null) {
+                    JSONArray fromDb = db != null ? db.hairCards() : null;
+                    if (fromDb != null) {
+                        hairCards = fromDb;
+                        return hairCards;
+                    }
                     JSONArray all = cards();
                     JSONArray hair = new JSONArray();
                     for (Object o : all) {
@@ -244,7 +276,7 @@ public final class GmCatalog {
             if (model == null || model.isEmpty()) {
                 model = c.getString("male_model_data");
             }
-            JSONObject o = new JSONObject(true);
+            JSONObject o = new JSONObject();
             o.put("id", parseLong(id, 0));
             o.put("name", orEmpty(c.getString("name")));
             o.put("config_id", c.getIntValue("config_id"));
@@ -275,7 +307,7 @@ public final class GmCatalog {
                     IniFile ini = IniFile.load(shareRoot == null ? null
                             : shareRoot.resolve("clone").resolve("cloneinfo.ini"), GBK);
                     for (Map.Entry<String, Map<String, List<String>>> e : ini.sections().entrySet()) {
-                        JSONObject o = new JSONObject(true);
+                        JSONObject o = new JSONObject();
                         o.put("config", e.getKey());
                         o.put("description", orEmpty(first(e.getValue(), "desc")));
                         o.put("difficulties", new JSONArray(List.of(1, 2, 3)));
@@ -321,7 +353,7 @@ public final class GmCatalog {
             if (skills == null || skills.isEmpty()) {
                 continue;
             }
-            JSONObject o = new JSONObject(true);
+            JSONObject o = new JSONObject();
             o.put("key", e.getKey());
             String label = idresLookup(e.getKey());
             if (label == null) {
@@ -404,39 +436,64 @@ public final class GmCatalog {
         if (f == null) {
             synchronized (this) {
                 if (fashionCatalog == null) {
-                    JSONArray out = new JSONArray();
-                    JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("身份装数据.json"));
-                    JSONObject suits = root != null ? root.getJSONObject("suits") : null;
-                    if (suits != null) {
-                        Map<Integer, JSONArray> groups = new TreeMap<>();
-                        for (Map.Entry<String, Object> e : suits.entrySet()) {
-                            if (!(e.getValue() instanceof JSONObject suit)) {
-                                continue;
-                            }
-                            int sex = suit.getIntValue("need_sex");
-                            JSONObject item = new JSONObject(true);
-                            item.put("name", orEmpty(suit.getString("name")));
-                            item.put("configId", e.getKey());
-                            groups.computeIfAbsent(sex, k -> new JSONArray()).add(item);
-                        }
-                        for (Map.Entry<Integer, JSONArray> g : groups.entrySet()) {
-                            JSONObject cat = new JSONObject(true);
-                            cat.put("key", "sex" + g.getKey());
-                            cat.put("label", switch (g.getKey()) {
-                                case 0 -> "男装";
-                                case 1 -> "女装";
-                                default -> "通用";
-                            });
-                            cat.put("items", g.getValue());
-                            out.add(cat);
-                        }
+                    JSONArray rows = db != null ? db.identitySuits() : null;
+                    if (rows == null) {
+                        rows = loadIdentitySuitsFromFile();
                     }
-                    fashionCatalog = out;
+                    fashionCatalog = groupIdentitySuits(rows);
                 }
                 return fashionCatalog;
             }
         }
         return f;
+    }
+
+    /** data/身份装数据.json → [{configId,name,needSex}]（与 DB 行形状对齐）。 */
+    private JSONArray loadIdentitySuitsFromFile() {
+        JSONArray rows = new JSONArray();
+        JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("身份装数据.json"));
+        JSONObject suits = root != null ? root.getJSONObject("suits") : null;
+        if (suits == null) {
+            return rows;
+        }
+        for (Map.Entry<String, Object> e : suits.entrySet()) {
+            if (!(e.getValue() instanceof JSONObject suit)) {
+                continue;
+            }
+            JSONObject o = new JSONObject();
+            o.put("configId", e.getKey());
+            o.put("name", orEmpty(suit.getString("name")));
+            o.put("needSex", suit.getIntValue("need_sex"));
+            rows.add(o);
+        }
+        return rows;
+    }
+
+    /** [{configId,name,needSex}] 按适用性别分组（0男装/1女装/其余通用，组间按 sex 升序）。 */
+    private static JSONArray groupIdentitySuits(JSONArray rows) {
+        JSONArray out = new JSONArray();
+        Map<Integer, JSONArray> groups = new TreeMap<>();
+        for (Object o : rows) {
+            if (!(o instanceof JSONObject row)) {
+                continue;
+            }
+            JSONObject item = new JSONObject();
+            item.put("name", orEmpty(row.getString("name")));
+            item.put("configId", row.getString("configId"));
+            groups.computeIfAbsent(row.getIntValue("needSex"), k -> new JSONArray()).add(item);
+        }
+        for (Map.Entry<Integer, JSONArray> g : groups.entrySet()) {
+            JSONObject cat = new JSONObject();
+            cat.put("key", "sex" + g.getKey());
+            cat.put("label", switch (g.getKey()) {
+                case 0 -> "男装";
+                case 1 -> "女装";
+                default -> "通用";
+            });
+            cat.put("items", g.getValue());
+            out.add(cat);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------
@@ -448,8 +505,14 @@ public final class GmCatalog {
         if (g == null) {
             synchronized (this) {
                 if (giftBoxes == null) {
-                    JSONObject giftJson = readJson(dataDir == null ? null : dataDir.resolve("giftbox.json"));
-                    JSONObject boxes = giftJson != null ? giftJson.getJSONObject("boxes") : null;
+                    // 有内容配置的礼包 ID：MySQL game_gift_boxes 优先，回退 data/giftbox.json。
+                    Set<String> contentIds = db != null ? db.giftBoxIds() : null;
+                    JSONObject boxes = null;
+                    if (contentIds == null) {
+                        JSONObject giftJson = readJson(dataDir == null ? null : dataDir.resolve("giftbox.json"));
+                        boxes = giftJson != null ? giftJson.getJSONObject("boxes") : null;
+                        contentIds = boxes != null ? boxes.keySet() : Set.of();
+                    }
                     IniFile giftboxIni = IniFile.load(shareRoot == null ? null
                             : shareRoot.resolve("item").resolve("giftbox.ini"), StandardCharsets.UTF_8);
                     JSONArray out = new JSONArray();
@@ -461,28 +524,26 @@ public final class GmCatalog {
                         if (name.isEmpty()) {
                             name = orEmpty(giftboxIni.value(r.configId(), "name"));
                         }
-                        JSONObject o = new JSONObject(true);
+                        JSONObject o = new JSONObject();
                         o.put("config", r.configId());
-                        o.put("hasContent", boxes != null && boxes.containsKey(r.configId()));
+                        o.put("hasContent", contentIds.contains(r.configId()));
                         o.put("name", name);
                         out.add(o);
                     }
-                    if (boxes != null) {
-                        for (String config : boxes.keySet()) {
-                            boolean exists = false;
-                            for (int i = 0; i < out.size(); i++) {
-                                if (config.equals(out.getJSONObject(i).getString("config"))) {
-                                    exists = true;
-                                    break;
-                                }
+                    for (String config : contentIds) {
+                        boolean exists = false;
+                        for (int i = 0; i < out.size(); i++) {
+                            if (config.equals(out.getJSONObject(i).getString("config"))) {
+                                exists = true;
+                                break;
                             }
-                            if (!exists) {
-                                JSONObject o = new JSONObject(true);
-                                o.put("config", config);
-                                o.put("hasContent", true);
-                                o.put("name", orEmpty(giftboxIni.value(config, "name")));
-                                out.add(o);
-                            }
+                        }
+                        if (!exists) {
+                            JSONObject o = new JSONObject();
+                            o.put("config", config);
+                            o.put("hasContent", true);
+                            o.put("name", orEmpty(giftboxIni.value(config, "name")));
+                            out.add(o);
                         }
                     }
                     giftBoxes = out;
@@ -509,7 +570,7 @@ public final class GmCatalog {
                         if (!e.getKey().toLowerCase().contains("stand")) {
                             continue;
                         }
-                        JSONObject o = new JSONObject(true);
+                        JSONObject o = new JSONObject();
                         o.put("action", e.getKey());
                         o.put("skeleton", orEmpty(first(e.getValue(), "skeleton")));
                         out.add(o);
@@ -531,6 +592,11 @@ public final class GmCatalog {
         if (m == null) {
             synchronized (this) {
                 if (meridians == null) {
+                    JSONArray fromDb = db != null ? db.meridians() : null;
+                    if (fromDb != null) {
+                        meridians = fromDb;
+                        return meridians;
+                    }
                     JSONArray out = new JSONArray();
                     JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("经脉.json"));
                     JSONArray list = root != null ? root.getJSONArray("meridians") : null;
@@ -539,7 +605,7 @@ public final class GmCatalog {
                             if (!(o instanceof JSONObject jm)) {
                                 continue;
                             }
-                            JSONObject r = new JSONObject(true);
+                            JSONObject r = new JSONObject();
                             r.put("id", orEmpty(jm.getString("id")));
                             r.put("name", orEmpty(jm.getString("name")));
                             r.put("defaultMax", jm.getIntValue("maxLevel"));
@@ -568,7 +634,7 @@ public final class GmCatalog {
                         if (!"Mount".equalsIgnoreCase(r.script())) {
                             continue;
                         }
-                        JSONObject o = new JSONObject(true);
+                        JSONObject o = new JSONObject();
                         o.put("configID", r.configId());
                         o.put("name", r.name());
                         o.put("artPack", r.artPack());
@@ -591,7 +657,7 @@ public final class GmCatalog {
         if (r == null) {
             synchronized (this) {
                 if (reputeStatus == null) {
-                    JSONObject out = new JSONObject(true);
+                    JSONObject out = new JSONObject();
                     IniFile ini = IniFile.load(shareRoot == null ? null
                             : shareRoot.resolve("rule").resolve("repute_level.ini"), GBK);
                     Map<String, List<String>> reputeSec = ini.sections().get("Repute");
@@ -614,7 +680,7 @@ public final class GmCatalog {
                                     if (name.isEmpty()) {
                                         continue;
                                     }
-                                    JSONObject o = new JSONObject(true);
+                                    JSONObject o = new JSONObject();
                                     o.put("name", name);
                                     String d = display.get(name);
                                     if (d != null) {
@@ -652,11 +718,16 @@ public final class GmCatalog {
         if (t == null) {
             synchronized (this) {
                 if (titles == null) {
+                    JSONArray fromDb = db != null ? db.titles() : null;
+                    if (fromDb != null) {
+                        titles = fromDb;
+                        return titles;
+                    }
                     java.util.function.Supplier<JSONArray> src = titlesSource;
                     if (src != null) {
-                        JSONArray fromDb = src.get();
-                        if (fromDb != null) {
-                            titles = fromDb;
+                        JSONArray injected = src.get();
+                        if (injected != null) {
+                            titles = injected;
                             return titles;
                         }
                     }
@@ -676,7 +747,7 @@ public final class GmCatalog {
         if (list != null) {
             for (Object o : list) {
                 if (o instanceof JSONObject title) {
-                    JSONObject r = new JSONObject(true);
+                    JSONObject r = new JSONObject();
                     r.put("id", title.getIntValue("id"));
                     r.put("name", orEmpty(title.getString("name")));
                     r.put("type", title.getIntValue("type"));
@@ -700,7 +771,7 @@ public final class GmCatalog {
                     IniFile ini = IniFile.load(shareRoot == null ? null
                             : shareRoot.resolve("rule").resolve("weather").resolve("weathereffect.ini"), GBK);
                     for (Map.Entry<String, Map<String, List<String>>> e : ini.sections().entrySet()) {
-                        JSONObject o = new JSONObject(true);
+                        JSONObject o = new JSONObject();
                         o.put("Key", e.getKey());
                         o.put("Label", e.getKey());
                         o.put("TXID", orEmpty(first(e.getValue(), "configid")));
@@ -723,6 +794,11 @@ public final class GmCatalog {
         if (b == null) {
             synchronized (this) {
                 if (bots == null) {
+                    JSONArray fromDb = db != null ? db.bots() : null;
+                    if (fromDb != null) {
+                        bots = fromDb;
+                        return bots;
+                    }
                     JSONArray out = new JSONArray();
                     JSONObject root = readJson(dataDir == null ? null : dataDir.resolve("bots.json"));
                     JSONArray list = root != null ? root.getJSONArray("bots") : null;
@@ -746,12 +822,16 @@ public final class GmCatalog {
         if (o == null) {
             synchronized (this) {
                 if (originStatus == null) {
-                    JSONObject out = new JSONObject(true);
-                    JSONObject root = readJson(dataDir == null ? null
-                            : dataDir.resolve("origin").resolve("origins.json"));
-                    JSONArray origins = root != null ? root.getJSONArray("origins") : null;
-                    out.put("loaded", origins != null && !origins.isEmpty());
-                    out.put("total", origins != null ? origins.size() : 0);
+                    Long count = db != null ? db.originCount() : null;
+                    if (count == null) {
+                        JSONObject root = readJson(dataDir == null ? null
+                                : dataDir.resolve("origin").resolve("origins.json"));
+                        JSONArray origins = root != null ? root.getJSONArray("origins") : null;
+                        count = origins == null ? null : (long) origins.size();
+                    }
+                    JSONObject out = new JSONObject();
+                    out.put("loaded", count != null && count > 0);
+                    out.put("total", count != null ? count : 0);
                     originStatus = out;
                 }
                 return originStatus;
@@ -771,7 +851,7 @@ public final class GmCatalog {
         if (r == null) {
             synchronized (this) {
                 if (recastAffixes == null) {
-                    JSONObject out = new JSONObject(true);
+                    JSONObject out = new JSONObject();
                     Map<Long, JSONObject> prop = new LinkedHashMap<>();
                     IniFile propDire = IniFile.load(shareRoot == null ? null
                             : shareRoot.resolve("item").resolve("senior_prop_dire.ini"), StandardCharsets.UTF_8);
@@ -823,7 +903,7 @@ public final class GmCatalog {
     }
 
     private static JSONObject affixEntry(long id, String source, String weapon) {
-        JSONObject o = new JSONObject(true);
+        JSONObject o = new JSONObject();
         o.put("id", id);
         o.put("source", source);
         if (weapon != null) {

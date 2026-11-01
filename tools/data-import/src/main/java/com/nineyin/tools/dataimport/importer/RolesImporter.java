@@ -1,8 +1,8 @@
 package com.nineyin.tools.dataimport.importer;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
@@ -139,7 +139,7 @@ public final class RolesImporter implements Importer {
 
     /** role_ext：name/appearance/scene/position 之外的全部字段原样透传（不改动原对象）。 */
     private static String extraJson(JSONObject entry) {
-        JSONObject extra = new JSONObject(true);
+        JSONObject extra = new JSONObject();
         for (Map.Entry<String, Object> e : entry.entrySet()) {
             String k = e.getKey();
             if (!"name".equals(k) && !"appearance".equals(k)

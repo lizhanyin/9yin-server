@@ -1,6 +1,6 @@
 package com.swingfrog.summer.util;
 
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONObject;
 import com.google.common.collect.Maps;
 
 import java.lang.reflect.Type;

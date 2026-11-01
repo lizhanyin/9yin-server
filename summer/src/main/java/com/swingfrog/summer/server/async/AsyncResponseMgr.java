@@ -1,6 +1,6 @@
 package com.swingfrog.summer.server.async;
 
-import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson2.JSON;
 import com.google.protobuf.Message;
 import com.swingfrog.summer.protocol.ProtocolConst;
 import com.swingfrog.summer.protocol.SessionRequest;

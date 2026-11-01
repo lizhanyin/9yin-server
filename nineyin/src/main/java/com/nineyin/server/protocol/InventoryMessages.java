@@ -50,11 +50,11 @@ public final class InventoryMessages {
         }
     }
 
-    /** 物品行按 viewId 路由：1→121（装备页）2→2 3→123 4→125；未知归 2。 */
+    /** 物品行按 viewId 路由（game_items.view_id 分类，bak 同：1道具 2装备 3材料 4任务）：
+     * 1→2（道具页）2→121（装备页）3→123 4→125；未知归 2。 */
     public static int bagViewOf(int viewId) {
         return switch (viewId) {
-            case 1 -> VIEW_EQUIP_BAG;
-            case 2 -> VIEW_TOOL_PAGE;
+            case 2 -> VIEW_EQUIP_BAG;
             case 3 -> VIEW_MATERIAL_PAGE;
             case 4 -> VIEW_TASK_PAGE;
             default -> VIEW_TOOL_PAGE;

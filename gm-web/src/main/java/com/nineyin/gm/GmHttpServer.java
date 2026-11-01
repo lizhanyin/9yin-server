@@ -33,22 +33,14 @@ public final class GmHttpServer {
     private EventLoopGroup worker;
     private Channel serverChannel;
 
-    public GmHttpServer(GmHub hub) {
-        this(hub, GmCatalog.empty(), DEFAULT_HOST, DEFAULT_PORT);
+    public GmHttpServer(GmRequestHandler requestHandler) {
+        this(requestHandler, DEFAULT_HOST, DEFAULT_PORT);
     }
 
-    public GmHttpServer(GmHub hub, GmCatalog catalog) {
-        this(hub, catalog, DEFAULT_HOST, DEFAULT_PORT);
-    }
-
-    public GmHttpServer(GmHub hub, String host, int port) {
-        this(hub, GmCatalog.empty(), host, port);
-    }
-
-    public GmHttpServer(GmHub hub, GmCatalog catalog, String host, int port) {
+    public GmHttpServer(GmRequestHandler requestHandler, String host, int port) {
         this.host = host;
         this.port = port;
-        this.requestHandler = new GmRequestHandler(hub, catalog);
+        this.requestHandler = requestHandler;
     }
 
     public String url() {

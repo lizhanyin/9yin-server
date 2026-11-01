@@ -21,6 +21,7 @@ import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
 import com.nineyin.server.game.starter.StarterGrants;
 import com.nineyin.server.world.db.RoleInventoryStore;
 import com.nineyin.server.game.starter.StarterQingGong;
+import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmHub;
 import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.protocol.LoginMessages;
@@ -313,11 +314,64 @@ public final class LoginFlow {
         }
         session.facultyTicker = scheduler.scheduleWithFixedDelay(() -> {
             try {
+                drainGmCommands(connection, session);
                 facultyTickOnce(connection, session);
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
         }, 1, 1, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    // -------------------------------------------------------------------- GM 队列
+
+    /** Go 主循环 select 的 command 分支：ticker 顺带清空本会话 GM 队列（≤1s 延迟）。 */
+    void drainGmCommands(Connection connection, LoginSession session) {
+        GmCommand command;
+        while ((command = gmHub.tryPop(session.machine.id())) != null) {
+            try {
+                applyGmCommand(connection, session, command);
+            } catch (RuntimeException e) {
+                command.fail("处理异常: " + e.getMessage());
+                log.warn("session={} GM command {}: {}", session.machine.id(), command.action(), e.getMessage());
+            }
+        }
+    }
+
+    /** Go processGMCommand：按 action 分派；未进场景/未实现动作明确失败回执。 */
+    private void applyGmCommand(Connection connection, LoginSession session, GmCommand command) {
+        if (session.player == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        switch (command.action()) {
+            case "set_move_speed" -> applyMotionValue(connection, session, command, true);
+            case "set_gravity" -> applyMotionValue(connection, session, command, false);
+            default -> {
+                log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
+                command.fail("动作未实现: " + command.action());
+            }
+        }
+    }
+
+    /** Go main.go set_move_speed/set_gravity 分支：改 motion → 单帧 0x10 → lastAction 回显。 */
+    private void applyMotionValue(Connection connection, LoginSession session,
+                                  GmCommand command, boolean moveSpeed) {
+        Float value = command.floatParam("value");
+        if (value == null || value.isNaN() || value.isInfinite() || value < 0.1f || value > 100f) {
+            command.fail("数值须在 0.1 至 100 之间");
+            return;
+        }
+        String action;
+        if (moveSpeed) {
+            connection.writeFrame(session.player.setMoveSpeed(value));
+            action = String.format(java.util.Locale.ROOT, "移动速度设为 %.2f", value);
+        } else {
+            connection.writeFrame(session.player.setGravity(value));
+            action = String.format(java.util.Locale.ROOT, "下落重力设为 %.2f", value);
+        }
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM {}: {}", session.machine.id(), command.action(), action);
     }
 
     /** Go main.go gm.attach：选角完成即挂面板会话快照。 */

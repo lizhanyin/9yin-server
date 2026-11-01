@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.io.InputStream;
 import java.util.Objects;
 
+import com.nineyin.server.game.login.LoginIdentity;
 import org.junit.jupiter.api.Test;
 
 /** 对齐 Go internal/auth/login_identity_test.go：抓包向量 + 密码位无关性。 */

@@ -10,24 +10,25 @@ import java.time.Clock;
 import java.util.Properties;
 import java.util.concurrent.ScheduledExecutorService;
 
+import com.nineyin.server.world.db.RoleInventoryStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.nineyin.game.ServerPaths;
-import com.nineyin.world.npc.SceneNpcRegistry;
-import com.nineyin.protocol.NpcSchema;
-import com.nineyin.game.avatar.neigong.FacultyStore;
-import com.nineyin.gm.GmCatalog;
-import com.nineyin.gm.GmCatalogDb;
-import com.nineyin.gm.GmHttpServer;
-import com.nineyin.gm.GmHub;
-import com.nineyin.role.JsonRoleRepository;
-import com.nineyin.role.MySqlRoleRepository;
-import com.nineyin.role.RoleRepository;
-import com.nineyin.role.RoleStoreFacade;
-import com.nineyin.server.LoginFlow;
-import com.nineyin.server.MySqlEnv;
-import com.nineyin.server.NineyinProtocolHandler;
+import com.nineyin.util.ServerPaths;
+import com.nineyin.server.world.npc.SceneNpcRegistry;
+import com.nineyin.server.protocol.NpcSchema;
+import com.nineyin.server.game.avatar.neigong.FacultyStore;
+import com.nineyin.server.gm.GmCatalog;
+import com.nineyin.server.gm.GmCatalogDb;
+import com.nineyin.server.gm.GmHttpServer;
+import com.nineyin.server.gm.GmHub;
+import com.nineyin.server.db.role.JsonRoleRepository;
+import com.nineyin.server.db.role.MySqlRoleRepository;
+import com.nineyin.server.db.role.RoleRepository;
+import com.nineyin.server.db.role.RoleStoreFacade;
+import com.nineyin.server.game.login.LoginFlow;
+import com.nineyin.util.MySqlEnv;
+import com.nineyin.server.handler.NineyinProtocolHandler;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.app.SummerApp;
 import com.swingfrog.summer.app.SummerConfig;
@@ -82,10 +83,10 @@ public final class NineyinServer implements SummerApp {
         GmHub.ServerStatus status = gmHub.status();
         status.serverRoot = ServerPaths.serverRoot().toString();
         status.phase = "Go-replica phase 2 (starter chain + NPC viewport)";
-        com.nineyin.world.db.RoleInventoryStore inventoryStore = null;
+        RoleInventoryStore inventoryStore = null;
         if (dsn.isPresent()) {
             try {
-                inventoryStore = com.nineyin.world.db.RoleInventoryStore.open(dsn.get());
+                inventoryStore = RoleInventoryStore.open(dsn.get());
                 log.info("role inventory store attached to MySQL");
             } catch (RuntimeException e) {
                 log.warn("role inventory MySQL unavailable, starter fallback: {}", e.getMessage());

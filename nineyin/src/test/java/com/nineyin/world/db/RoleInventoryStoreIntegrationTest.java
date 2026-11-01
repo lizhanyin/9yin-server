@@ -7,9 +7,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.sql.Connection;
 import java.sql.DriverManager;
 
+import com.nineyin.server.world.db.RoleInventoryStore;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.server.MySqlEnv;
+import com.nineyin.util.MySqlEnv;
 
 /** RoleInventoryStore 集成（无 MySQL 自跳过）：role 618 真实数据计数与富化。 */
 class RoleInventoryStoreIntegrationTest {

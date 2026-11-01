@@ -9,6 +9,10 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Objects;
 
+import com.nineyin.server.transport.FrameAccumulator;
+import com.nineyin.server.transport.FrameCodec;
+import com.nineyin.server.transport.FrameException;
+import com.nineyin.server.transport.XorKey;
 import org.junit.jupiter.api.Test;
 
 /** 对齐 Go internal/transport/frame_test.go：抓包 round-trip + 转义/多帧/流式/错误路径。 */

@@ -14,21 +14,26 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-import com.nineyin.world.npc.SceneNpcRegistry;
+import com.nineyin.server.game.login.LoginFlow;
+import com.nineyin.server.gm.GmHub;
+import com.nineyin.server.handler.GameServerHandler;
+import com.nineyin.server.protocol.NpcSchema;
+import com.nineyin.server.protocol.PacketWriter;
+import com.nineyin.server.world.npc.SceneNpcRegistry;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import com.nineyin.game.avatar.neigong.FacultyStore;
-import com.nineyin.game.ServerPaths;
-import com.nineyin.role.JsonRoleRepository;
-import com.nineyin.role.RoleStoreFacade;
-import com.nineyin.transport.Connection;
-import com.nineyin.transport.FrameCodec;
-import com.nineyin.transport.FrameDecoder;
-import com.nineyin.transport.FrameEncoder;
-import com.nineyin.transport.XorKey;
+import com.nineyin.server.game.avatar.neigong.FacultyStore;
+import com.nineyin.util.ServerPaths;
+import com.nineyin.server.db.role.JsonRoleRepository;
+import com.nineyin.server.db.role.RoleStoreFacade;
+import com.nineyin.server.transport.Connection;
+import com.nineyin.server.transport.FrameCodec;
+import com.nineyin.server.transport.FrameDecoder;
+import com.nineyin.server.transport.FrameEncoder;
+import com.nineyin.server.transport.XorKey;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -57,11 +62,11 @@ class LoginFlowTest {
     }
 
     private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty) {
-        return newChannel(store, faculty, new com.nineyin.gm.GmHub(), null);
+        return newChannel(store, faculty, new GmHub(), null);
     }
 
     private static EmbeddedChannel newChannel(RoleStoreFacade store, FacultyStore faculty,
-                                              com.nineyin.gm.GmHub hub, SceneNpcRegistry registry) {
+                                              GmHub hub, SceneNpcRegistry registry) {
         LoginFlow flow = new LoginFlow(store, faculty, hub, Clock.systemDefaultZone(),
                 registry, new ManualScheduler());
         Connection connection = new Connection(null);
@@ -430,7 +435,7 @@ class LoginFlowTest {
         // faculty.json 已初始化默认进度。
         assertTrue(java.nio.file.Files.exists(tempDir.resolve("faculty.json")));
         // GM 面板会话：选角后挂快照，断连后摘除。
-        com.nineyin.gm.GmHub hub = new com.nineyin.gm.GmHub();
+        GmHub hub = new GmHub();
         EmbeddedChannel gmChannel = newChannel(store, faculty, hub, null);
         send(gmChannel, loginFrame());
         drain(gmChannel);
@@ -567,7 +572,7 @@ class LoginFlowTest {
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
         RoleStoreFacade store = new RoleStoreFacade(repository);
         FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
-        EmbeddedChannel channel = newChannel(store, faculty, new com.nineyin.gm.GmHub(), registry);
+        EmbeddedChannel channel = newChannel(store, faculty, new GmHub(), registry);
         send(channel, loginFrame());
         drain(channel);
         send(channel, new byte[]{0x03});
@@ -605,7 +610,7 @@ class LoginFlowTest {
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
         RoleStoreFacade store = new RoleStoreFacade(repository);
         FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
-        EmbeddedChannel channel = newChannel(store, faculty, new com.nineyin.gm.GmHub(), null);
+        EmbeddedChannel channel = newChannel(store, faculty, new GmHub(), null);
         send(channel, loginFrame());
         drain(channel);
         send(channel, new byte[]{0x03});
@@ -642,7 +647,7 @@ class LoginFlowTest {
 
     /** 客户端 0x1E 帧构造（C2S id 无 [1,764] S2C 限制）。 */
     private static byte[] clientCustomFrame(int messageId, int subcommand) {
-        com.nineyin.protocol.PacketWriter writer = com.nineyin.protocol.PacketWriter.ofCapacity(16);
+        PacketWriter writer = PacketWriter.ofCapacity(16);
         writer.writeU8(0x1E).writeU16(2);
         writer.writeU8(2).writeU32(messageId & 0xFFFFFFFFL);
         writer.writeU8(2).writeU32(subcommand & 0xFFFFFFFFL);
@@ -653,6 +658,6 @@ class LoginFlowTest {
         java.nio.file.Path share = GO_SERVER_ROOT.resolve("resources/modern/share");
         return SceneNpcRegistry.open(share.resolve("npc/npcconfig"),
                 share.resolve("creator/npc_creator"),
-                com.nineyin.protocol.NpcSchema.visibleNpcModernV1());
+                NpcSchema.visibleNpcModernV1());
     }
 }

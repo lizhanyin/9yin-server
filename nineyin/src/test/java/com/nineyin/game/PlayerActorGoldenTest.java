@@ -13,16 +13,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-import com.nineyin.game.avatar.PlayerActor;
-import com.nineyin.game.avatar.RoleVisual;
-import com.nineyin.game.avatar.neigong.PlayerProgress;
-import com.nineyin.game.avatar.equipment.EquipmentResolver;
-import com.nineyin.game.avatar.neigong.NeiGongCatalog;
+import com.nineyin.util.ServerPaths;
+import com.nineyin.server.game.avatar.PlayerActor;
+import com.nineyin.server.game.avatar.RoleVisual;
+import com.nineyin.server.game.avatar.neigong.PlayerProgress;
+import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.server.game.avatar.neigong.NeiGongCatalog;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.role.RoleStoreFacade;
+import com.nineyin.server.db.role.RoleStoreFacade;
 
 /**
  * 与 Go golden_dump_test.go 相同固定输入：PlayerActor 登录时刻 0x0D/0x10 帧逐字节一致。

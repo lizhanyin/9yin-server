@@ -8,17 +8,18 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import com.nineyin.world.scene.SceneLifecycle;
-import com.nineyin.world.scene.WorldScene;
+import com.nineyin.server.transport.FrameEncoder;
+import com.nineyin.server.world.scene.SceneLifecycle;
+import com.nineyin.server.world.scene.WorldScene;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.world.npc.NpcCreator;
-import com.nineyin.world.npc.NpcResolver;
-import com.nineyin.world.npc.NpcSpawn;
-import com.nineyin.protocol.PropertyValues.Value;
-import com.nineyin.transport.Connection;
-import com.nineyin.transport.FrameCodec;
-import com.nineyin.transport.XorKey;
+import com.nineyin.server.world.npc.NpcCreator;
+import com.nineyin.server.world.npc.NpcResolver;
+import com.nineyin.server.world.npc.NpcSpawn;
+import com.nineyin.server.protocol.PropertyValues.Value;
+import com.nineyin.server.transport.Connection;
+import com.nineyin.server.transport.FrameCodec;
+import com.nineyin.server.transport.XorKey;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -198,7 +199,7 @@ class SceneLifecycleTest {
 
     private static ChannelWorld newWorld() {
         EmbeddedChannel channel = new EmbeddedChannel();
-        channel.pipeline().addLast(new com.nineyin.transport.FrameEncoder(new Connection(null)));
+        channel.pipeline().addLast(new FrameEncoder(new Connection(null)));
         ManualScheduler scheduler = new ManualScheduler();
         SceneLifecycle world = new SceneLifecycle(new Connection(channel), scheduler);
         world.begin("ini\\scene\\test", "test");

@@ -9,9 +9,11 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.Instant;
 
+import com.nineyin.server.game.avatar.neigong.FacultyStore;
+import com.nineyin.server.game.avatar.neigong.PlayerProgress;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.server.MySqlEnv;
+import com.nineyin.util.MySqlEnv;
 
 /**
  * role_faculty DB 双源集成（无 MySQL 自动跳过，MySqlRoleRepositoryIntegrationTest 同策略）。

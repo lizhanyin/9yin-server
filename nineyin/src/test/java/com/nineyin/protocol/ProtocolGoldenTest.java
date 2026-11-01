@@ -12,13 +12,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import com.nineyin.server.protocol.*;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.avatar.equipment.EquipmentResolver;
-import com.nineyin.game.avatar.RoleVisual;
-import com.nineyin.game.ServerPaths;
-import com.nineyin.role.RoleStoreFacade;
+import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.server.game.avatar.RoleVisual;
+import com.nineyin.util.ServerPaths;
+import com.nineyin.server.db.role.RoleStoreFacade;
 
 /** 与 Go 侧 golden_dump_test.go 相同固定输入的逐字节一致性验证。 */
 class ProtocolGoldenTest {

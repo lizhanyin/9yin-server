@@ -11,6 +11,11 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 
+import com.nineyin.server.db.role.MySqlRoleRepository;
+import com.nineyin.server.db.role.RoleRepositoryException;
+import com.nineyin.server.db.role.RoleStoreFacade;
+import com.nineyin.server.db.role.Roles;
+import com.nineyin.util.MySqlEnv;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -32,7 +37,7 @@ class MySqlRoleRepositoryIntegrationTest {
         // DSN 来源与生产一致：NINEYIN_MYSQL_DSN 环境变量 > 根目录 mysql.env；均无则跳过。
         String base = System.getenv("NINEYIN_MYSQL_DSN");
         if (base == null || base.isBlank()) {
-            base = com.nineyin.server.MySqlEnv.loadDsn().orElse(null);
+            base = MySqlEnv.loadDsn().orElse(null);
         }
         assumeTrue(base != null && !base.isBlank(),
                 "未配置 MySQL DSN（环境变量 NINEYIN_MYSQL_DSN 或根目录 mysql.env），跳过集成测试");

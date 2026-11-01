@@ -6,10 +6,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import com.nineyin.server.protocol.LoginMessages;
+import com.nineyin.server.protocol.SceneNames;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.ServerPaths;
+import com.nineyin.util.ServerPaths;
 
 /** 选角显示名映射：scenes.ini + desc.idres 数据驱动（需 Go 仓库 share 资源）。 */
 class SceneNamesTest {

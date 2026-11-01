@@ -9,6 +9,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 
+import com.nineyin.server.gm.GmCatalog;
+import com.nineyin.server.gm.GmCatalogDb;
+import com.nineyin.util.MySqlEnv;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -26,7 +29,7 @@ class GmCatalogDbIntegrationTest {
     static void setUp() {
         String dsn = System.getenv("NINEYIN_MYSQL_DSN");
         if (dsn == null || dsn.isBlank()) {
-            dsn = com.nineyin.server.MySqlEnv.loadDsn().orElse(null);
+            dsn = MySqlEnv.loadDsn().orElse(null);
         }
         assumeTrue(dsn != null && !dsn.isBlank(), "未配置 MySQL DSN，跳过集成测试");
         try {
@@ -127,7 +130,7 @@ class GmCatalogDbIntegrationTest {
     @Test
     void catalogWiredToDatabase() {
         // 不调 catalog.close()：共享 db 池由 tearDown 统一关闭，避免影响其他用例。
-        GmCatalog catalog = GmCatalog.createForTest(null, null);
+        com.nineyin.server.gm.GmCatalog catalog = GmCatalog.createForTest(null, null);
         catalog.useDatabase(db);
         assertTrue(catalog.titles().size() > 1000);
         assertTrue(catalog.cards().size() > 1000);

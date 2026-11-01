@@ -10,15 +10,18 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
+import com.nineyin.server.game.avatar.neigong.PlayerProgress;
+import com.nineyin.server.transport.FrameEncoder;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.avatar.PlayerActor;
-import com.nineyin.protocol.CustomC2S;
-import com.nineyin.protocol.CustomMessages;
-import com.nineyin.protocol.PacketWriter;
-import com.nineyin.transport.Connection;
-import com.nineyin.transport.FrameCodec;
-import com.nineyin.transport.XorKey;
+import com.nineyin.server.game.avatar.PlayerActor;
+import com.nineyin.server.protocol.CustomC2S;
+import com.nineyin.server.protocol.CustomMessages;
+import com.nineyin.server.protocol.PacketWriter;
+import com.nineyin.server.transport.Connection;
+import com.nineyin.server.transport.FrameCodec;
+import com.nineyin.server.transport.XorKey;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -37,7 +40,7 @@ class FacultyProgressTest {
         final PlayerActor player;
 
         Env() {
-            channel.pipeline().addLast(new com.nineyin.transport.FrameEncoder(new Connection(null)));
+            channel.pipeline().addLast(new FrameEncoder(new Connection(null)));
             player = PlayerActor.create("李逍遥", 99999, Clock.fixed(NOW, java.time.ZoneOffset.UTC));
             PlayerProgress.Snapshot snapshot = player.facultySnapshot();
             // 固定推进基线：NOW 前一小时，便于分钟结算确定性。

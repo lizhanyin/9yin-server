@@ -13,13 +13,13 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.ServerPaths;
-import com.nineyin.protocol.NpcMessages;
-import com.nineyin.world.npc.NpcSpawn;
-import com.nineyin.protocol.NpcSchema;
+import com.nineyin.util.ServerPaths;
+import com.nineyin.server.protocol.NpcMessages;
+import com.nineyin.server.world.npc.NpcSpawn;
+import com.nineyin.server.protocol.NpcSchema;
 import com.nineyin.protocol.SnapshotGoldens;
-import com.nineyin.role.Roles;
-import com.nineyin.world.npc.SceneNpcRegistry;
+import com.nineyin.server.db.role.Roles;
+import com.nineyin.server.world.npc.SceneNpcRegistry;
 
 /**
  * Chengdu 目录 + NPC 帧的官方方言基准：解析栈（TSV/XML/Resolver）统计快照

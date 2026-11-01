@@ -6,10 +6,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import com.nineyin.server.gm.FactionNames;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.game.ServerPaths;
+import com.nineyin.util.ServerPaths;
 
 /** GM 面板门派显示名映射：form_main_player.ini [school_name] + interface.idres（需 Go 仓库资源）。 */
 class FactionNamesTest {

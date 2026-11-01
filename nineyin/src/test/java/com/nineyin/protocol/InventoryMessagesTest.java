@@ -9,9 +9,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.nineyin.server.protocol.InventoryMessages;
+import com.nineyin.server.protocol.PropertyTable;
+import com.nineyin.server.protocol.WireType;
 import org.junit.jupiter.api.Test;
 
-import com.nineyin.world.db.RoleInventoryStore;
+import com.nineyin.server.world.db.RoleInventoryStore;
 
 /**
  * InventoryMessages 行为回归（bak InventoryPacketsTest 语义）：

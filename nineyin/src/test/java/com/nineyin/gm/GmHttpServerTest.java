@@ -7,6 +7,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
+import com.nineyin.server.gm.GmCatalog;
+import com.nineyin.server.gm.GmHttpServer;
+import com.nineyin.server.gm.GmHub;
 import org.junit.jupiter.api.Test;
 
 /** GmHttpServer 启动冒烟：随机端口起服，/api/status 与 /api/sessions 可达。 */
@@ -21,11 +24,11 @@ class GmHttpServerTest {
     @Test
     void startsAndServesStatusAndSessions() throws Exception {
         int port = freePort();
-        GmHub hub = new GmHub();
-        GmHttpServer server = new GmHttpServer(hub, GmCatalog.empty(), "127.0.0.1", port);
+        com.nineyin.server.gm.GmHub hub = new com.nineyin.server.gm.GmHub();
+        com.nineyin.server.gm.GmHttpServer server = new GmHttpServer(hub, GmCatalog.empty(), "127.0.0.1", port);
         server.start();
 
-        GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
+        com.nineyin.server.gm.GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
         snapshot.sessionId = 7;
         snapshot.name = "GM冒烟角色";
         snapshot.faction = "force_yihua";

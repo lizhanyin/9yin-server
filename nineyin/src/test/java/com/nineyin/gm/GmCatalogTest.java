@@ -14,6 +14,8 @@ import java.util.Set;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 
+import com.nineyin.server.gm.GmCatalog;
+import com.nineyin.server.gm.GmCatalogDb;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,7 +29,7 @@ class GmCatalogTest {
     @TempDir
     Path dataDir;
 
-    private GmCatalog catalog;
+    private com.nineyin.server.gm.GmCatalog catalog;
 
     @BeforeEach
     void setUp() throws IOException {

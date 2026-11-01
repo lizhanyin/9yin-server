@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import com.nineyin.server.session.SessionMachine;
 import org.junit.jupiter.api.Test;
 
 /** 对齐 Go internal/session/state_test.go 的校验矩阵与转移序列。 */

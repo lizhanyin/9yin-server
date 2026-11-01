@@ -3,6 +3,7 @@ package com.nineyin.transport;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.nineyin.server.transport.XorKey;
 import org.junit.jupiter.api.Test;
 
 /** 对齐 Go internal/transport/key_test.go 的测试向量。 */

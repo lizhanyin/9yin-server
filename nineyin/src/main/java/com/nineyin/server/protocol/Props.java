@@ -4,30 +4,40 @@ import com.nineyin.server.protocol.PropertyValues.Indexed;
 import com.nineyin.server.protocol.PropertyValues.Value;
 
 /**
- * 官方属性表方言的取值入口：一切属性帧按「名字」写入，索引/线型由
- * {@link PropertyTable} 决定，值按表线型自动适配（Go 方言的 int32 Level →
- * 官方 byte Level 等）。类别冲突按桥接规则转换：空串→0，可解析串→数，
- * 数→十进制文本。名字不在官方表（或线型码不可编码）→ 静默跳过——
+ * 属性表方言的取值入口：一切属性按「名字」写入，索引/线型由
+ * {@link PropertyTable} 决定（玩家/视图域=末次出现；场景域见 {@link #appendScene}），
+ * 值按表线型自动适配。类别冲突按桥接规则转换：空串→0，可解析串→数，
+ * 数→十进制文本。名字不在表内（或线型码不可编码）→ 静默跳过——
  * 语义由 0x0D 头、0x1F、BufferInfo 槽等其它通道承担。
  */
 public final class Props {
 
-    /** 名字不在官方表 → null（调用方跳过）。 */
+    /** 名字不在表内 → null（调用方跳过）。玩家/视图域（末次出现）。 */
     public static Indexed indexedOrNull(String name, Value value) {
-        WireType type = PropertyTable.wireType(name);
+        WireType type = PropertyTable.playerWireType(name);
         if (type == null) {
             return null;
         }
-        return Indexed.of(PropertyTable.idx(name), name, coerce(name, type, value));
+        return Indexed.of(PropertyTable.playerIdx(name), name, coerce(name, type, value));
     }
 
-    /** 场景对象属性（0x10/0x0D 归档行）：缺名跳过，返回是否已写入。 */
+    /** 玩家/场景对象属性（0x10/0x0D 归档行）：缺名跳过，返回是否已写入。 */
     public static boolean append(PacketWriter writer, String name, Value value) {
         Indexed indexed = indexedOrNull(name, value);
         if (indexed == null) {
             return false;
         }
         writer.appendIndexed(indexed);
+        return true;
+    }
+
+    /** 场景域（首次出现）写入：entryScene/NPC 侧属性（ConfigID@7/Resource@8/MaxVisuals@99）。 */
+    public static boolean appendScene(PacketWriter writer, String name, Value value) {
+        WireType type = PropertyTable.wireType(name);
+        if (type == null) {
+            return false;
+        }
+        writer.appendIndexed(Indexed.of(PropertyTable.idx(name), name, coerce(name, type, value)));
         return true;
     }
 
@@ -39,13 +49,13 @@ public final class Props {
         }
     }
 
-    /** 视图行属性（0x15/0x18）：缺名跳过。 */
+    /** 视图行属性（0x15/0x18）：缺名跳过（玩家/视图域）。 */
     public static SceneMessages.ViewProperty view(String name, Value value) {
-        WireType type = PropertyTable.wireType(name);
+        WireType type = PropertyTable.playerWireType(name);
         if (type == null) {
             return null;
         }
-        int index = PropertyTable.idx(name);
+        int index = PropertyTable.playerIdx(name);
         Value coerced = coerce(name, type, value);
         return switch (type) {
             case BYTE -> SceneMessages.ViewProperty.ofByte(index, coerced.u8());
@@ -71,20 +81,20 @@ public final class Props {
     // ---- 便捷重载：数字/文本按表线型收窄或转换 ----
 
     public static Value number(String name, long value) {
-        return coerce(name, PropertyTable.type(name), Value.ofInt32((int) value));
+        return coerce(name, PropertyTable.playerType(name), Value.ofInt32((int) value));
     }
 
     public static Value decimal(String name, double value) {
-        WireType type = PropertyTable.type(name);
+        WireType type = PropertyTable.playerType(name);
         return switch (type) {
             case FLOAT32 -> Value.ofFloat32((float) value);
-            case FLOAT64 -> Value.ofFloat64(value);
+            case INT64 -> Value.ofInt64((long) value);
             default -> coerce(name, type, Value.ofInt32((int) value));
         };
     }
 
     public static Value text(String name, String value) {
-        WireType type = PropertyTable.type(name);
+        WireType type = PropertyTable.playerType(name);
         return switch (type) {
             case STRING -> Value.ofString(value);
             case WIDE_STRING -> Value.ofWideString(value);
@@ -102,7 +112,7 @@ public final class Props {
             case WORD -> Value.ofWord(narrowInt(name, want, value));
             case INT32 -> Value.ofInt32(narrowInt(name, want, value));
             case FLOAT32 -> Value.ofFloat32((float) numeric(name, value));
-            case FLOAT64 -> Value.ofFloat64(numeric(name, value));
+            case INT64 -> Value.ofInt64((long) numeric(name, value));
             case STRING -> Value.ofString(textOf(name, value));
             case WIDE_STRING -> Value.ofWideString(textOf(name, value));
             case OBJECT -> {
@@ -130,7 +140,7 @@ public final class Props {
             case WORD -> value.u16();
             case INT32 -> value.i32();
             case FLOAT32 -> value.f32();
-            case FLOAT64 -> Double.longBitsToDouble(value.u64());
+            case INT64 -> (double) value.u64();
             case STRING, WIDE_STRING -> {
                 String text = value.text() == null ? "" : value.text().trim();
                 if (text.isEmpty()) {
@@ -154,7 +164,7 @@ public final class Props {
             case WORD -> String.valueOf(value.u16());
             case INT32 -> String.valueOf(value.i32());
             case FLOAT32 -> String.valueOf(value.f32());
-            case FLOAT64 -> String.valueOf(Double.longBitsToDouble(value.u64()));
+            case INT64 -> String.valueOf(value.u64());
             default -> throw new IllegalStateException("property " + name + " wants text, got " + value.type());
         };
     }

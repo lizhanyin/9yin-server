@@ -11,6 +11,12 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -21,9 +27,11 @@ import com.zaxxer.hikari.HikariDataSource;
  */
 public final class RoleInventoryStore implements AutoCloseable {
 
-    /** 穿戴装备（身体槽位 1 帽/3 衣/4 裤/6 腕/7 腿/8 鞋/22 武器…）。 */
+    private static final Logger log = LoggerFactory.getLogger(RoleInventoryStore.class);
+
+    /** 穿戴装备（身体槽位 1 帽/3 衣/4 裤/6 腕/7 腿/8 鞋/22 武器…；propBuilt 词缀串 "1,id;1,id"）。 */
     public record Equip(String configId, int itemType, String equipType, int slot,
-                        int hardiness, int maxHardiness, int artPack) {
+                        int hardiness, int maxHardiness, int artPack, String propBuilt) {
     }
 
     /** 背包行（slot=真实槽位 1..90；viewId 决定进哪个视图页）。 */
@@ -96,12 +104,56 @@ public final class RoleInventoryStore implements AutoCloseable {
         }
     }
 
+    /** affixes 列是本服迁移加的；DB 被 F 版参考服数据还原后该列可能不存在，需降级查询。 */
+    private static final String EQUIP_SQL_FULL =
+            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack, affixes "
+                    + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+    private static final String EQUIP_SQL_NO_AFFIXES =
+            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack "
+                    + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+
     public List<Equip> equips(long roleId) {
-        return query("SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack "
-                        + "FROM role_equip_items WHERE role_id = ? ORDER BY seq",
-                statement -> statement.setLong(1, roleId),
-                (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
-                        result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7)));
+        try {
+            return query(EQUIP_SQL_FULL,
+                    statement -> statement.setLong(1, roleId),
+                    (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
+                            result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7),
+                            propBuiltOf(result.getString(8))));
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Unknown column 'affixes'")) {
+                log.warn("role_equip_items has no affixes column (F-schema db); retry without affixes role={}",
+                        roleId);
+                return query(EQUIP_SQL_NO_AFFIXES,
+                        statement -> statement.setLong(1, roleId),
+                        (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
+                                result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7), ""));
+            }
+            throw e;
+        }
+    }
+
+    /** affixes JSON [{pack_rec,prop_built}] → 协议 PropBuilt 串 "1,id;1,id"（四期装备词缀层）。 */
+    private static String propBuiltOf(String json) {
+        if (json == null || json.isEmpty()) {
+            return "";
+        }
+        try {
+            JSONArray affixes = JSON.parseArray(json);
+            StringBuilder built = new StringBuilder();
+            for (int i = 0; i < affixes.size(); i++) {
+                JSONObject affix = affixes.getJSONObject(i);
+                if (affix == null) {
+                    continue;
+                }
+                if (built.length() > 0) {
+                    built.append(';');
+                }
+                built.append("1,").append(affix.getIntValue("prop_built"));
+            }
+            return built.toString();
+        } catch (RuntimeException e) {
+            return "";
+        }
     }
 
     /** 背包行 + game_items 富化（color_level/script 缺省时补目录值）。 */

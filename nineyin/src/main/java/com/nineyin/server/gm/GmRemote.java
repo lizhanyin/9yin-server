@@ -105,13 +105,35 @@ public class GmRemote {
         return o.toJSONString();
     }
 
-    /** Go gm_panel.go switch(body.Action)：已实现动作白名单 + 移动参数 0.1..100 数值域。 */
+    /** Go gm_panel.go switch(body.Action)：已实现动作白名单 + 数值域。 */
     private static String validateCommand(String action, JSONObject params) {
         return switch (action) {
             case "set_move_speed" -> floatRange(params, "value", 0.1f, 100f, "move speed");
             case "set_gravity" -> floatRange(params, "value", 0.1f, 100f, "gravity");
+            case "set_silver" -> nonNegative(params, "silver");
+            case "set_guanyin" -> nonNegative(params, "guanYin");
+            case "set_gold" -> nonNegative(params, "gold");
+            case "set_sp" -> intRange(params, "sp", 0, 100);
+            case "add_sp" -> intRange(params, "sp", 1, 100);
+            case "fill_sp" -> null;
             default -> "unsupported action: " + action;
         };
+    }
+
+    private static String nonNegative(JSONObject params, String key) {
+        Integer value = params != null ? params.getInteger(key) : null;
+        if (value == null || value < 0) {
+            return key + " must be non-negative";
+        }
+        return null;
+    }
+
+    private static String intRange(JSONObject params, String key, int min, int max) {
+        Integer value = params != null ? params.getInteger(key) : null;
+        if (value == null || value < min || value > max) {
+            return key + " must be between " + min + " and " + max;
+        }
+        return null;
     }
 
     private static String floatRange(JSONObject params, String key, float min, float max, String label) {

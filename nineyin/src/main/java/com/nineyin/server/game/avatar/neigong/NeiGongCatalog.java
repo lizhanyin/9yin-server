@@ -40,6 +40,10 @@ public final class NeiGongCatalog {
     private final Map<String, Integer> buffStatic = new HashMap<>();
     private final Map<Integer, List<Modifier>> propPacks = new HashMap<>();
     private final Map<Integer, List<Modifier>> skillPacks = new HashMap<>();
+    // 内功属性三件套（四期，bak 同源）：StaticData→BelongType / configId→School / configId→nWuXing
+    private final Map<Integer, String> belongTypes = new HashMap<>();
+    private final Map<String, String> schools = new HashMap<>();
+    private final Map<String, Integer> wuXing = new HashMap<>();
 
     /** Go loadModernNeiGongCatalog 的 sync.Once 等价：目录级缓存（serverRoot 变化自动换表）。 */
     public static NeiGongCatalog load() {
@@ -48,6 +52,58 @@ public final class NeiGongCatalog {
             catalog.loadAll(ServerPaths.projectPath("resources", "modern", "share"));
             return catalog;
         });
+    }
+
+    /** 整目录解析（测试注入临时 share 根用）。 */
+    public static NeiGongCatalog loadShare(Path shareRoot) {
+        NeiGongCatalog catalog = new NeiGongCatalog();
+        catalog.loadAll(shareRoot);
+        return catalog;
+    }
+
+    /**
+     * WuXing 五行/属性枚举（客户端本地化键 ui_wuxue_prop_{N}，用户 2026-11-01 确认对照）：
+     * 技能 1=刚 / 2=柔 / 3=阴 / 4=阳；内功 5=太极 / 6=阴柔 / 7=阳刚。
+     * 全量数据交叉验证：BelongType ng_mp_tj→5 / ng_mp_yr→6 / ng_mp_yg→7（100% 吻合）。
+     */
+    public static final int WUXING_GANG = 1;      // 技能：刚
+    public static final int WUXING_ROU = 2;       // 技能：柔
+    public static final int WUXING_YIN = 3;       // 技能：阴
+    public static final int WUXING_YANG = 4;      // 技能：阳
+    public static final int WUXING_TAIJI = 5;     // 内功：太极
+    public static final int WUXING_YINROU = 6;    // 内功：阴柔
+    public static final int WUXING_YANGGANG = 7;  // 内功：阳刚
+
+    /** 内功属性名（applyModernEffect 同款推导）：BelongType ng_mp_tj→太极 / yg→阳刚 / yr→阴柔；
+     *  移花（ng_yh_ 前缀）特判阴柔；未知归属返回空串。 */
+    public String attributeOf(int staticData, String configId) {
+        String belong = belongTypes.getOrDefault(staticData, "");
+        switch (belong) {
+            case "ng_mp_tj":
+                return "太极";
+            case "ng_mp_yg":
+                return "阳刚";
+            case "ng_mp_yr":
+                return "阴柔";
+            default:
+                break;
+        }
+        if (configId != null && configId.startsWith("ng_yh_")) {
+            return "阴柔";
+        }
+        return "";
+    }
+
+    /** configId → 门派代码（neigong.ini School=，如 ng_wd；未收录返回空串）。 */
+    public String schoolOf(String configId) {
+        String school = configId == null ? null : schools.get(configId);
+        return school == null ? "" : school;
+    }
+
+    /** configId → nWuXing 五行 int（wuxuebaseinfo.ini；未收录 0；值语义见 WUXING_* 常量）。 */
+    public int wuXingOf(String configId) {
+        Integer value = configId == null ? null : wuXing.get(configId);
+        return value == null ? 0 : value;
     }
 
     private void loadAll(Path shareRoot) {
@@ -60,6 +116,7 @@ public final class NeiGongCatalog {
             switch (key) {
                 case "MinVarPropNo" -> ranges.put(id, new Range(parseIntOrDefault(value), range.max()));
                 case "MaxVarPropNo" -> ranges.put(id, new Range(range.min(), parseIntOrDefault(value)));
+                case "BelongType" -> belongTypes.put(id, value.trim());
                 default -> {
                 }
             }
@@ -93,6 +150,33 @@ public final class NeiGongCatalog {
         });
         loadModifierPacks(shareRoot.resolve(Path.of("modifypack", "proppack.ini")), propPacks);
         loadModifierPacks(shareRoot.resolve(Path.of("modifypack", "skillpack.ini")), skillPacks);
+        loadSchools(shareRoot.resolve(Path.of("skill", "neigong", "neigong.ini")));
+        ResourceCache.ini(shareRoot.resolve(Path.of("faculty", "wuxuebaseinfo.ini")),
+                java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
+                    if ("nWuXing".equals(key)) {
+                        Integer parsed = parseInt(value);
+                        if (parsed != null) {
+                            wuXing.put(section.trim(), parsed);
+                        }
+                    }
+                });
+    }
+
+    /** neigong.ini：QName（缺省节名）→ School 门派代码。 */
+    private void loadSchools(Path ini) {
+        Map<String, String> qnameToSection = new HashMap<>();
+        Map<String, String> sectionSchool = new HashMap<>();
+        ResourceCache.ini(ini, java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
+            if ("QName".equals(key)) {
+                qnameToSection.put(section.trim(), value.trim());
+            } else if ("School".equals(key)) {
+                sectionSchool.put(section.trim(), value.trim());
+            }
+        });
+        for (Map.Entry<String, String> entry : sectionSchool.entrySet()) {
+            String configId = qnameToSection.getOrDefault(entry.getKey(), entry.getKey());
+            schools.put(configId, entry.getValue());
+        }
     }
 
     /** Go effect：按 StaticData 区间找 level 匹配 varprop，聚合直接加成 + PropPack。 */

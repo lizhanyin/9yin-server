@@ -153,11 +153,11 @@ public final class SceneMessages {
         PacketWriter writer = PacketWriter.ofCapacity(96);
         writer.writeU8(0x0B)
                 .writeU32(PLAYER_OBJECT_ID).writeU32(PLAYER_OWNER_ID).writeU32(1).writeU16(3);
-        Props.append(writer, "ConfigID", PropertyValues.Value.ofString(scene.config()));
-        Props.append(writer, "Resource", PropertyValues.Value.ofString(scene.resource()));
+        Props.appendScene(writer, "ConfigID", PropertyValues.Value.ofString(scene.config()));
+        Props.appendScene(writer, "Resource", PropertyValues.Value.ofString(scene.resource()));
         // MaxVisuals 官方语义=最大可见对象数（u16，官方真服发 100；capture-fxgame-op2 0x0B 实证）， 取值范围是 0 到 65535（即 0 到 2¹⁶-1）
-        // 原Go服写大了，发1000000超过了65535。
-        Props.append(writer, "MaxVisuals", PropertyValues.Value.ofInt32(100));
+        // 原Go服写大了，发1000000超过了65535。场景域首现=99（INT32）。
+        Props.appendScene(writer, "MaxVisuals", PropertyValues.Value.ofInt32(100));
         return writer.toBytes();
     }
 

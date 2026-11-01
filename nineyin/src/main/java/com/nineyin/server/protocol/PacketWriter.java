@@ -127,8 +127,8 @@ public final class PacketWriter {
                 return writeU32(value.i32() & 0xFFFFFFFFL);
             case FLOAT32:
                 return writeF32(value.f32());
-            case FLOAT64:
-                // f64 位存于 u64 字段（官方表 type=4，如 CapitalType1 碎银）
+            case INT64:
+                // 官方表 type=4 = 小端 int64（真机抓包实证，如 CapitalType1 碎银）
                 return writeU64(value.u64());
             case STRING:
                 byte[] data = (value.text() == null ? "" : value.text()).getBytes(StandardCharsets.UTF_8);

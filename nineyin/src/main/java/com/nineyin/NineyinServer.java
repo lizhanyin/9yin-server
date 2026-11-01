@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.util.Properties;
 import java.util.concurrent.ScheduledExecutorService;
 
+import com.nineyin.server.world.db.PanelDataStore;
 import com.nineyin.server.world.db.RoleInventoryStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,9 +88,19 @@ public final class NineyinServer implements SummerApp {
                 log.warn("role inventory MySQL unavailable, starter fallback: {}", e.getMessage());
             }
         }
+        // 四期面板域（称号/兵录/声望/坐骑）；失败仅告警，面板回退种子值。
+        PanelDataStore panelStore = null;
+        if (dsn.isPresent()) {
+            try {
+                panelStore = PanelDataStore.open(dsn.get());
+                log.info("panel data store attached to MySQL");
+            } catch (RuntimeException e) {
+                log.warn("panel data MySQL unavailable, seed values: {}", e.getMessage());
+            }
+        }
         ProtocolCustomMgr.get().setHandler(new NineyinProtocolHandler(
                 new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
-                        npcRegistry, sceneScheduler, inventoryStore),
+                        npcRegistry, sceneScheduler, inventoryStore, panelStore),
                 "127.0.0.1", gamePort()));
         log.info("nineyin server initialized: root={} storage={} gmRpc=127.0.0.1:{} npcRegistry={}",
                 ServerPaths.serverRoot(), repository.getClass().getSimpleName(),

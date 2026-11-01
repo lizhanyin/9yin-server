@@ -78,24 +78,30 @@ class ProtocolGoldenTest {
     void propertyTableMatchesOfficialSnapshot() {
         byte[] frame = SceneMessages.propertyTableFrame();
         assertEquals(0x09, frame[0]);
-        assertEquals(2426, frame[1] | frame[2] << 8, "官方整表 verbatim（2426 行含 None 行，bak 同）");
+        assertEquals(2370, frame[1] | frame[2] << 8, "真机 0x09 场景方言整表 verbatim（F 盘参考服捕获提取）");
         SnapshotGoldens.assertOrRegen("property_table_official.bin", frame);
     }
 
     @Test
     void propertyTableKnownEntries() {
-        // bak 真机验证过的关键索引抽检（客户端按名绑定，索引错位即渲染失败）。
-        assertEquals(1439, PropertyTable.idx("ConfigID"));
+        // 真机捕获表抽检（客户端按位置绑定，索引错位即渲染失败）；视图行=玩家域索引。
+        assertEquals(7, PropertyTable.idx("ConfigID"), "场景域首现");
+        assertEquals(1440, PropertyTable.playerIdx("ConfigID"), "视图/玩家域末现");
         assertEquals(WireType.STRING, PropertyTable.type("ConfigID"));
-        assertEquals(1891, PropertyTable.idx("UniqueID"));
-        assertEquals(1936, PropertyTable.idx("EquipType"));
-        assertEquals(1597, PropertyTable.idx("WeaponMode"));
+        assertEquals(1893, PropertyTable.idx("UniqueID"));
+        assertEquals(1938, PropertyTable.idx("EquipType"));
+        assertEquals(48, PropertyTable.idx("WeaponMode"), "场景域");
+        assertEquals(1599, PropertyTable.playerIdx("WeaponMode"), "玩家域");
         assertEquals(WireType.STRING, PropertyTable.type("WeaponMode"));
-        assertEquals(1464, PropertyTable.idx("Level"));
-        assertEquals(WireType.BYTE, PropertyTable.type("Level"));
-        assertEquals(416, PropertyTable.idx("CapitalType1"));
-        assertEquals(WireType.FLOAT64, PropertyTable.type("CapitalType1"));
-        assertEquals(772, PropertyTable.idx("FillSpeed"));
+        assertEquals(6, PropertyTable.idx("Level"), "NPC 域 Level=INT32");
+        assertEquals(WireType.INT32, PropertyTable.type("Level"));
+        assertEquals(1465, PropertyTable.playerIdx("Level"), "视图域 Level=BYTE");
+        assertEquals(WireType.BYTE, PropertyTable.playerType("Level"));
+        assertEquals(111, PropertyTable.idx("CapitalType1"), "商店/场景域=INT32");
+        assertEquals(WireType.INT32, PropertyTable.type("CapitalType1"));
+        assertEquals(417, PropertyTable.playerIdx("CapitalType1"), "玩家碎银=INT64");
+        assertEquals(WireType.INT64, PropertyTable.playerType("CapitalType1"));
+        assertEquals(773, PropertyTable.playerIdx("FillSpeed"), "内修修速（真机帧#20 实证）");
     }
 
     @Test

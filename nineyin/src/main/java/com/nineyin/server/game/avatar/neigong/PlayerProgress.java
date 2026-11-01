@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
@@ -47,6 +48,26 @@ public final class PlayerProgress {
         public int maxMpAdd;
         public int maxParryAdd;
         public int minMagicDefAdd;
+        /** varprop/proppack 全量 stats 快照（MeleePowerAdd/DamageAdd/Mul 等通用键面，四期面板叠加源）。 */
+        public Map<String, Integer> effectStats = Map.of();
+        // 内功属性三件套（IDA 钉死：BelongType→太极/阴柔/阳刚；wuxuebaseinfo nWuXing；neigong.ini School）
+        public String attribute = "";
+        public int wuXing;
+        public String school = "";
+    }
+
+    /**
+     * 面板战斗块的装备词缀叠加层（{@code PanelState.recomputeEquipBonuses} 的产物）：
+     * 五维/攻防/命中/闪避/上下限均按 基础 + 本层 + 运功内功 varprop 叠加（IDA 钉死序）。
+     */
+    public record EquipBonus(int maxHpAdd, int maxMpAdd,
+                             int strAdd, int staAdd, int dexAdd, int ingAdd, int spiAdd,
+                             int meleePowerAdd, int phyVa, int magicVa,
+                             int phyHit, int magicHit, int dodge, int phyDef,
+                             int minMelee, int maxMelee) {
+
+        public static final EquipBonus NONE = new EquipBonus(0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     /** facultyBookSnapshot / facultyProgressSnapshot 的 Go JSON 契约。 */
@@ -91,6 +112,9 @@ public final class PlayerProgress {
         ngWd001.maxMpAdd = 490;
         ngWd001.maxParryAdd = 840;
         ngWd001.minMagicDefAdd = 45;
+        ngWd001.attribute = "太极";
+        ngWd001.wuXing = NeiGongCatalog.WUXING_TAIJI;
+        ngWd001.school = "ng_wd";
         progress.books.add(ngWd001);
         Book ngYh001 = book("ng_yh_001", 114, 1002, 30, 71, 579600, 8180, 8180);
         ngYh001.buffId = "buf_ng_yh_001";
@@ -105,6 +129,8 @@ public final class PlayerProgress {
         ngYh001.maxMpAdd = 1130;
         ngYh001.maxParryAdd = 5040;
         ngYh001.minMagicDefAdd = 100;
+        ngYh001.attribute = "阴柔";
+        ngYh001.school = "ng_yh";
         progress.books.add(ngYh001);
         Book ngTh001 = book("ng_th_001", 113, 1002, 30, 71, 579600, 8180, 8180);
         ngTh001.buffId = "buf_ng_th_001";
@@ -119,6 +145,7 @@ public final class PlayerProgress {
         ngTh001.maxMpAdd = 1135;
         ngTh001.maxParryAdd = 5070;
         ngTh001.minMagicDefAdd = 100;
+        ngTh001.school = "ng_th";
         progress.books.add(ngTh001);
         progress.books.add(book("ng_wd_002", 6, 1002, 1, 36, 700, 120, 120));
         progress.books.add(book("ng_jh_001", 1, 1002, 1, 36, 700, 120, 120));
@@ -182,10 +209,43 @@ public final class PlayerProgress {
         return equipped == null ? new int[]{0, 0} : new int[]{equipped.maxHpAdd, equipped.maxMpAdd};
     }
 
-    /** Go applyModernEffect：资源可用时以 varprop 结果覆盖。 */
+    /**
+     * totalResourceAdds（新参考 exe IDA 逆向钉死，bak 真机验证）：
+     * 有效 HP = 基础 + MaxHPAdd 各层（装备/运功内功）+ 7×体魄 + 2×臂力；
+     * 有效 MP = 基础 + MaxMPAdd 各层 + 4×内息 + 罡气。五维均含装备词缀与书加成。
+     *
+     * @return {maxHpAdd, maxMpAdd, strEff, staEff, ingEff, spiEff}
+     */
+    public int[] totalResourceAdds(EquipBonus bonus) {
+        Book equipped = book(curNeiGong);
+        int maxHpAdd = bonus.maxHpAdd + (equipped == null ? 0 : equipped.maxHpAdd);
+        int maxMpAdd = bonus.maxMpAdd + (equipped == null ? 0 : equipped.maxMpAdd);
+        int strEff = attributes.str + bonus.strAdd + (equipped == null ? 0 : equipped.strAdd);
+        int staEff = attributes.sta + bonus.staAdd + (equipped == null ? 0 : equipped.staAdd);
+        int ingEff = attributes.ing + bonus.ingAdd + (equipped == null ? 0 : equipped.ingAdd);
+        int spiEff = attributes.spi + bonus.spiAdd + (equipped == null ? 0 : equipped.spiAdd);
+        return new int[]{maxHpAdd, maxMpAdd, strEff, staEff, ingEff, spiEff};
+    }
+
+    /** Go applyModernEffect：资源可用时以 varprop 结果覆盖；属性三件套 best-effort 始终回填。 */
     void applyModernEffect(Book item) {
         try {
-            NeiGongCatalog.Effect effect = NeiGongCatalog.load().effect(item.staticData, item.level);
+            NeiGongCatalog catalog = NeiGongCatalog.load();
+            // 三件套不依赖 varprop 行（缺该级行也按 staticData/configId 查表，属性显示不断链）；
+            // 查到非空才覆盖——空目录环境保留内联种子。
+            String attribute = catalog.attributeOf(item.staticData, item.configId);
+            if (!attribute.isEmpty()) {
+                item.attribute = attribute;
+            }
+            int wuXing = catalog.wuXingOf(item.configId);
+            if (wuXing != 0) {
+                item.wuXing = wuXing;
+            }
+            String school = catalog.schoolOf(item.configId);
+            if (!school.isEmpty()) {
+                item.school = school;
+            }
+            NeiGongCatalog.Effect effect = catalog.effect(item.staticData, item.level);
             item.buffId = effect.buffId();
             item.buffStaticData = effect.staticData();
             item.buffLevel = effect.buffLevel();
@@ -198,6 +258,7 @@ public final class PlayerProgress {
             item.maxMpAdd = effect.stats().getOrDefault("MaxMPAdd", 0);
             item.maxParryAdd = effect.stats().getOrDefault("MaxParryAdd", 0);
             item.minMagicDefAdd = effect.stats().getOrDefault("MinMagicDefAdd", 0);
+            item.effectStats = effect.stats();
         } catch (RuntimeException ignored) {
             // Go refreshAllModernEffects 是 best-effort：资源缺失保留内联值。
         }
@@ -211,6 +272,14 @@ public final class PlayerProgress {
 
     /** Go properties()：37 项内功/面板属性（已叠当前装备书加成）。 */
     public List<PropertyValues.Indexed> properties() {
+        return properties(EquipBonus.NONE);
+    }
+
+    /**
+     * 面板战斗块（四期实时化）：基础属性 + 装备词缀累积层 + 运功内功（平铺 Add 与
+     * varprop eff 键面，同键不重复计——平铺五维/上限与 eff 键集不相交）。
+     */
+    public List<PropertyValues.Indexed> properties(EquipBonus bonus) {
         Book target = targetBook();
         int level = 0;
         int maxLevel = 0;
@@ -262,6 +331,9 @@ public final class PlayerProgress {
         }
         List<PropertyValues.Indexed> properties = new ArrayList<>(40);
         Props.add(properties, "CurNeiGong", PropertyValues.Value.ofString(curNeiGong));
+        // 当前运功内功五行/属性 int（书行 WuXing 同源；客户端阴阳太极伴生显示）
+        Props.add(properties, "CurNeiGongWuXing",
+                PropertyValues.Value.ofInt32(equipped == null ? 0 : equipped.wuXing));
         Props.add(properties, "Faculty", PropertyValues.Value.ofInt32(faculty));
         Props.add(properties, "FacultyState", PropertyValues.Value.ofInt32(facultyState));
         Props.add(properties, "FacultyStyle", PropertyValues.Value.ofInt32(facultyStyle));
@@ -273,30 +345,54 @@ public final class PlayerProgress {
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
         Props.add(properties, "SP", PropertyValues.Value.ofInt32(a.sp));
-        Props.add(properties, "Str", PropertyValues.Value.ofInt32(a.str));
-        Props.add(properties, "Sta", PropertyValues.Value.ofInt32(a.sta));
-        Props.add(properties, "Dex", PropertyValues.Value.ofInt32(a.dex));
-        Props.add(properties, "Ing", PropertyValues.Value.ofInt32(a.ing));
-        Props.add(properties, "Spi", PropertyValues.Value.ofInt32(a.spi));
-        Props.add(properties, "MeleePower", PropertyValues.Value.ofInt32(a.meleePower));
-        Props.add(properties, "MagicPower", PropertyValues.Value.ofInt32(a.magicPower));
-        Props.add(properties, "PhyHit", PropertyValues.Value.ofInt32(a.phyHit));
-        Props.add(properties, "MagicHit", PropertyValues.Value.ofInt32(a.magicHit));
-        Props.add(properties, "Dodge", PropertyValues.Value.ofInt32(a.dodge));
+        Props.add(properties, "Str", PropertyValues.Value.ofInt32(a.str + bonus.strAdd));
+        Props.add(properties, "Sta", PropertyValues.Value.ofInt32(a.sta + bonus.staAdd));
+        Props.add(properties, "Dex", PropertyValues.Value.ofInt32(a.dex + bonus.dexAdd));
+        Props.add(properties, "Ing", PropertyValues.Value.ofInt32(a.ing + bonus.ingAdd));
+        Props.add(properties, "Spi", PropertyValues.Value.ofInt32(a.spi + bonus.spiAdd));
+        Props.add(properties, "MeleePower", PropertyValues.Value.ofInt32(
+                a.meleePower + bonus.meleePowerAdd + eff(equipped, "MeleePowerAdd")));
+        Props.add(properties, "MagicPower", PropertyValues.Value.ofInt32(
+                a.magicPower + bonus.magicVa + eff(equipped, "MagicPowerAdd")));
+        Props.add(properties, "PhyHit", PropertyValues.Value.ofInt32(
+                a.phyHit + bonus.phyHit + eff(equipped, "PhyHitAdd")));
+        Props.add(properties, "MagicHit", PropertyValues.Value.ofInt32(
+                a.magicHit + bonus.magicHit + eff(equipped, "MagicHitAdd")));
+        Props.add(properties, "Dodge", PropertyValues.Value.ofInt32(
+                a.dodge + bonus.dodge + eff(equipped, "DodgeAdd")));
         Props.add(properties, "MaxParry", PropertyValues.Value.ofInt32(a.maxParry));
-        Props.add(properties, "PhyDef", PropertyValues.Value.ofInt32(a.phyDef));
-        Props.add(properties, "StiDef", PropertyValues.Value.ofInt32(a.stiDef));
-        Props.add(properties, "NegDef", PropertyValues.Value.ofInt32(a.negDef));
-        Props.add(properties, "MasDef", PropertyValues.Value.ofInt32(a.masDef));
-        Props.add(properties, "JujDef", PropertyValues.Value.ofInt32(a.jujDef));
-        Props.add(properties, "MinMeleeDamage", PropertyValues.Value.ofInt32(a.minMeleeDamage));
-        Props.add(properties, "MaxMeleeDamage", PropertyValues.Value.ofInt32(a.maxMeleeDamage));
-        Props.add(properties, "MaxHPAdd", PropertyValues.Value.ofInt32(a.maxHpAdd));
-        Props.add(properties, "MaxMPAdd", PropertyValues.Value.ofInt32(a.maxMpAdd));
+        Props.add(properties, "PhyDef", PropertyValues.Value.ofInt32(
+                a.phyDef + bonus.phyDef + eff(equipped, "PhyDefAdd")));
+        Props.add(properties, "StiDef", PropertyValues.Value.ofInt32(
+                a.stiDef + eff(equipped, "StiDefAdd")));
+        Props.add(properties, "NegDef", PropertyValues.Value.ofInt32(
+                a.negDef + eff(equipped, "NegDefAdd")));
+        Props.add(properties, "MasDef", PropertyValues.Value.ofInt32(
+                a.masDef + eff(equipped, "MasDefAdd")));
+        Props.add(properties, "JujDef", PropertyValues.Value.ofInt32(
+                a.jujDef + eff(equipped, "JujDefAdd")));
+        Props.add(properties, "MinMeleeDamage", PropertyValues.Value.ofInt32(
+                a.minMeleeDamage + bonus.minMelee + eff(equipped, "MinMeleeDamage")));
+        Props.add(properties, "MaxMeleeDamage", PropertyValues.Value.ofInt32(
+                a.maxMeleeDamage + bonus.maxMelee + eff(equipped, "MaxMeleeDamage")));
+        Props.add(properties, "MaxHPAdd", PropertyValues.Value.ofInt32(a.maxHpAdd + bonus.maxHpAdd));
+        Props.add(properties, "MaxMPAdd", PropertyValues.Value.ofInt32(a.maxMpAdd + bonus.maxMpAdd));
         Props.add(properties, "MaxParryAdd", PropertyValues.Value.ofInt32(maxParryAdd));
         Props.add(properties, "MinMagicDefAdd", PropertyValues.Value.ofInt32(minMagicDefAdd));
         Props.add(properties, "MaxLevel", PropertyValues.Value.ofInt32(maxLevel));
         return properties;
+    }
+
+    /** 运功书 varprop stats 取值（无书/缺键 0；面板/伤害块叠加）。 */
+    public static int eff(Book book, String key) {
+        Integer value = book == null ? null : book.effectStats.get(key);
+        return value == null ? 0 : value;
+    }
+
+    /** 运功书千分数键（DamageMul 族 ÷1000）。 */
+    public static float effMul(Book book, String key) {
+        Integer value = book == null ? null : book.effectStats.get(key);
+        return value == null ? 0f : value / 1000f;
     }
 
     public Book targetBook() {
@@ -328,16 +424,25 @@ public final class PlayerProgress {
             throw new IllegalArgumentException("invalid neigong slot " + slot);
         }
         Book book = books.get(slot - 1);
-        List<SceneMessages.ViewProperty> properties = new ArrayList<>(9);
+        // bak facultyBookFrame 16 属性布局（真机验证）：School/Level(byte)/WuXing 是
+        // 内修面板属性列（太极/阴柔/阳刚，客户端 ui_wuxue_prop_N 本地化）的显示来源。
+        List<SceneMessages.ViewProperty> properties = new ArrayList<>(16);
         Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(book.configId));
         Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(book.staticData));
         Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(book.itemType));
-        Props.addView(properties, "CurLevel", PropertyValues.Value.ofInt32(book.level));
+        Props.addView(properties, "School", PropertyValues.Value.ofString(book.school));
+        Props.addView(properties, "Level", PropertyValues.Value.ofByte(book.level));
         Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(book.maxLevel));
+        Props.addView(properties, "StrAdd", PropertyValues.Value.ofInt32(book.strAdd));
+        Props.addView(properties, "DexAdd", PropertyValues.Value.ofInt32(book.dexAdd));
+        Props.addView(properties, "IngAdd", PropertyValues.Value.ofInt32(book.ingAdd));
+        Props.addView(properties, "SpiAdd", PropertyValues.Value.ofInt32(book.spiAdd));
+        Props.addView(properties, "StaAdd", PropertyValues.Value.ofInt32(book.staAdd));
         Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(book.fill));
         Props.addView(properties, "TotalFillValue", PropertyValues.Value.ofInt32(book.total));
         Props.addView(properties, "PowerValue", PropertyValues.Value.ofInt32(book.power));
         Props.addView(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(book.maxPower));
+        Props.addView(properties, "WuXing", PropertyValues.Value.ofInt32(book.wuXing));
         return SceneMessages.viewAdd(VIEWPORT_NEI_GONG, slot, properties);
     }
 
@@ -349,6 +454,29 @@ public final class PlayerProgress {
         return new Snapshot(curNeiGong, faculty, facultyState, facultyStyle, facultyName,
                 fillSpeed, lastAdvance, saved);
     }
+
+    // ------------------------------------------------------------------- 怒气 SP
+
+    /** 当前怒气（Go progress.attributes.sp，默认 100）。 */
+    public int sp() {
+        return attributes.sp;
+    }
+
+    /** Go clampPlayerSP + setSP 状态部分：0..100 饱和，返回应用后的值。 */
+    public synchronized int setSP(int value) {
+        attributes.sp = Math.max(0, Math.min(MAX_PLAYER_SP_VALUE, value));
+        return attributes.sp;
+    }
+
+    /** Go addSP 状态部分：战斗/技能怒气与 GM 调整的唯一入口，0..100 饱和。 */
+    public synchronized int addSP(int delta) {
+        long next = (long) attributes.sp + delta;
+        attributes.sp = (int) Math.max(0, Math.min(MAX_PLAYER_SP_VALUE, next));
+        return attributes.sp;
+    }
+
+    /** Go maxPlayerSP = 100（怒气上限，进度侧常量）。 */
+    static final int MAX_PLAYER_SP_VALUE = 100;
 
     /** Go restore：校验合并 + 分钟推进 + 资源刷新。 */
     public void restore(Snapshot value, Instant now) {

@@ -57,36 +57,39 @@ public final class NpcSchema {
             "MPUpSpeed", "MPUpSpeedAdd", "CurSkillEffectID", "CurSkillLevel", "CurSkillTarget",
             "ModifySkillLockTime", "CanUse", "Force", "NewSchool");
 
-    private static final List<FieldSpec> VISIBLE_NPC_MODERN_V1 = build(VISIBLE_NPC_V1_NAMES);
+    private static final List<FieldSpec> VISIBLE_NPC_MODERN_V1 = build(VISIBLE_NPC_V1_NAMES, 0);
     private static final List<FieldSpec> SCENE_FIELDS = buildSceneFields();
 
-    /** 按名解析；缺名剔除（官方方言不下发这些属性）。 */
-    private static List<FieldSpec> build(List<String> names) {
+    /** 按名解析（场景域首现，minIndex 抬升起始位）；缺名剔除（表内没有这些属性）。 */
+    private static List<FieldSpec> build(List<String> names, int minIndex) {
         List<FieldSpec> fields = new ArrayList<>(names.size());
         for (String name : names) {
-            PropertyTable.Entry entry = PropertyTable.byName(name);
-            WireType type = entry == null ? null : PropertyTable.wireType(name);
-            if (type == null) {
+            PropertyTable.Entry entry = PropertyTable.byName(name, minIndex);
+            if (entry == null || PropertyTable.wireTypeOf(entry.typeCode()) == null) {
                 continue;
             }
-            fields.add(new FieldSpec(entry.index(), name, type));
+            fields.add(new FieldSpec(entry.index(), name, WireType.of(entry.typeCode())));
         }
         return List.copyOf(fields);
     }
 
     private static List<FieldSpec> buildSceneFields() {
-        List<String> names = new ArrayList<>(VISIBLE_NPC_V1_NAMES);
+        // 基块（0..98）首现 + 扩展块（≥99 首现，商店/运动语义位）分开解析：
+        // 同名（ConfigID@7/@105 等）两块各取各的位。
+        List<FieldSpec> fields = new ArrayList<>(build(VISIBLE_NPC_V1_NAMES, 0));
         // BufferInfo1..24 插在扩展表 BufferListStr 的语义位置（其本身缺名剔除）。
+        List<String> extension = new ArrayList<>();
         for (String name : SCENE_EXTENSION_NAMES) {
             if (name.equals("BufferListStr")) {
                 for (int slot = 1; slot <= BUFFER_INFO_SLOT_COUNT; slot++) {
-                    names.add(bufferInfoPropertyName(slot));
+                    extension.add(bufferInfoPropertyName(slot));
                 }
                 continue;
             }
-            names.add(name);
+            extension.add(name);
         }
-        return build(names);
+        fields.addAll(build(extension, PropertyTable.SCENE_EXTENSION_FLOOR));
+        return List.copyOf(fields);
     }
 
     /** NPC 对象 schema（解析校验 + OrderedProperties 顺序）。 */
@@ -99,7 +102,7 @@ public final class NpcSchema {
         return SCENE_FIELDS;
     }
 
-    /** Go playerProgressFields（37 项内功/面板名，iota 171 起的语义序）。 */
+    /** Go playerProgressFields（37 项内功/面板名，语义序；索引按表内位置）。 */
     public static List<FieldSpec> playerProgressFields() {
         return build(List.of(
                 "CurNeiGong", "Faculty", "FacultyState", "FacultyStyle", "FacultyName",
@@ -108,7 +111,7 @@ public final class NpcSchema {
                 "MagicPower", "PhyHit", "MagicHit", "Dodge", "MaxParry", "PhyDef", "StiDef",
                 "NegDef", "MasDef", "JujDef", "MinMeleeDamage", "MaxMeleeDamage", "MaxHPAdd",
                 "MaxMPAdd", "MaxLevel", "StaticData", "ItemType", "MaxParryAdd",
-                "MinMagicDefAdd"));
+                "MinMagicDefAdd"), 0);
     }
 
     public static int bufferInfoPropertyIndex(int slot) {

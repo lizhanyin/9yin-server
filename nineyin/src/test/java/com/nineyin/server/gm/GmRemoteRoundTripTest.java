@@ -115,6 +115,14 @@ class GmRemoteRoundTripTest {
         String over = remote.syncRemote("GmRemote", "command", overRange, String.class);
         assertFalse(JSON.parseObject(over).getBooleanValue("ok"), "超界值应被拒: " + over);
 
+        // command：碎银非负校验（Go silver must be non-negative）。
+        Map<String, Object> negSilver = Map.of(
+                "sessionId", 7,
+                "action", "set_silver",
+                "params", Map.of("silver", -1));
+        String neg = remote.syncRemote("GmRemote", "command", negSilver, String.class);
+        assertFalse(JSON.parseObject(neg).getBooleanValue("ok"), "负碎银应被拒: " + neg);
+
         // command：白名单动作入队后等游戏侧回执（消费线程 tryPop + succeed → 真实结果）。
         Thread consumer = new Thread(() -> {
             for (int i = 0; i < 200; i++) {

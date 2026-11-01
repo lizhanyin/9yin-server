@@ -288,10 +288,18 @@ activity 物化 **409 NPC**（409 对 0x0D/0x1F + 5 批重放 2045×0x1F + 巡�
 
 ## 决策记录（用户确认）
 
-1. **协商属性表换官方 2424 项整表**（`official_property_table.txt`，bak 从官服提取）：
-   verbatim 透传 0x09 帧；编码按名查表（`PropertyTable`/`Props`），Go 复刻方言里官方
-   表没有的 36 名（PosiX/Orient/BufferListStr/Race/AITemplate…）从属性帧剔除——位置走
-   0x0D 头 + 0x1F、Buff 走 BufferInfo 槽。带属性帧 golden 改 Java 官方快照
+1. **协商属性表 = 真机 0x09 场景方言整表（2370 项）**：`official_property_table.txt`
+   从 F 盘参考服 s2c 捕获的 0x09 帧逐行提取（15 份捕获表体一致，`tools/gen_scene_table.py`
+   重组帧与捕获逐字节一致），verbatim 透传。**bak 提取的 2424/2426 项表已被推翻**
+   （a1219d9 引入，真机实测内修修速停止：那张表的低位是 Home/Ssf/LuanDou 系统属性、
+   与真机方言的顺序/线型/项数都不同——0x09 帧无索引列、客户端按位置绑定，表内容即
+   索引语义；Go 228 方言与真机 2370 方言真机均可，bak 方言不可）。表内 108 名同名
+   多块出现 → `PropertyTable` 双域解析：场景域首现（NPC 帧/entryScene/NpcResolver，
+   `idx/type`），玩家/视图域末现（0x0D/0x10 玩家行 + 0x15/0x18 视图行，
+   `playerIdx/playerType`/`Props.*`；`Props.appendScene` 为场景域入口）。真机关键位：
+   FillSpeed@773、CurFillValue@764、FacultyState@758、CurNeiGong@653、PowerValue@2287、
+   玩家碎银 CapitalType1@417(f64) vs 商店@111(i32)、Level 视图域@1465(byte) vs NPC@6(i32)。
+   带属性帧 golden 改 Java 官方快照
    （`*_official.*`，regen：`-Dnineyin.golden.regen=true`）；无属性帧仍对齐 Go golden。
 2. **MaxVisuals 官方语义=画质档位** u16=100（capture-fxgame-op2 官服 0x0B 实证）；
    Go 复刻的 1000000 是私设，已纠正。
@@ -332,7 +340,75 @@ activity 物化 **409 NPC**（409 对 0x0D/0x1F + 5 批重放 2045×0x1F + 巡�
 - **真机待验**：role 618 账号登录目检（背包 27 格/纸娃娃 8 件/内功 48 书/技能页/
   演武开卡/内修涨条）——冒烟账号是自动新角色走 starter 回退，DB 模式需真实账号。
 
-## 四期候选
+## 四期：面板属性实时化（2026-11-01，参考 bak 真机实现）
 
-msg30 穿脱/使用（0x19/0x18 双向同步+WeaponMode 重推）、0x07 对象选择/菜单/商店、
-战斗（211/cooldown/combat tick）、0x0C 切图重入恢复链、传送门、200/201/240/216-218 信封。
+> bak（`G:\pojie\ai\9yin-server-bak`，commit 1335318/495f34e）真机验证过的面板链整体移植；
+> Go 源码没有这些块（探查结论：PowerLevel/Justice/Evil/词缀累积均不存在于 go-server1）。
+
+### 分层（IDA 钉死的叠加序）
+
+```
+面板战斗块 = 基础属性 + 装备词缀累积层 + 运功内功（平铺 Add + varprop eff 键）
+有效 MaxHP = 基础 + MaxHPAdd 各层 + 7×体魄 + 2×臂力   （totalResourceAdds）
+有效 MaxMP = 基础 + MaxMPAdd 各层 + 4×内息 + 罡气
+```
+
+### 新增类（`server/game/avatar/panel/`）
+
+- `EquipAffixCatalog`：proppack.ini 节→`r=,Prop,Value,Flag`；装备 propBuilt "1,id;…" 引用节号
+- `EquipEffectCatalog`：武器特效四跳链 equip_special_effect_pack→buff_new→buff_static→buff_varprop（`@PropModifyPackRec` 复用词缀累积器、Immunity 位）
+- `PanelState`：身份块 14 字段（powerLevel=151 种子/justice/evil/freeBase/性格/体力/饱食/杀戮/酒量）+ 16 个 equip*Add 累积器（含无后缀变体 PhyDef/MaxHP/Str…）+ 域块（wornTitleId/maxBingLuLevel/prestigeExp/mount）
+
+### 下发链（全部按名写官方 2424 表）
+
+- `stateProperties()`/`addObject` 追加：伤害块 12 项（暗器上下限种子 0、五系 DamageAdd=书 varprop 透传、DamageMul=千分÷1000）+ 身份块 14 项（缺发面板整块空白）+ 域块 6 项（TitleID/Mount/CurRideMount=0 对象/BingLuType=0/MaxBingLuLevel/PrestigeExp）
+- MaxHP/MaxMP 改发有效值（原 Go 方言发 base）
+- 装备词缀层登录时装载（`LoginFlow.loadEquips`→`applyEquipBonuses`，addObject 前重算）
+- `RoleInventoryStore.Equip` +propBuilt：affixes JSON `[{"pack_rec","prop_built"}]`→"1,id;…" 拼接；`Unknown column 'affixes'` 自动降级（老 F 库不断链）；View1 纸娃娃行词缀非空时下发 PropBuilt(1952) 与 EffectPackID 互斥
+
+### 内功/技能属性（参考bak）
+
+- `PlayerProgress.Book.effectStats`：varprop 全量快照（applyModernEffect 回填；升级结算/restore 已有重跑链）
+- **属性三件套（修复"显示编码/空"，2026-11-01 晚）**：`Book.school/wuXing/attribute`——
+  NeiGongCatalog 新增解析 `neigong_static.ini BelongType`（ng_mp_tj→太极/yg→阳刚/yr→阴柔，ng_yh_ 前缀特判阴柔）、
+  `faculty/wuxuebaseinfo.ini nWuXing`（技能 1=刚/2=柔/3=阴/4=阳；内功 5=太极/6=阴柔/7=阳刚，客户端按 ui_wuxue_prop_N 本地化）、
+  `skill/neigong/neigong.ini QName→School`；applyModernEffect 三件套查到非空才覆盖（空目录保种子）
+- **View43 书行 = bak 16 属性布局**：ConfigID/StaticData/ItemType/**School(str)**/**Level(1465,BYTE——勿用 CurLevel)**/MaxLevel/StrAdd/DexAdd/IngAdd/SpiAdd/StaAdd/CurFill/TotalFill/Power/MaxPower/**WuXing(2243)**
+- 0x10 追加 `CurNeiGongWuXing(654)`=运功书 WuXing（面板阴阳太极伴生显示）
+- `SkillInitTable`（skill/skill_init.ini：staticData/itemType/level/maxlevel/coolDown/total）+ View40 行 24 属性，
+  属性族用 **bak 语义值非零**：UseLimit=9/Quality=1/WuXing=wuxuebaseinfo 目录值（缺省 5 太极）/HP·MP HealMul 与五系 DamageMul=1.0f/Flow=5/LeadTime=10000/LeadSepTime=1500——发 0 会显示空/零
+- 注意：skill_init.ini 无 useLimit 列（grep=0），UseLimit 真值数据源待另找（F 盘 skill ini）
+- 测试坑：LoginFlowTest 等会 `ServerPaths.overrideServerRoot(go-server1)` 且**不还原**——后跑的测试里 NeiGongCatalog.load() 拿到真 share 数据（花神七式真实 WuXing=2 柔），断言勿钉死缺省值
+
+### 域块 DB（`world/db/PanelDataStore`，DSN 有则接）
+
+role_titles（worn→TitleID，wear/cancel 事务写）、role_binglu（12 槽→MaxBingLuLevel=max）、role_repute（SUM→PrestigeExp）、role_mounts（snapshot current/configId/mount→Mount）。
+
+### GM 动作（LoginFlow.applyGmCommand，console.html 按钮已有）
+
+`set_power_level`(value→PowerLevel+LevelTitle 单帧)、`set_alignment`(justice/evil/freeBase)、
+`set_vitals`(ene/maxEne/resumeEne/sat/maxSat/pkValue/drunkLevel；maxEneAdd/maxSatAdd 本服表无此名忽略)、
+`wear_title`/`cancel_title`（DB 校验拥有+TitleID 推送）。
+
+### schema 增量
+
+`admin/sql/0003_role_equip_affixes_20261101.sql.gz`：role_equip_items 补 affixes JSON 列
+（information_schema 守护幂等；导入器 ensureAffixesColumn 同款）。已应用活库。
+⚠️ `import equip` 会先清空 role_equip_items/role_bag_items——源只覆盖假人角色 2-5，
+跑之前必须核对源 roles 键 vs 库内 role_id（2026-11-01 曾清掉 618 的 8+31 行，binlog
+Delete_rows BEFORE 镜像恢复）。
+
+### 真机待验清单
+
+1. 面板身份块整块显示（实力 151→title027、侠恶、体力/饱食）；GM set_power_level 改值 0x10 实时刷新
+2. 五系伤害加成块（运功书 varprop 有 DamageAdd 行时透传非零）
+3. 兵录/坐骑/声望域块语义（BingLuType=0、CurRideMount=0 对象、PrestigeExp=SUM 是保守取值，抓包对齐后修正）
+4. 装备词缀链端到端（affixes 列灌入真词缀后：纸娃娃 PropBuilt 下发 + 面板五维/物防抬升 + 有效 MaxHP 变化）
+5. 武器 EffectPackID 特效链（equip_special_effect_pack→buff varprop 属性叠加）
+6. View43 五维 Add 与内功详情面板加成显示一致
+
+### 四期遗留
+
+msg30 穿脱/使用（0x19/0x18 双向同步+WeaponMode 重推+词缀层重算）、0x07 对象选择/菜单/商店、
+战斗（211/cooldown/combat tick——equipPhyVa 累积器已备）、0x0C 切图重入恢复链、传送门、
+200/201/240/216-218 信封、243/266 骑乘（CurRideMount 真值）、943 兵录修改。

@@ -53,26 +53,65 @@ public final class StarterSkills {
         return (float) (frames * 1000.0 / 30);
     }
 
-    /** Go starterSkillViewFrames：View 40 容器 + 每技能一行。 */
+    /** Go starterSkillViewFrames：View 40 容器 + 每技能一行（四期：skill_init 目录叠加 + 零值特效族）。 */
     public static List<byte[]> starterSkillViewFrames() {
         List<byte[]> frames = new ArrayList<>(STARTER_SKILL_VIEWS.size() + 1);
         frames.add(SceneMessages.createView(
                 new SceneMessages.ViewSpec(VIEWPORT_SKILL, STARTER_SKILL_VIEWS.size())));
         for (int index = 0; index < STARTER_SKILL_VIEWS.size(); index++) {
             LearnedSkill skill = STARTER_SKILL_VIEWS.get(index);
-            List<SceneMessages.ViewProperty> properties = new ArrayList<>(9);
-            Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(skill.configId()));
-            Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(skill.staticData()));
-            Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(skill.itemType()));
-            Props.addView(properties, "CurLevel", PropertyValues.Value.ofInt32(skill.level()));
-            Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(skill.maxLevel()));
-            Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(skill.fill()));
-            Props.addView(properties, "TotalFillValue", PropertyValues.Value.ofInt32(skill.total()));
-            Props.addView(properties, "PauseTime", PropertyValues.Value.ofFloat32(skill.pauseTime()));
-            Props.addView(properties, "CanUse", PropertyValues.Value.ofByte(1));
-            frames.add(SceneMessages.viewAdd(VIEWPORT_SKILL, index + 1, properties));
+            frames.add(SceneMessages.viewAdd(VIEWPORT_SKILL, index + 1,
+                    skillRowProperties(skill, SkillInitTable.load().row(skill.configId()))));
         }
         return frames;
+    }
+
+    /**
+     * bak SkillPackets.skillRow 属性面（真机验证语义值）：内联值 + skill_init 目录行覆盖
+     * （staticData/itemType/等级/上限/total/coolDown）+ 属性族固定值——
+     * UseLimit=9/Quality=1/WuXing（wuxuebaseinfo 目录值，缺省 5 太极）/HP·MP HealMul 与
+     * 五系 DamageMul=1.0f/Flow=5/LeadTime=10000/LeadSepTime=1500（发 0 会导致面板显示空/零）。
+     */
+    static List<SceneMessages.ViewProperty> skillRowProperties(LearnedSkill skill,
+                                                               SkillInitTable.Row row) {
+        List<SceneMessages.ViewProperty> properties = new ArrayList<>(25);
+        Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(skill.configId()));
+        Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(
+                row != null ? row.staticData() : skill.staticData()));
+        Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(
+                row != null && row.itemType() != 0 ? row.itemType() : skill.itemType()));
+        Props.addView(properties, "Level", PropertyValues.Value.ofByte(
+                row != null ? row.level() : skill.level()));
+        Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(
+                row != null && row.maxLevel() > 0 ? row.maxLevel() : skill.maxLevel()));
+        Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(skill.fill()));
+        Props.addView(properties, "TotalFillValue", PropertyValues.Value.ofInt32(
+                row != null && row.totalFill() > 0 ? row.totalFill() : skill.total()));
+        Props.addView(properties, "PauseTime", PropertyValues.Value.ofFloat32(skill.pauseTime()));
+        Props.addView(properties, "CanUse", PropertyValues.Value.ofByte(1));
+        Props.addView(properties, "UseLimit", PropertyValues.Value.ofInt32(9));
+        Props.addView(properties, "VarPropNo", PropertyValues.Value.ofInt32(0));
+        Props.addView(properties, "Quality", PropertyValues.Value.ofByte(1));
+        Props.addView(properties, "WuXing", PropertyValues.Value.ofInt32(skillWuXing(skill.configId())));
+        Props.addView(properties, "CoolDownTime", PropertyValues.Value.ofInt32(
+                row == null ? 0 : row.coolDownMs()));
+        Props.addView(properties, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "PhyDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "StiDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "JujDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "NegDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "MasDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(properties, "Flow", PropertyValues.Value.ofInt32(5));
+        Props.addView(properties, "LeadTime", PropertyValues.Value.ofInt32(10000));
+        Props.addView(properties, "LeadSepTime", PropertyValues.Value.ofInt32(1500));
+        return properties;
+    }
+
+    /** 技能五行/属性：wuxuebaseinfo 目录值（刚1/柔2/阴3/阳4），缺省 5=太极（bak starter 同款）。 */
+    private static int skillWuXing(String configId) {
+        int value = com.nineyin.server.game.avatar.neigong.NeiGongCatalog.load().wuXingOf(configId);
+        return value != 0 ? value : com.nineyin.server.game.avatar.neigong.NeiGongCatalog.WUXING_TAIJI;
     }
 
     private StarterSkills() {

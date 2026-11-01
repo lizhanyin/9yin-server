@@ -69,6 +69,11 @@ public record GmCommand(long sessionId, String action, JSONObject params,
         return v != null ? v : def;
     }
 
+    /** int 参数（面板动作数值等）；缺失/非数返回 null。 */
+    public Integer intParam(String key) {
+        return params.getInteger(key);
+    }
+
     public String strParam(String key) {
         String v = params.getString(key);
         return v != null ? v : "";

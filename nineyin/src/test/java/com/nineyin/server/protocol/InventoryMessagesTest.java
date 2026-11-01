@@ -155,7 +155,7 @@ class InventoryMessagesTest {
     @Test
     void equipmentRowCarriesFullPropertySet() {
         RoleInventoryStore.Equip equip = new RoleInventoryStore.Equip(
-                "pants_daxia_30301", 142, "Pants", 4, 100, 100, 1704);
+                "pants_daxia_30301", 142, "Pants", 4, 100, 100, 1704, "");
         byte[] frame = InventoryMessages.equipmentViewAdd(618L, equip, null);
         assertEquals(0x18, frame[0] & 0xFF);
         assertEquals(1, u16(frame, 1), "View1");

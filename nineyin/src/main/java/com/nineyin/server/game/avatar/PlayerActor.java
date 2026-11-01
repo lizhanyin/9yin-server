@@ -8,6 +8,9 @@ import java.util.List;
 import java.util.Locale;
 
 import com.nineyin.server.game.avatar.neigong.PlayerProgress;
+import com.nineyin.server.game.avatar.panel.EquipAffixCatalog;
+import com.nineyin.server.game.avatar.panel.EquipEffectCatalog;
+import com.nineyin.server.game.avatar.panel.PanelState;
 import com.nineyin.server.protocol.NpcSchema;
 import com.nineyin.server.protocol.PacketWriter;
 import com.nineyin.server.protocol.PropertyValues;
@@ -40,11 +43,17 @@ public final class PlayerActor {
 
     private final Actor actor;
     private final Clock clock;
-    private final int silver;
+    /** 碎银（CapitalType1）：volatile——addObject/vital 归档线程与 GM 设置并发读写。 */
+    private volatile int silver;
+    /** 官银（CapitalType2）/ 黄金（CapitalType0）：GM 会话级数值；menu2 的 vip.json 持久化待接。 */
+    private volatile int guanYin;
+    private volatile int gold;
     private String faction;
     private final Motion motion = new Motion();
     private final java.util.Map<Integer, ActiveBuff> buffs = new java.util.HashMap<>();
     final PlayerProgress progress;
+    /** 面板实时状态（身份块字段 + 装备词缀累积层，四期）。 */
+    private final PanelState panel = new PanelState();
     private int logicStateOverride = -1;
 
     public static PlayerActor create(String name, int silver, Clock clock) {
@@ -71,6 +80,69 @@ public final class PlayerActor {
 
     public int silver() {
         return silver;
+    }
+
+    public int guanYin() {
+        return guanYin;
+    }
+
+    public int gold() {
+        return gold;
+    }
+
+    /** 当前怒气（progress.attributes.sp）。 */
+    public int sp() {
+        return progress.sp();
+    }
+
+    // ------------------------------------------------------------------ 货币/怒气
+
+    /** Go setSilver：碎银（CapitalType1，会话级；Go 亦不持久化）。 */
+    public void setSilver(int value) {
+        silver = value;
+    }
+
+    /** Go silverUpdate：单帧 0x10 归档（index 111 Go 方言 / 官方表按名解析）。 */
+    public byte[] silverUpdate() {
+        return capitalUpdate("CapitalType1", silver);
+    }
+
+    /**
+     * menu2 exe 取证（9yin-game-native-menu.exe main.handle.func12）：
+     * set_silver_card(→set_guanyin) case = setSilverCard + silverCardUpdate
+     * + setAction「官银设为 %d」+ log「GM set CapitalType2=%d」。
+     */
+    public byte[] setGuanYin(int value) {
+        guanYin = value;
+        return capitalUpdate("CapitalType2", value);
+    }
+
+    /** 同上：set_gold case = setGold + goldUpdate +「黄金设为 %d」+ CapitalType0。 */
+    public byte[] setGold(int value) {
+        gold = value;
+        return capitalUpdate("CapitalType0", value);
+    }
+
+    /** Go setSP：改权威怒气并立即回单帧 0x10（主角色 UI 消费）。 */
+    public SPUpdate setSP(int value) {
+        int sp = progress.setSP(value);
+        return new SPUpdate(sp, capitalUpdate("SP", sp));
+    }
+
+    /** Go addSP：GM 调整与战斗怒气的同一饱和入口。 */
+    public SPUpdate addSP(int delta) {
+        int sp = progress.addSP(delta);
+        return new SPUpdate(sp, capitalUpdate("SP", sp));
+    }
+
+    /** Go (int32, []byte) 返回对的 Java 形态。 */
+    public record SPUpdate(int sp, byte[] frame) {
+    }
+
+    private static byte[] capitalUpdate(String name, int value) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, name, PropertyValues.Value.ofInt32(value));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     public String faction() {
@@ -219,9 +291,53 @@ public final class PlayerActor {
     }
 
     void syncEquippedNeiGongResources() {
-        int[] adds = progress.equippedResourceAdds();
+        // totalResourceAdds（IDA 钉死）：有效上限 = 基础 + MaxHP/MPAdd 各层 + 五维换算项
+        int[] adds = progress.totalResourceAdds(panel.equipBonus());
         Actor.State base = actor.snapshot();
-        actor.setDerivedMaxima(base.baseMaxHp() + adds[0], base.baseMaxMp() + adds[1]);
+        int totalMaxHp = Math.max(1, base.baseMaxHp() + adds[0] + 7 * adds[3] + 2 * adds[2]);
+        int totalMaxMp = Math.max(1, base.baseMaxMp() + adds[1] + 4 * adds[4] + adds[5]);
+        actor.setDerivedMaxima(totalMaxHp, totalMaxMp);
+    }
+
+    // ------------------------------------------------------------------ panel
+
+    /** 面板实时状态（GM 动作写身份字段；装备词缀经 recomputeEquipBonuses 整层重算）。 */
+    public PanelState panel() {
+        return panel;
+    }
+
+    /**
+     * 装备词缀/特效整层重算（登录装备载入后、穿脱时调用；幂等）：
+     * 先词缀（propBuilt → proppack）后特效（EffectPackID → buff 链），
+     * 随后同步有效上限。调用方负责补发 vitalUpdate。
+     *
+     * @param propBuilts    每件已穿装备的词缀串（"1,id;1,id"，无词缀传空）
+     * @param effectPackIds 每件已穿装备的特效包号（0=无；equipment.ini EffectPackID）
+     */
+    public void recomputeEquipBonuses(List<String> propBuilts, List<Integer> effectPackIds) {
+        EquipAffixCatalog affixes = EquipAffixCatalog.load();
+        panel.recomputeEquipBonuses(affixes, propBuilts);
+        panel.applyEquipEffects(EquipEffectCatalog.load(), affixes, effectPackIds);
+        syncEquippedNeiGongResources();
+    }
+
+    /** 五系伤害块（exe 追加批）：暗器上下限种子 0；DamageAdd=运功书 varprop 透传，DamageMul=千分÷1000。 */
+    List<PropertyValues.Indexed> damageProperties() {
+        PlayerProgress.Book equipped = progress.book(progress.curNeiGong);
+        List<PropertyValues.Indexed> properties = new ArrayList<>(12);
+        Props.add(properties, "MaxShotDamage", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "MinShotDamage", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "PhyDamageAdd", PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "PhyDamageAdd")));
+        Props.add(properties, "StiDamageAdd", PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "StiDamageAdd")));
+        Props.add(properties, "JujDamageAdd", PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "JujDamageAdd")));
+        Props.add(properties, "NegDamageAdd", PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "NegDamageAdd")));
+        Props.add(properties, "MasDamageAdd", PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "MasDamageAdd")));
+        Props.add(properties, "PhyDamageMul", PropertyValues.Value.ofFloat32(PlayerProgress.effMul(equipped, "PhyDamageMul")));
+        Props.add(properties, "StiDamageMul", PropertyValues.Value.ofFloat32(PlayerProgress.effMul(equipped, "StiDamageMul")));
+        Props.add(properties, "JujDamageMul", PropertyValues.Value.ofFloat32(PlayerProgress.effMul(equipped, "JujDamageMul")));
+        Props.add(properties, "NegDamageMul", PropertyValues.Value.ofFloat32(PlayerProgress.effMul(equipped, "NegDamageMul")));
+        Props.add(properties, "MasDamageMul", PropertyValues.Value.ofFloat32(PlayerProgress.effMul(equipped, "MasDamageMul")));
+        return properties;
     }
 
     // -------------------------------------------------------------------- buffs
@@ -303,8 +419,8 @@ public final class PlayerActor {
         prop(writer, "CantJump", PropertyValues.Value.ofByte(0), bump);
         prop(writer, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())), bump);
         prop(writer, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())), bump);
-        prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()), bump);
-        prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()), bump);
+        prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.maxHp()), bump);   // 有效上限（base+Add层+五维换算）
+        prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.maxMp()), bump);
         prop(writer, "HP", PropertyValues.Value.ofInt32(state.hp()), bump);
         prop(writer, "MP", PropertyValues.Value.ofInt32(state.mp()), bump);
         prop(writer, "HitHP", PropertyValues.Value.ofInt32(state.hitHp()), bump);
@@ -333,7 +449,19 @@ public final class PlayerActor {
         for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
             prop(writer, NpcSchema.bufferInfoPropertyName(slot), PropertyValues.Value.ofString(bufferInfo(slot, now)), bump);
         }
-        for (PropertyValues.Indexed property : progress.properties()) {
+        for (PropertyValues.Indexed property : progress.properties(panel.equipBonus())) {
+            writer.appendIndexed(property);
+            bump.run();
+        }
+        for (PropertyValues.Indexed property : damageProperties()) {
+            writer.appendIndexed(property);
+            bump.run();
+        }
+        for (PropertyValues.Indexed property : panel.identityProperties()) {
+            writer.appendIndexed(property);
+            bump.run();
+        }
+        for (PropertyValues.Indexed property : panel.domainProperties()) {
             writer.appendIndexed(property);
             bump.run();
         }
@@ -370,8 +498,8 @@ public final class PlayerActor {
         Props.add(properties, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)));
         Props.add(properties, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())));
         Props.add(properties, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())));
-        Props.add(properties, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()));
-        Props.add(properties, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()));
+        Props.add(properties, "MaxHP", PropertyValues.Value.ofInt32(state.maxHp()));  // 有效上限（base+Add层+五维换算）
+        Props.add(properties, "MaxMP", PropertyValues.Value.ofInt32(state.maxMp()));
         Props.add(properties, "HP", PropertyValues.Value.ofInt32(state.hp()));
         Props.add(properties, "MP", PropertyValues.Value.ofInt32(state.mp()));
         Props.add(properties, "SpeedRatio", PropertyValues.Value.ofInt32(state.speedRatio()));
@@ -406,7 +534,10 @@ public final class PlayerActor {
         }
         properties.addAll(baseMotionProperties(motionSnapshot()));
         properties.addAll(qinggongMotionProperties());
-        properties.addAll(progress.properties());
+        properties.addAll(progress.properties(panel.equipBonus()));
+        properties.addAll(damageProperties());
+        properties.addAll(panel.identityProperties());
+        properties.addAll(panel.domainProperties());
         return properties;
     }
 

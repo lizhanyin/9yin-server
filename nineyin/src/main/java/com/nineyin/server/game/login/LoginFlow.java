@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.world.npc.SceneNpcRegistry;
 import com.nineyin.server.world.scene.NpcViewport;
@@ -18,13 +19,17 @@ import com.nineyin.server.game.avatar.neigong.FacultyStore;
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.game.avatar.RoleVisual;
 import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
+import com.nineyin.server.game.avatar.panel.PanelState;
 import com.nineyin.server.game.starter.StarterGrants;
 import com.nineyin.server.world.db.RoleInventoryStore;
+import com.nineyin.server.world.db.PanelDataStore;
 import com.nineyin.server.game.starter.StarterQingGong;
 import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmHub;
 import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.protocol.LoginMessages;
+import com.nineyin.server.protocol.PropertyValues;
+import com.nineyin.server.protocol.Props;
 import com.nineyin.server.protocol.SceneNames;
 import com.nineyin.server.protocol.SceneMessages;
 import com.nineyin.server.db.role.RoleStoreFacade;
@@ -60,15 +65,23 @@ public final class LoginFlow {
     private final ScheduledExecutorService scheduler;
     /** 三期物品域 DB 源（可空=回退 starter 行为）。 */
     private final RoleInventoryStore inventoryStore;
+    /** 四期面板域 DB 源（称号/兵录/声望/坐骑；可空=回退种子值）。 */
+    private final PanelDataStore panelStore;
 
     public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
                      SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler) {
-        this(roleStore, facultyStore, gmHub, clock, npcRegistry, scheduler, null);
+        this(roleStore, facultyStore, gmHub, clock, npcRegistry, scheduler, null, null);
     }
 
     public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
                      SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler,
                      RoleInventoryStore inventoryStore) {
+        this(roleStore, facultyStore, gmHub, clock, npcRegistry, scheduler, inventoryStore, null);
+    }
+
+    public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
+                     SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler,
+                     RoleInventoryStore inventoryStore, PanelDataStore panelStore) {
         this.roleStore = roleStore;
         this.facultyStore = facultyStore;
         this.gmHub = gmHub;
@@ -76,6 +89,7 @@ public final class LoginFlow {
         this.npcRegistry = npcRegistry;
         this.scheduler = scheduler;
         this.inventoryStore = inventoryStore;
+        this.panelStore = panelStore;
     }
 
     /** 处理一帧明文；返回 false 断连。 */
@@ -218,15 +232,18 @@ public final class LoginFlow {
         session.world = new SceneLifecycle(connection, scheduler);
         session.world.begin(location.scene().config(), location.scene().resource());
         connection.writeFrame(SceneMessages.entryScene(location.scene()));
+        // 四期装备词缀/特效层（DB 模式）：addObject 归档前重算，登录帧即带装备加成面板。
+        var equips = loadEquips(session);
+        applyEquipBonuses(session, equips);
+        loadPanelData(session);
         connection.writeFrame(session.player.addObject(location.position(), session.visual));
         connection.writeFrame(SceneMessages.serverLocation(
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, location.position()));
         connection.writeFrame(session.player.vitalUpdate());
         // 三期物品下发（DB 模式）：纸娃娃 + 背包成对行 + WeaponMode；无 DB 行回退空。
-        if (inventoryStore != null && inventoryStore.hasRoleData(session.selected.id())) {
+        if (!equips.isEmpty()) {
             try {
                 int sex = session.visual.sex();
-                var equips = inventoryStore.equips(session.selected.id());
                 var bagItems = inventoryStore.bagItems(session.selected.id());
                 for (byte[] frame : InventoryMessages.inventoryFrames(
                         session.selected.id(), sex, equips, bagItems,
@@ -296,6 +313,67 @@ public final class LoginFlow {
         }
     }
 
+    private List<RoleInventoryStore.Equip> loadEquips(LoginSession session) {
+        if (inventoryStore == null || session.selected == null
+                || !inventoryStore.hasRoleData(session.selected.id())) {
+            return List.of();
+        }
+        try {
+            return inventoryStore.equips(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load equips: {}", session.machine.id(), e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 装备词缀（propBuilt）+ 武器特效（EffectPackID）整层重算并同步有效上限（幂等）。 */
+    private void applyEquipBonuses(LoginSession session, List<RoleInventoryStore.Equip> equips) {
+        if (session.player == null) {
+            return;
+        }
+        List<String> propBuilts = new java.util.ArrayList<>(equips.size());
+        List<Integer> effectPackIds = new java.util.ArrayList<>(equips.size());
+        for (RoleInventoryStore.Equip equip : equips) {
+            propBuilts.add(equip.propBuilt() == null ? "" : equip.propBuilt());
+            EquipmentModels.ItemStatic stat = EquipmentModels.itemStatic(equip.configId());
+            effectPackIds.add(stat == null ? 0 : stat.effectPackId());
+        }
+        session.player.recomputeEquipBonuses(propBuilts, effectPackIds);
+    }
+
+    /** 面板域块装载（称号/兵录/声望/坐骑；store 缺失或表空保持种子值）。 */
+    private void loadPanelData(LoginSession session) {
+        if (panelStore == null || session.player == null || session.selected == null) {
+            return;
+        }
+        long roleId = session.selected.id();
+        PanelState panel = session.player.panel();
+        try {
+            panel.wornTitleId = panelStore.wornTitle(roleId);
+        } catch (RuntimeException e) {
+            log.warn("session={} load worn title: {}", session.machine.id(), e.getMessage());
+        }
+        try {
+            int max = 0;
+            for (PanelDataStore.Binglu slot : panelStore.binglu(roleId)) {
+                max = Math.max(max, slot.curLevel());
+            }
+            panel.maxBingLuLevel = max;
+        } catch (RuntimeException e) {
+            log.warn("session={} load binglu: {}", session.machine.id(), e.getMessage());
+        }
+        try {
+            panel.prestigeExp = (int) Math.min(Integer.MAX_VALUE, panelStore.reputeTotal(roleId));
+        } catch (RuntimeException e) {
+            log.warn("session={} load repute: {}", session.machine.id(), e.getMessage());
+        }
+        try {
+            panel.mount = panelStore.mount(roleId);
+        } catch (RuntimeException e) {
+            log.warn("session={} load mount: {}", session.machine.id(), e.getMessage());
+        }
+    }
+
     private java.util.List<RoleInventoryStore.Bagpack> loadBagpacks(LoginSession session) {
         if (inventoryStore == null) {
             return java.util.List.of();
@@ -346,6 +424,16 @@ public final class LoginFlow {
         switch (command.action()) {
             case "set_move_speed" -> applyMotionValue(connection, session, command, true);
             case "set_gravity" -> applyMotionValue(connection, session, command, false);
+            case "set_silver" -> applySilver(connection, session, command);
+            case "set_guanyin" -> applyCapital(connection, session, command, "guanYin", "官银");
+            case "set_gold" -> applyCapital(connection, session, command, "gold", "黄金");
+            case "set_sp", "add_sp", "fill_sp" -> applySP(connection, session, command);
+            // 四期面板实时动作（bak GmActions 同款：写面板字段 → 单帧 0x10 推送）。
+            case "set_power_level" -> applyPowerLevel(connection, session, command);
+            case "set_alignment" -> applyAlignment(connection, session, command);
+            case "set_vitals" -> applyVitals(connection, session, command);
+            case "wear_title" -> applyWearTitle(connection, session, command, true);
+            case "cancel_title" -> applyWearTitle(connection, session, command, false);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -374,6 +462,225 @@ public final class LoginFlow {
         log.info("session={} GM {}: {}", session.machine.id(), command.action(), action);
     }
 
+    /** Go set_silver 分支：setSilver + silverUpdate 单帧 + 快照/lastAction「碎银设为 %d」。 */
+    private void applySilver(Connection connection, LoginSession session, GmCommand command) {
+        Integer value = command.params().getInteger("silver");
+        if (value == null || value < 0) {
+            command.fail("碎银必须非负");
+            return;
+        }
+        session.player.setSilver(value);
+        connection.writeFrame(session.player.silverUpdate());
+        String action = String.format(java.util.Locale.ROOT, "碎银设为 %d", value);
+        gmHub.update(session.machine.id(), s -> {
+            s.silver = value;
+            s.lastAction = action;
+        });
+        command.succeed(action);
+        log.info("session={} GM set CapitalType1={}", session.machine.id(), value);
+    }
+
+    /** menu2 exe 取证：官银=CapitalType2（官银设为 %d）、黄金=CapitalType0（黄金设为 %d）。 */
+    private void applyCapital(Connection connection, LoginSession session, GmCommand command,
+                              String paramKey, String label) {
+        Integer value = command.params().getInteger(paramKey);
+        if (value == null || value < 0) {
+            command.fail(label + "必须非负");
+            return;
+        }
+        byte[] frame = "guanYin".equals(paramKey)
+                ? session.player.setGuanYin(value)
+                : session.player.setGold(value);
+        connection.writeFrame(frame);
+        String action = String.format(java.util.Locale.ROOT, "%s设为 %d", label, value);
+        java.util.function.Consumer<GmHub.PlayerSnapshot> field = "guanYin".equals(paramKey)
+                ? s -> s.guanYin = value
+                : s -> s.gold = value;
+        gmHub.update(session.machine.id(), s -> {
+            field.accept(s);
+            s.lastAction = action;
+        });
+        command.succeed(action);
+        log.info("session={} GM set CapitalType{}={} ({})", session.machine.id(),
+                "guanYin".equals(paramKey) ? 2 : 0, value, label);
+    }
+
+    /** Go set_sp/add_sp/fill_sp 分支：饱和 0..100 + SP 单帧 + 快照/lastAction「怒气设为 %d/%d」。 */
+    private void applySP(Connection connection, LoginSession session, GmCommand command) {
+        PlayerActor.SPUpdate update;
+        switch (command.action()) {
+            case "set_sp" -> {
+                Integer value = command.params().getInteger("sp");
+                if (value == null) {
+                    command.fail("missing sp");
+                    return;
+                }
+                update = session.player.setSP(value);
+            }
+            case "add_sp" -> {
+                Integer value = command.params().getInteger("sp");
+                if (value == null) {
+                    command.fail("missing sp");
+                    return;
+                }
+                update = session.player.addSP(value);
+            }
+            default -> update = session.player.setSP(PlayerActor.MAX_PLAYER_SP); // fill_sp
+        }
+        connection.writeFrame(update.frame());
+        int sp = update.sp();
+        String action = String.format(java.util.Locale.ROOT, "怒气设为 %d/%d", sp, PlayerActor.MAX_PLAYER_SP);
+        gmHub.update(session.machine.id(), s -> {
+            s.sp = sp;
+            s.lastAction = action;
+        });
+        command.succeed(action);
+        log.info("session={} GM {} SP={}", session.machine.id(), command.action(), sp);
+    }
+
+    // -------------------------------------------------------- 四期面板 GM 动作
+
+    /** menu2 setVitalsPowerLevel：实力等级 → PowerLevel + LevelTitle 档位单帧（面板参数名 value）。 */
+    private void applyPowerLevel(Connection connection, LoginSession session, GmCommand command) {
+        Integer stage = command.intParam("value");
+        if (stage == null) {
+            stage = command.intParam("stage");
+        }
+        if (stage == null || stage < 0) {
+            command.fail("实力等级 value 必须非负整数");
+            return;
+        }
+        PanelState panel = session.player.panel();
+        panel.powerLevel = stage;
+        List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(2);
+        Props.add(properties, "PowerLevel", PropertyValues.Value.ofInt32(stage));
+        Props.add(properties, "LevelTitle", PropertyValues.Value.ofString(
+                LoginMessages.roleListTitle(stage)));
+        pushPanelProperties(connection, properties);
+        String action = String.format(java.util.Locale.ROOT, "实力等级设为 %d，称号 %s",
+                stage, LoginMessages.roleListTitle(stage));
+        command.succeed(action);
+        log.info("session={} GM set_power_level={}", session.machine.id(), stage);
+    }
+
+    /** menu2 setAlignment：侠/恶/基础狂邪（均可选，全缺=失败）。 */
+    private void applyAlignment(Connection connection, LoginSession session, GmCommand command) {
+        Integer justice = command.intParam("justice");
+        Integer evil = command.intParam("evil");
+        Integer freeBase = command.intParam("freeBase");
+        if (justice == null && evil == null && freeBase == null) {
+            command.fail("未提供 justice/evil/freeBase");
+            return;
+        }
+        PanelState panel = session.player.panel();
+        List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(3);
+        if (justice != null && justice >= 0) {
+            panel.justice = justice;
+            Props.add(properties, "Justice", PropertyValues.Value.ofInt32(justice));
+        }
+        if (evil != null && evil >= 0) {
+            panel.evil = evil;
+            Props.add(properties, "Evil", PropertyValues.Value.ofInt32(evil));
+        }
+        if (freeBase != null && freeBase >= 0) {
+            panel.freeBase = freeBase;
+            Props.add(properties, "FreeBase", PropertyValues.Value.ofInt32(freeBase));
+        }
+        if (properties.isEmpty()) {
+            command.fail("justice/evil/freeBase 必须非负");
+            return;
+        }
+        pushPanelProperties(connection, properties);
+        command.succeed(String.format(java.util.Locale.ROOT, "侠=%d 恶=%d 狂邪=%d 已更新",
+                panel.justice, panel.evil, panel.freeBase));
+        log.info("session={} GM set_alignment j={} e={} f={}", session.machine.id(),
+                panel.justice, panel.evil, panel.freeBase);
+    }
+
+    /** menu2 setVitals：体力/饱食/杀戮/酒量族（均可选；本服表无 maxEneAdd/maxSatAdd 忽略）。 */
+    private void applyVitals(Connection connection, LoginSession session, GmCommand command) {
+        PanelState panel = session.player.panel();
+        List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(7);
+        applyVital(properties, command, "ene", v -> panel.ene = v, "Ene");
+        applyVital(properties, command, "maxEne", v -> panel.maxEne = v, "MaxEne");
+        applyVital(properties, command, "resumeEne", v -> panel.resumeEne = v, "ResumeEne");
+        applyVital(properties, command, "sat", v -> panel.sat = v, "Sat");
+        applyVital(properties, command, "maxSat", v -> panel.maxSat = v, "MaxSat");
+        applyVital(properties, command, "drunkLevel", v -> panel.drunkLevel = v, "DrunkLevel");
+        applyVital(properties, command, "pkValue", v -> panel.pkValue = v, "PKValue");
+        if (properties.isEmpty()) {
+            command.fail("未提供 ene/sat/pkValue/drunkLevel 等参数");
+            return;
+        }
+        pushPanelProperties(connection, properties);
+        command.succeed("生存属性已更新 " + properties.size() + " 项");
+        log.info("session={} GM set_vitals {} items", session.machine.id(), properties.size());
+    }
+
+    private interface VitalSetter {
+        void set(int value);
+    }
+
+    private static void applyVital(List<PropertyValues.Indexed> properties, GmCommand command,
+                                   String param, VitalSetter setter, String propName) {
+        Integer value = command.intParam(param);
+        if (value == null || value < 0) {
+            return;
+        }
+        setter.set(value);
+        Props.add(properties, propName, PropertyValues.Value.ofInt32(value));
+    }
+
+    /** 称号佩戴/取消：DB（store 可用时校验拥有并事务写）+ TitleID 单帧。 */
+    private void applyWearTitle(Connection connection, LoginSession session,
+                                GmCommand command, boolean wear) {
+        PanelState panel = session.player.panel();
+        if (!wear) {
+            if (panelStore != null && session.selected != null) {
+                try {
+                    panelStore.cancelTitle(session.selected.id());
+                } catch (RuntimeException e) {
+                    log.warn("session={} cancel title db: {}", session.machine.id(), e.getMessage());
+                }
+            }
+            panel.wornTitleId = 0;
+            pushTitleId(connection, 0);
+            command.succeed("已取消佩戴称号");
+            return;
+        }
+        Integer titleId = command.intParam("titleId");
+        if (titleId == null || titleId <= 0) {
+            command.fail("titleId 必须正整数");
+            return;
+        }
+        if (panelStore != null && session.selected != null) {
+            try {
+                if (!panelStore.wearTitle(session.selected.id(), titleId)) {
+                    command.fail("未拥有称号 " + titleId);
+                    return;
+                }
+            } catch (RuntimeException e) {
+                log.warn("session={} wear title db: {}", session.machine.id(), e.getMessage());
+            }
+        }
+        panel.wornTitleId = titleId;
+        pushTitleId(connection, titleId);
+        command.succeed("称号 " + titleId + " 佩戴成功");
+        log.info("session={} GM wear_title={}", session.machine.id(), titleId);
+    }
+
+    private void pushTitleId(Connection connection, int titleId) {
+        List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(1);
+        Props.add(properties, "TitleID", PropertyValues.Value.ofInt32(titleId));
+        pushPanelProperties(connection, properties);
+    }
+
+    /** 面板增量属性单帧（0x10 全量对象头 + 少量键）。 */
+    private void pushPanelProperties(Connection connection, List<PropertyValues.Indexed> properties) {
+        connection.writeFrame(SceneMessages.objectProperties(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties));
+    }
+
     /** Go main.go gm.attach：选角完成即挂面板会话快照。 */
     private void attachGmSnapshot(Connection connection, LoginSession session, Roles.Location location) {
         GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
@@ -387,7 +694,9 @@ public final class LoginFlow {
         snapshot.z = location.position().z();
         snapshot.orient = location.position().orient();
         snapshot.silver = session.player.silver();
-        snapshot.sp = 0;
+        snapshot.sp = session.player.sp();
+        snapshot.guanYin = session.player.guanYin();
+        snapshot.gold = session.player.gold();
         snapshot.faction = session.player.faction();
         gmHub.attach(snapshot.sessionId, snapshot);
     }

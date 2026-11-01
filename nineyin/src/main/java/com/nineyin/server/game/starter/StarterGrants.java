@@ -102,9 +102,9 @@ public final class StarterGrants {
         connection.writeFrame(player.vitalUpdate());
     }
 
-    /** DB 技能行（bak roleSkillViewAdd 十属性：等级 1/上限 1/修为 0/WuXing 0/前摇 1000/范围 50）。 */
+    /** DB 技能行（bak roleSkillViewAdd 十属性 + 四期零值特效族/目录 CoolDownTime）。 */
     static byte[] dbSkillViewAdd(RoleInventoryStore.Skill skill, int slot) {
-        List<SceneMessages.ViewProperty> props = new ArrayList<>(10);
+        List<SceneMessages.ViewProperty> props = new ArrayList<>(24);
         Props.addView(props, "ConfigID", PropertyValues.Value.ofString(skill.skillId()));
         Props.addView(props, "StaticData", PropertyValues.Value.ofInt32(skill.staticData()));
         Props.addView(props, "ItemType",
@@ -116,6 +116,27 @@ public final class StarterGrants {
         Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(0));
         Props.addView(props, "PrepareTime", PropertyValues.Value.ofInt32(1000));
         Props.addView(props, "TargetShapePara2", PropertyValues.Value.ofFloat32(50.0f));
+        SkillInitTable.Row row = SkillInitTable.load().row(skill.skillId());
+        // 属性族 bak 语义值（发 0 会显示空/零）：WuXing 走 wuxuebaseinfo 目录缺省太极。
+        Props.addView(props, "UseLimit", PropertyValues.Value.ofInt32(9));
+        Props.addView(props, "VarPropNo", PropertyValues.Value.ofInt32(0));
+        Props.addView(props, "Quality", PropertyValues.Value.ofByte(1));
+        int wuXing = com.nineyin.server.game.avatar.neigong.NeiGongCatalog.load()
+                .wuXingOf(skill.skillId());
+        Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(
+                wuXing != 0 ? wuXing : com.nineyin.server.game.avatar.neigong.NeiGongCatalog.WUXING_TAIJI));
+        Props.addView(props, "CoolDownTime", PropertyValues.Value.ofInt32(
+                row == null ? 0 : row.coolDownMs()));
+        Props.addView(props, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "PhyDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "StiDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "JujDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "NegDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "MasDamageMul", PropertyValues.Value.ofFloat32(1.0f));
+        Props.addView(props, "Flow", PropertyValues.Value.ofInt32(5));
+        Props.addView(props, "LeadTime", PropertyValues.Value.ofInt32(10000));
+        Props.addView(props, "LeadSepTime", PropertyValues.Value.ofInt32(1500));
         return SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, slot, props);
     }
 

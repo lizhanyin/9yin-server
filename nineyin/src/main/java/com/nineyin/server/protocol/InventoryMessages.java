@@ -173,8 +173,10 @@ public final class InventoryMessages {
         Props.addView(props, "Hardiness", PropertyValues.Value.ofInt32(equip.hardiness()));
         Props.addView(props, "MaxHardiness", PropertyValues.Value.ofInt32(equip.maxHardiness()));
         Props.addView(props, "Level", PropertyValues.Value.ofInt32(stat != null ? stat.level() : 0));
-        // 精炼词缀（PropBuilt）与特效包（EffectPackID）互斥。
-        if (stat != null && stat.effectPackId() != 0) {
+        // 精炼词缀（PropBuilt）与特效包（EffectPackID）互斥；词缀非空下发（四期装备词缀层）。
+        if (equip.propBuilt() != null && !equip.propBuilt().isEmpty()) {
+            Props.addView(props, "PropBuilt", PropertyValues.Value.ofString(equip.propBuilt()));
+        } else if (stat != null && stat.effectPackId() != 0) {
             Props.addView(props, "EffectPackID", PropertyValues.Value.ofInt32(stat.effectPackId()));
         }
         if (stat != null && stat.photo() != null && !stat.photo().isEmpty()) {

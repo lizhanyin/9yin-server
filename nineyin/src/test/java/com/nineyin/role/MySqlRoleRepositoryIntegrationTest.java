@@ -29,10 +29,13 @@ class MySqlRoleRepositoryIntegrationTest {
 
     @BeforeAll
     static void setUp() throws SQLException {
-        String base = System.getenv("NINEYIN_TEST_MYSQL_DSN");
+        // DSN 来源与生产一致：NINEYIN_MYSQL_DSN 环境变量 > 根目录 mysql.env；均无则跳过。
+        String base = System.getenv("NINEYIN_MYSQL_DSN");
         if (base == null || base.isBlank()) {
-            base = "nineyin:nineyin123@tcp(127.0.0.1:3306)/nineyin";
+            base = com.nineyin.server.MySqlEnv.loadDsn().orElse(null);
         }
+        assumeTrue(base != null && !base.isBlank(),
+                "未配置 MySQL DSN（环境变量 NINEYIN_MYSQL_DSN 或根目录 mysql.env），跳过集成测试");
         var matcher = MySqlRoleRepositoryTestHarness.DSN.matcher(base);
         assumeTrue(matcher.matches(), "测试 DSN 形如 user:pass@tcp(host:port)/db");
         String url = String.format(

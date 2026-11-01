@@ -19,6 +19,7 @@ import com.nineyin.role.MySqlRoleRepository;
 import com.nineyin.role.RoleRepository;
 import com.nineyin.role.RoleStoreFacade;
 import com.nineyin.server.LoginFlow;
+import com.nineyin.server.MySqlEnv;
 import com.nineyin.server.NineyinProtocolHandler;
 import com.swingfrog.summer.app.Summer;
 import com.swingfrog.summer.app.SummerApp;
@@ -39,7 +40,7 @@ public final class NineyinServer implements SummerApp {
 
     @Override
     public void init() {
-        // Go openRoleStore：NINEYIN_MYSQL_DSN 优先，否则 data/roles.json。
+        // Go openRoleStore：MySQL DSN 优先，否则 data/roles.json；DSN 来源见 MySqlEnv（env > mysql.env）。
         RoleRepository repository = openRoleRepository();
         roleStore = new RoleStoreFacade(repository);
         facultyStore = FacultyStore.open(ServerPaths.projectPath("data", "faculty.json"));
@@ -51,9 +52,9 @@ public final class NineyinServer implements SummerApp {
     }
 
     private static RoleRepository openRoleRepository() {
-        String dsn = System.getenv("NINEYIN_MYSQL_DSN");
-        if (dsn != null && !dsn.isBlank()) {
-            return MySqlRoleRepository.open(dsn);
+        java.util.Optional<String> dsn = MySqlEnv.loadDsn();
+        if (dsn.isPresent()) {
+            return MySqlRoleRepository.open(dsn.get());
         }
         return JsonRoleRepository.open(ServerPaths.projectPath("data", "roles.json"));
     }

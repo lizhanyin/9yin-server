@@ -334,14 +334,31 @@ public final class PlayerProgress {
         // 当前运功内功五行/属性 int（书行 WuXing 同源；客户端阴阳太极伴生显示）
         Props.add(properties, "CurNeiGongWuXing",
                 PropertyValues.Value.ofInt32(equipped == null ? 0 : equipped.wuXing));
+        // ---- 内修（faculty）面板块：0x10 全量帧携带，括号内为 0x09 官方属性表索引 ----
+        // Faculty(757)：修炼点余额，演武等操作消耗（升级折半扣），种子 9_999_999。
         Props.add(properties, "Faculty", PropertyValues.Value.ofInt32(faculty));
+        // FacultyState(758)：修炼状态机。0=FACULTY_STATE_NONE 未修炼；
+        // 2=FACULTY_STATE_CONVERT 修炼中。F 盘抓包实证登录即 2（常驻修炼）。
         Props.add(properties, "FacultyState", PropertyValues.Value.ofInt32(facultyState));
+        // FacultyStyle(759)：修炼方式。1=FACULTY_STYLE_NORMAL 普通内修（按分钟累积修速）；
+        // 2=FACULTY_STYLE_ACT 演武（不计每分钟，单卡奖励 20000）。
         Props.add(properties, "FacultyStyle", PropertyValues.Value.ofInt32(facultyStyle));
+        // FacultyName(760)：当前修炼内功书 configId（如 ng_jh_201；建号默认 CS_jh_cqgf01）。
         Props.add(properties, "FacultyName", PropertyValues.Value.ofString(facultyName));
+        // CurPlaceList(766)：修炼地点索引（type7 字符串）。客户端按值查本地 UI 串
+        // ui_faculty_place_N：1=山 2=水 3=洞 4=林 5=雪 6=市。F 盘实证恒发 "6"（市），
+        // 此处暂固定 "1"；切换地点的 C2S 消息未抓到，接动态后再入库。
+        Props.add(properties, "CurPlaceList", PropertyValues.Value.ofString("1"));
+        // CurFillValue(764)：本层已修修炼度（1s ticker 按整分钟结算累加）。
         Props.add(properties, "CurFillValue", PropertyValues.Value.ofInt32(fill));
+        // TotalFillValue(765)：本层升级所需总修炼度（wuxuelevelinfo.ini r=等级,修炼度,速度）。
         Props.add(properties, "TotalFillValue", PropertyValues.Value.ofInt32(total));
+        // CurLevel(763)：当前书层数（面板"第 N 层"之源）。
         Props.add(properties, "CurLevel", PropertyValues.Value.ofInt32(level));
+        // FillSpeed(773)：每分钟修炼速度。普通内修初始 200（NORMAL_FACULTY_FILL_PER_MINUTE），
+        // 地点/道具加成后可变（F 盘实证 516）；演武为 0。
         Props.add(properties, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed));
+        // PowerValue/MaxPowerValue：当前/上限功力（书行 power，如 ng_jh_201 满级 680）。
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
         Props.add(properties, "SP", PropertyValues.Value.ofInt32(a.sp));

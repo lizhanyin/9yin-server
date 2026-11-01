@@ -12,7 +12,7 @@ tools/smoke/*frames.txt
 nineyin/logs
 tmp-analysis
 /resources
-
+tools/__pycache__
 -----
 *.bak
 *.ctxt

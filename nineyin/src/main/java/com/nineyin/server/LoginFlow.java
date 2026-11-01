@@ -13,6 +13,7 @@ import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
 import com.nineyin.gm.GmHub;
 import com.nineyin.protocol.LoginMessages;
+import com.nineyin.protocol.SceneNames;
 import com.nineyin.protocol.SceneMessages;
 import com.nineyin.role.RoleStoreFacade;
 import com.nineyin.role.Roles;
@@ -31,6 +32,8 @@ public final class LoginFlow {
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
 
     static final int STARTER_SILVER = 99999;
+    /** 选人界面实力档位种子（一期无实力持久化，固定 151=title027 返璞归真）。 */
+    static final int ROLE_LIST_POWER_LEVEL = 151;
 
     private final RoleStoreFacade roleStore;
     private final FacultyStore facultyStore;
@@ -97,14 +100,23 @@ public final class LoginFlow {
         return true;
     }
 
-    /** Go oneRoleLoginSuccess 内部的 resolveRoleVisual：外观路径经装备表解析。 */
+    /**
+     * 0x04 帧构造：外观经装备表解析；f23 实力称号（一期种子 151=title027）、
+     * f24 角色实际所在场景中文名（scenes.ini+desc.idres）、f25 剧本标题键
+     * （introduction_*01_title），f32 保持 book 原值。
+     */
     private byte[] oneRoleWithVisual(LoginSession session) {
-        RoleVisual visual = RoleVisual.resolve(
-                session.selected.appearance().values(), EquipmentResolver.loadDefault());
+        List<String> appearance = session.selected.appearance().values();
+        RoleVisual visual = RoleVisual.resolve(appearance, EquipmentResolver.loadDefault());
+        String book = appearance.isEmpty() || appearance.get(0).isEmpty() ? "book1" : appearance.get(0);
+        Roles.Location location = session.selected.location();
         return LoginMessages.oneRoleLoginSuccess(java.time.LocalDateTime.now(clock),
-                session.selected.name(), session.selected.appearance().values(),
-                RoleStoreFacade.roleFaction(session.selected.appearance().values()),
-                visual.hair(), visual.cloth(), visual.pants(), visual.shoes());
+                session.selected.name(), appearance,
+                RoleStoreFacade.roleFaction(appearance),
+                visual.hair(), visual.cloth(), visual.pants(), visual.shoes(),
+                LoginMessages.roleListTitle(ROLE_LIST_POWER_LEVEL),
+                SceneNames.sceneDisplayName(location.scene().config(), location.scene().resource()),
+                SceneNames.bookIntroKey(book));
     }
 
     private boolean onWorldInfo(Connection connection) {

@@ -111,6 +111,21 @@ class LoginFlowTest {
         return frame;
     }
 
+    private static int u32(byte[] frame, int off) {
+        return (frame[off] & 0xFF) | (frame[off + 1] & 0xFF) << 8
+                | (frame[off + 2] & 0xFF) << 16 | (frame[off + 3] & 0xFF) << 24;
+    }
+
+    /** 从 0x04 帧记录区按结构解析 rolePara（整帧直接 UTF16 解码会因头部二进制错位）。 */
+    private static String rolePara(byte[] frame) {
+        int off = 0x29 + 2 + 1 + 4 + 1 + 4;     // u16(6),u8(2),u32, u8(2),u32
+        off += 1 + 4;                           // u8(7) + name 长度
+        off += u32(frame, off - 4);             // name 内容
+        off += 1 + 4;                           // u8(7) + para 长度
+        int paraLen = u32(frame, off - 4);
+        return new String(frame, off, paraLen - 2, StandardCharsets.UTF_16LE);
+    }
+
     @Test
     void fullCreateChooseReadyFlow(@TempDir Path tempDir) throws Exception {
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
@@ -132,12 +147,17 @@ class LoginFlowTest {
         assertEquals(1, replies.size());
         assertArrayEquals(golden("world_info.bin"), replies.get(0));
 
-        // 0x05 创角 → 0x04 带角色。
+        // 0x05 创角 → 0x04 带角色（实力 title027 / 剧本介绍键 / 出生场景中文名）。
         send(channel, createRoleFrame("金镶玉"));
         replies = drain(channel);
         assertEquals(1, replies.size());
         assertEquals(0x04, replies.get(0)[0] & 0xFF);
         assertTrue(replies.get(0).length > 0x29);
+        String[] fields = rolePara(replies.get(0)).split(",", -1);
+        assertEquals("title027", fields[23], "实力称号键");
+        // 测试创角包仅带 cloth_b0001（appearance[0]）：未知剧本按设计回退原值。
+        assertEquals("cloth_b0001", fields[25], "剧本介绍键（未知剧本回退原值）");
+        assertEquals("移花宫", fields[24], "所在场景中文名（stringname.idres）");
 
         // 0x04 选角 → 下发序列（Go main.go:665-760 顺序）。
         byte[] choose = new byte[0x54];
@@ -219,9 +239,13 @@ class LoginFlowTest {
         assertEquals(1, replies.size());
         assertEquals(0x04, replies.get(0)[0] & 0xFF);
         assertTrue(replies.get(0).length > 0x29, "已有角色应回带角色 0x04");
-        // 名字 UTF16 区段（记录第 3 段 u8(7)+UCS2）包含"沙涛"。
+        // 名字 + f23 实力 / f24 场景 / f25 剧本（按结构解析，避免整帧解码错位）。
         String text = new String(replies.get(0), StandardCharsets.UTF_16LE);
         assertTrue(text.contains("沙涛"));
+        String[] fields = rolePara(replies.get(0)).split(",", -1);
+        assertEquals("title027", fields[23], "实力称号键");
+        assertEquals("移花宫", fields[24], "出生场景中文名");
+        assertEquals("cloth_b0001", fields[25], "剧本介绍键（未知剧本回退原值）");
         second.close();
     }
 }

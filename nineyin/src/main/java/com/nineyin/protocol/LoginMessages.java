@@ -36,13 +36,21 @@ public final class LoginMessages {
     }
 
     /**
-     * Go oneRoleLoginSuccess：0x29 头（u32@0x25=1）+ 单角色记录：
-     * u16(6),u8(2),u32(0), u8(2),u32(0), u8(7)+UCS2(name), u8(7)+UCS2(rolePara),
-     * u8(2)+u32(0), u8(5)+f64(0)。rolePara 用 resolveRoleVisual 解析后的外观路径。
+     * 选角列表 0x04 帧。f23/f24/f25 为选人界面的实力称号/所在场景/剧本标题：
+     * 传 Go 原版值（"title001"/"scene_name_017"/book 原值）时与 Go 逐字节一致；
+     * 生产由 LoginFlow 传 SceneNames/levelTitleFor 的真实显示值。
      */
     public static byte[] oneRoleLoginSuccess(LocalDateTime now, String name,
                                              List<String> appearance, String faction,
                                              String hair, String cloth, String pants, String shoes) {
+        return oneRoleLoginSuccess(now, name, appearance, faction, hair, cloth, pants, shoes,
+                "title001", "scene_name_017", null);
+    }
+
+    public static byte[] oneRoleLoginSuccess(LocalDateTime now, String name,
+                                             List<String> appearance, String faction,
+                                             String hair, String cloth, String pants, String shoes,
+                                             String title, String sceneName, String bookIntro) {
         PacketWriter writer = PacketWriter.ofCapacity(0x29 + 160 + name.length() * 2);
         writer.writeU8(0x04);
         appendLoginHeader(writer, now);
@@ -54,7 +62,7 @@ public final class LoginMessages {
         writer.writeU8(7);
         appendUcs2(writer, name);
         writer.writeU8(7);
-        appendUcs2(writer, rolePara(appearance, faction, hair, cloth, pants, shoes));
+        appendUcs2(writer, rolePara(appearance, faction, hair, cloth, pants, shoes, title, sceneName, bookIntro));
         writer.writeU8(2).writeU32(0);
         writer.writeU8(5).writeF64(0);
         return writer.toBytes();
@@ -69,7 +77,11 @@ public final class LoginMessages {
 
     /** Go oneRoleLoginSuccess 的 36 字段 rolePara（逗号拼接，未赋值位为空串；7/9/10/11 为解析后外观）。 */
     public static String rolePara(List<String> appearance, String faction,
-                                   String hair, String cloth, String pants, String shoes) {
+                                   String hair, String cloth, String pants, String shoes,
+                                   String title, String sceneName, String bookIntro) {
+        String resolvedTitle = title == null || title.isEmpty() ? "title001" : title;
+        String resolvedScene = sceneName == null || sceneName.isEmpty() ? "scene_name_017" : sceneName;
+        String resolvedBookIntro = bookIntro == null ? get(appearance, 0, "book1") : bookIntro;
         String[] fields = new String[36];
         Arrays.fill(fields, "");
         fields[0] = "0"; // sex：当前创角抓包为男路径
@@ -85,14 +97,34 @@ public final class LoginMessages {
         fields[11] = shoes;
         fields[21] = "stand";
         fields[22] = "127.0.0.1";
-        fields[23] = "title001";
-        fields[24] = "scene_name_017";
-        fields[25] = get(appearance, 0, "book1");
+        fields[23] = resolvedTitle;
+        fields[24] = resolvedScene;
+        fields[25] = resolvedBookIntro;
         fields[31] = "0";
         fields[32] = get(appearance, 0, "book1");
         fields[33] = get(appearance, 4, "obj\\char\\b_hair\\b_hair1");
         fields[35] = "0";
         return String.join(",", fields);
+    }
+
+    /**
+     * 选人界面实力称号（f23）：等级→title0NN 档位键（title001=不堪一击 … title027=返璞归真，
+     * 客户端按 desc_title0NN 本地化）。种子 151 与参考服同种子玩家一致（2026-10-30 抓包 #0）。
+     */
+    public static String roleListTitle(int powerLevel) {
+        if (powerLevel <= 5) {
+            return "title001";
+        }
+        if (powerLevel <= 120) {
+            return String.format("title%03d", Math.min(24, (powerLevel - 1) / 5 + 1));
+        }
+        if (powerLevel <= 130) {
+            return "title025";
+        }
+        if (powerLevel <= 150) {
+            return "title026";
+        }
+        return "title027";
     }
 
     private static String get(List<String> appearance, int index, String fallback) {

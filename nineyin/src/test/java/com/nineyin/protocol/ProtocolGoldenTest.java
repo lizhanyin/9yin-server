@@ -2,6 +2,7 @@ package com.nineyin.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -105,5 +106,64 @@ class ProtocolGoldenTest {
     void serverLocationMatchesGolden() throws Exception {
         assertArrayEquals(golden("server_location.bin"),
                 SceneMessages.serverLocation(1, 1, RoleStoreFacade.defaultRoleLocation().position()));
+    }
+
+    @Test
+    void recordAddStringMatchesGolden() throws Exception {
+        assertArrayEquals(golden("qinggong_record_add.bin"),
+                RecordMessages.recordAddString(1, 1, RecordMessages.RECORD_QING_GONG, "qinggong_1"));
+    }
+
+    @Test
+    void taskAcceptedAddMatchesGolden() throws Exception {
+        assertArrayEquals(golden("task_accepted_add.bin"),
+                RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_TASK_ACCEPTED,
+                        RecordMessages.Cell.ofInt(1069), RecordMessages.Cell.ofInt(9), RecordMessages.Cell.ofInt(0),
+                        RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofString(""),
+                        RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofInt(0)));
+    }
+
+    @Test
+    void taskCompletedAddMatchesGolden() throws Exception {
+        assertArrayEquals(golden("task_completed_row_zero.bin"),
+                RecordMessages.recordAddInt32(1, 1, RecordMessages.RECORD_TASK_COMPLETED, 0));
+        // function_unlock_meta.json: final_row=1593 value=1<<26（task 51002 位）
+        assertArrayEquals(golden("task_completed_row_final.bin"),
+                RecordMessages.recordAddInt32(1, 1, RecordMessages.RECORD_TASK_COMPLETED, 1 << 26));
+    }
+
+    @Test
+    void shortcutSitcrossAddMatchesGolden() throws Exception {
+        assertArrayEquals(golden("shortcut_sitcross_add.bin"),
+                RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_SHORTCUT,
+                        RecordMessages.Cell.ofInt(9), RecordMessages.Cell.ofString("skill"),
+                        RecordMessages.Cell.ofString("zs_default_01")));
+    }
+
+    @Test
+    void skillSwitchMatchesGolden() throws Exception {
+        assertArrayEquals(golden("skill_switch.bin"),
+                CustomMessages.modernCustomIntMessage(414,
+                        CustomMessages.Value.ofString("reset"),
+                        CustomMessages.Value.ofInt32(1223),
+                        CustomMessages.Value.ofInt32(1)));
+    }
+
+    @Test
+    void customIntMessageRejectsOutOfRangeId() {
+        assertThrows(IllegalArgumentException.class,
+                () -> CustomMessages.modernCustomIntMessage(0, CustomMessages.Value.ofInt32(1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> CustomMessages.customIntMessage(765, CustomMessages.Value.ofInt32(1)));
+    }
+
+    @Test
+    void view46CreateAndAddsMatchGolden() throws Exception {
+        assertArrayEquals(golden("view46_create.bin"),
+                SceneMessages.createView(new SceneMessages.ViewSpec(46, 70)));
+        assertArrayEquals(golden("view46_add_first.bin"),
+                SceneMessages.viewAdd(46, 1, List.of(SceneMessages.ViewProperty.ofString(7, "qinggong_1"))));
+        assertArrayEquals(golden("view46_add_last.bin"),
+                SceneMessages.viewAdd(46, 70, List.of(SceneMessages.ViewProperty.ofString(7, "QG_JH_gjskill_001"))));
     }
 }

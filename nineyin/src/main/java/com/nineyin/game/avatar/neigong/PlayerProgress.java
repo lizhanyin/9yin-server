@@ -8,6 +8,7 @@ import java.util.List;
 
 import com.nineyin.protocol.PropertyIndex;
 import com.nineyin.protocol.PropertyValues;
+import com.nineyin.protocol.SceneMessages;
 
 /**
  * 玩家内功修炼进度，对齐 Go cmd/protocol-probe/player_progress.go 的登录时刻子集。
@@ -306,6 +307,37 @@ public final class PlayerProgress {
             }
         }
         return book(curNeiGong);
+    }
+
+    /** View 43（内功书容器）ID。 */
+    public static final int VIEWPORT_NEI_GONG = 43;
+
+    /** Go viewFrames：View 43 容器 + 每本书一帧。 */
+    public List<byte[]> viewFrames() {
+        List<byte[]> frames = new ArrayList<>(books.size() + 1);
+        frames.add(SceneMessages.createView(new SceneMessages.ViewSpec(VIEWPORT_NEI_GONG, books.size())));
+        for (int slot = 1; slot <= books.size(); slot++) {
+            frames.add(bookFrame(slot));
+        }
+        return frames;
+    }
+
+    /** Go bookFrame：ConfigID + 静态/档位/等级/修为/内力九属性。 */
+    public byte[] bookFrame(int slot) {
+        if (slot <= 0 || slot > books.size()) {
+            throw new IllegalArgumentException("invalid neigong slot " + slot);
+        }
+        Book book = books.get(slot - 1);
+        return SceneMessages.viewAdd(VIEWPORT_NEI_GONG, slot, List.of(
+                SceneMessages.ViewProperty.ofString(7, book.configId),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.STATIC_DATA, book.staticData),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.ITEM_TYPE, book.itemType),
+                SceneMessages.ViewProperty.ofInt(6, book.level),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.MAX_LEVEL, book.maxLevel),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.CUR_FILL_VALUE, book.fill),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.TOTAL_FILL_VALUE, book.total),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.POWER_VALUE, book.power),
+                SceneMessages.ViewProperty.ofInt(PropertyIndex.MAX_POWER_VALUE, book.maxPower)));
     }
 
     public Snapshot snapshot() {

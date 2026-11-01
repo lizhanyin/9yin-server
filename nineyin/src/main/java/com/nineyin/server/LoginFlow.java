@@ -11,6 +11,8 @@ import com.nineyin.auth.LoginIdentity;
 import com.nineyin.game.avatar.neigong.FacultyStore;
 import com.nineyin.game.avatar.PlayerActor;
 import com.nineyin.game.avatar.RoleVisual;
+import com.nineyin.game.starter.StarterGrants;
+import com.nineyin.game.starter.StarterQingGong;
 import com.nineyin.gm.GmHub;
 import com.nineyin.protocol.LoginMessages;
 import com.nineyin.protocol.SceneNames;
@@ -61,7 +63,7 @@ public final class LoginFlow {
             case SessionMachine.CLIENT_CREATE_ROLE -> onCreateRole(connection, session, plain);
             case SessionMachine.CLIENT_CHOOSE_ROLE -> onChooseRole(connection, session);
             case SessionMachine.CLIENT_READY -> onClientReady(connection, session);
-            case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(session);
+            case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session);
             default -> true; // 未分类 opcode 放行业务层（一期无业务层）
         };
     }
@@ -213,16 +215,55 @@ public final class LoginFlow {
         gmHub.attach(snapshot.sessionId, snapshot);
     }
 
-    /** 连接断开（含校验失败断连）：摘除面板会话快照。 */
+    /** 连接断开（含校验失败断连）：Go defer persistFaculty + gm.detach。 */
     public void onDisconnect(LoginSession session) {
+        if (session.selected != null && session.player != null) {
+            try {
+                facultyStore.save(session.selected.id(), session.player.facultySnapshot());
+            } catch (RuntimeException e) {
+                log.warn("persist faculty progress: {}", e.getMessage());
+            }
+        }
         gmHub.detach(session.machine.id());
     }
 
-    /** 一期：相位转移 + 权威 vital；Go 的 starter 链（轻功/View43/40/0x27）属二期。 */
+    /**
+     * Go main.go 显式 stage_main 0x09 分支：starter 链（轻功/打坐/内功 View43/
+     * 技能 View40/快捷栏）→ 0x27 开关 → 重复就绪守卫 → world.clientReady（无帧）
+     * → Ready 相位 → 终帧 vital 同步。注意 grants 在 machine.ready() 之前。
+     */
     private boolean onClientReady(Connection connection, LoginSession session) {
+        if (session.player != null && !session.qingGongGranted) {
+            StarterGrants.grantStarterQingGong(connection);
+            session.qingGongGranted = true;
+            log.info("session={} granted {} QingGongRec rows and {} View=46 items after explicit ClientReady",
+                    session.machine.id(), StarterQingGong.STARTER_QING_GONG_IDS.size(),
+                    StarterQingGong.STARTER_QING_GONG_IDS.size() + StarterQingGong.STARTER_QING_GONG_SKILL_IDS.size());
+        }
+        if (session.player != null) {
+            boolean granted = StarterGrants.grantSitcrossShortcut(connection, session.player);
+            if (granted) {
+                log.info("session={} granted native sitcross shortcut index={}",
+                        session.machine.id(), StarterGrants.SITCROSS_SHORTCUT_INDEX);
+            }
+        }
+        if (session.player != null && !session.neigongGranted) {
+            StarterGrants.grantStarterProgress(connection, session.player);
+            session.neigongGranted = true;
+            log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady",
+                    session.machine.id());
+        }
+        if (session.player != null) {
+            // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
+            StarterGrants.enableSkillActionSwitch(connection);
+        }
+        if (session.machine.phase() == SessionMachine.Phase.IN_WORLD) {
+            log.info("session={} ignored duplicate ClientReady in active scene", session.machine.id());
+            return true;
+        }
         SessionException transition = session.machine.ready();
         if (transition != null) {
-            log.info("ready transition: {}", transition.getMessage());
+            log.info("complete client-ready transition: {}", transition.getMessage());
             return false;
         }
         if (session.player != null) {
@@ -231,11 +272,26 @@ public final class LoginFlow {
         return true;
     }
 
-    /** 一期：相位转移；NPC 物化（reconcileViewport）属二期。 */
-    private boolean onClientActivity(LoginSession session) {
+    /**
+     * Go 0x0A 分支：相位 ENTERING_WORLD 时按兼容就绪屏障提升（客户端省略 0x09
+     * 直发 0x0A：Ready + vital + 0x27 开关，不发 starter 链），再走 Activity 相位。
+     */
+    private boolean onClientActivity(Connection connection, LoginSession session) {
+        if (session.machine.phase() == SessionMachine.Phase.ENTERING_WORLD) {
+            SessionException readyTransition = session.machine.ready();
+            if (readyTransition != null) {
+                log.info("complete compatibility ready transition: {}", readyTransition.getMessage());
+                return false;
+            }
+            if (session.player != null) {
+                connection.writeFrame(session.player.vitalUpdate());
+                StarterGrants.enableSkillActionSwitch(connection);
+            }
+            log.info("session={} promoted observed 0x0A to compatibility ClientReady", session.machine.id());
+        }
         SessionException transition = session.machine.activity();
         if (transition != null) {
-            log.info("activity transition: {}", transition.getMessage());
+            log.info("complete client-activity transition: {}", transition.getMessage());
             return false;
         }
         return true;

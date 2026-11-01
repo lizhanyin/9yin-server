@@ -126,6 +126,23 @@ class LoginFlowTest {
         return new String(frame, off, paraLen - 2, StandardCharsets.UTF_16LE);
     }
 
+    /** golden ready_chain_manifest.json → (opcode,length) 序列（Go 显式 0x09 帧序权威）。 */
+    private static List<int[]> readyChainManifest() throws Exception {
+        try (InputStream in = LoginFlowTest.class.getResourceAsStream("/golden/ready_chain_manifest.json")) {
+            Objects.requireNonNull(in, "missing ready_chain_manifest.json");
+            String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            java.util.regex.Matcher opcode = java.util.regex.Pattern
+                    .compile("\"opcode\":\\s*(\\d+)").matcher(json);
+            java.util.regex.Matcher length = java.util.regex.Pattern
+                    .compile("\"length\":\\s*(\\d+)").matcher(json);
+            List<int[]> frames = new ArrayList<>();
+            while (opcode.find() && length.find()) {
+                frames.add(new int[]{Integer.parseInt(opcode.group(1)), Integer.parseInt(length.group(1))});
+            }
+            return frames;
+        }
+    }
+
     @Test
     void fullCreateChooseReadyFlow(@TempDir Path tempDir) throws Exception {
         JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
@@ -184,11 +201,38 @@ class LoginFlowTest {
             assertEquals(goldenObject[offset], addObject[offset], "0x0D header@" + Integer.toHexString(offset));
         }
 
-        // 0x09 ready → vital（一期 starter 链略，回 0x10）。
+        // 0x09 ready → 二期 starter 链：Go golden_dump_test.go ready 链（1748 帧）。
         send(channel, new byte[]{0x09});
         replies = drain(channel);
-        assertEquals(1, replies.size());
-        assertEquals(0x10, replies.get(0)[0] & 0xFF);
+        List<int[]> manifest = readyChainManifest();
+        assertEquals(manifest.size(), replies.size());
+        for (int j = 0; j < manifest.size(); j++) {
+            assertEquals(manifest.get(j)[0], replies.get(j)[0] & 0xFF, "opcode@" + j);
+            // 0x10 vital 帧带 Buff 到期字符串：golden fixture 在墙钟下已过期（空串 820），
+            // 运行时新角色的 24h Buff 仍活跃（890）——长度随时钟态变化，只比对 opcode。
+            if (manifest.get(j)[0] != 0x10) {
+                assertEquals(manifest.get(j)[1], replies.get(j).length, "length@" + j);
+            }
+        }
+        // 状态无关样本帧逐字节：记录行/视图/快捷栏/0x27 开关。
+        // 段界：0-17 轻功行 | 18 View46 | 19-88 条目 | 89-103 任务接受 | 104-1697 位图 | 1698 打坐
+        // | 1699 View43 | 1700-1705 书 | 1706 View40 | 1707-1729 技能 | 1730-1744 快捷栏 | 1745 vital。
+        assertArrayEquals(golden("qinggong_record_add.bin"), replies.get(0));
+        assertArrayEquals(golden("view46_create.bin"), replies.get(18));
+        assertArrayEquals(golden("view46_add_first.bin"), replies.get(19));
+        assertArrayEquals(golden("view46_add_last.bin"), replies.get(88));
+        assertArrayEquals(golden("task_accepted_add.bin"), replies.get(89));
+        assertArrayEquals(golden("task_completed_row_zero.bin"), replies.get(104));
+        assertArrayEquals(golden("task_completed_row_final.bin"), replies.get(1697));
+        assertArrayEquals(golden("shortcut_sitcross_add.bin"), replies.get(1698));
+        assertArrayEquals(golden("view43_create.bin"), replies.get(1699));
+        assertArrayEquals(golden("view40_create.bin"), replies.get(1706));
+        assertArrayEquals(golden("view40_add_first.bin"), replies.get(1707));
+        assertArrayEquals(golden("view40_add_last.bin"), replies.get(1729));
+        assertArrayEquals(golden("skill_switch.bin"), replies.get(1746));
+        // 两帧 vital 自一致（buff 时钟随运行时钟，不比 golden；fixture 书 fill 与新角色不同，书帧只比长度）。
+        assertArrayEquals(replies.get(1745), replies.get(1747));
+        assertEquals(0x10, replies.get(1745)[0] & 0xFF);
 
         // 0x0A activity → 无回包，状态机进 InWorld。
         send(channel, new byte[]{0x0A, 0x00});
@@ -247,5 +291,57 @@ class LoginFlowTest {
         assertEquals("移花宫", fields[24], "出生场景中文名");
         assertEquals("cloth_b0001", fields[25], "剧本介绍键（未知剧本回退原值）");
         second.close();
+    }
+
+    /** 走到选角完成（登录/世界信息/创角/选角），返回通道。 */
+    private EmbeddedChannel drivenToChosen(Path tempDir) throws Exception {
+        JsonRoleRepository repository = JsonRoleRepository.open(tempDir.resolve("roles.json"));
+        RoleStoreFacade store = new RoleStoreFacade(repository);
+        FacultyStore faculty = FacultyStore.open(tempDir.resolve("faculty.json"));
+        EmbeddedChannel channel = newChannel(store, faculty);
+        send(channel, loginFrame());
+        drain(channel);
+        send(channel, new byte[]{0x03});
+        drain(channel);
+        send(channel, createRoleFrame("金镶玉"));
+        drain(channel);
+        byte[] choose = new byte[0x54];
+        choose[0] = 0x04;
+        send(channel, choose);
+        drain(channel);
+        return channel;
+    }
+
+    @Test
+    void duplicateClientReadyInWorldResendsOnlySwitch(@TempDir Path tempDir) throws Exception {
+        EmbeddedChannel channel = drivenToChosen(tempDir);
+        send(channel, new byte[]{0x09});
+        drain(channel);
+        send(channel, new byte[]{0x0A, 0x00});
+        drain(channel);
+        // 活动场景内重复 0x09：starter 链已授予（幂等跳过），仅重发 0x27 开关，不断连。
+        send(channel, new byte[]{0x09});
+        List<byte[]> replies = drain(channel);
+        assertEquals(1, replies.size());
+        assertArrayEquals(golden("skill_switch.bin"), replies.get(0));
+        assertTrue(channel.isActive());
+        channel.close();
+    }
+
+    @Test
+    void firstActivityPromotesCompatibilityReady(@TempDir Path tempDir) throws Exception {
+        EmbeddedChannel channel = drivenToChosen(tempDir);
+        // 客户端省略 0x09 直发 0x0A：兼容提升 = vital + 0x27（不发 starter 链），相位进 InWorld。
+        send(channel, new byte[]{0x0A, 0x00});
+        List<byte[]> replies = drain(channel);
+        assertEquals(2, replies.size());
+        assertEquals(0x10, replies.get(0)[0] & 0xFF);
+        assertArrayEquals(golden("skill_switch.bin"), replies.get(1));
+        assertTrue(channel.isActive());
+        // 后续重复 0x0A 不再产生提升帧。
+        send(channel, new byte[]{0x0A, 0x00});
+        replies = drain(channel);
+        assertTrue(replies.isEmpty());
+        channel.close();
     }
 }

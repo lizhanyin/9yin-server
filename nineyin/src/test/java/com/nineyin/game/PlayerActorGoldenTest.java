@@ -72,6 +72,19 @@ class PlayerActorGoldenTest {
     }
 
     @Test
+    void progressViewFramesMatchGolden() throws Exception {
+        // 与 golden_dump_test.go readyPlayer 相同固定恢复：View 43 容器 + 6 书帧逐字节。
+        PlayerActor player = PlayerActor.create("李逍遥", 99999, Clock.systemUTC());
+        PlayerProgress.Snapshot snapshot = withLastAdvance(player.facultySnapshot(), GOLDEN_NOW.minusSeconds(3600));
+        player.restoreFaculty(snapshot, GOLDEN_NOW);
+        List<byte[]> frames = player.progress().viewFrames();
+        assertEquals(7, frames.size());
+        assertArrayEquals(golden("view43_create.bin"), frames.get(0));
+        assertArrayEquals(golden("view43_book_1.bin"), frames.get(1));
+        assertArrayEquals(golden("view43_book_last.bin"), frames.get(6));
+    }
+
+    @Test
     void customFacultyAddObjectAndVital() throws Exception {
         PlayerActor player = PlayerActor.create("测试角色", 5000, Clock.systemUTC());
         PlayerProgress.Snapshot base = player.facultySnapshot();

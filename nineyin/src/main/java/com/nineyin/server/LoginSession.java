@@ -14,6 +14,9 @@ final class LoginSession {
     PlayerActor player;
     RoleVisual visual;
     String accountKey;
+    /** Go handle() 的 qingGongGranted/neigongGranted 闭包标志（每连接一次）。 */
+    boolean qingGongGranted;
+    boolean neigongGranted;
 
     LoginSession() {
     }

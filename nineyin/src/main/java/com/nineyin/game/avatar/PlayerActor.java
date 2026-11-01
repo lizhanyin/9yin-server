@@ -63,6 +63,10 @@ public final class PlayerActor {
         return clock;
     }
 
+    public PlayerProgress progress() {
+        return progress;
+    }
+
     public int silver() {
         return silver;
     }
@@ -73,6 +77,57 @@ public final class PlayerActor {
 
     public void setFaction(String faction) {
         this.faction = faction;
+    }
+
+    // ----------------------------------------------------------------- 快捷栏
+
+    /** shortcut_rec 一行：索引、种类（skill/item…）、配置 ID。 */
+    public record PlayerShortcut(int index, String kind, String id) {
+    }
+
+    /** Go setShortcut 结果：旧行号 / 是否已存在该索引 / 是否完全相同无需变更。 */
+    public record ShortcutUpdate(int oldRow, boolean existed, boolean unchanged) {
+    }
+
+    private final List<PlayerShortcut> shortcuts = new ArrayList<>();
+
+    /** Go playerActor.setShortcut：同索引同值幂等；同索引不同值原位替换。 */
+    public synchronized ShortcutUpdate setShortcut(int index, String kind, String id) {
+        for (int row = 0; row < shortcuts.size(); row++) {
+            PlayerShortcut shortcut = shortcuts.get(row);
+            if (shortcut.index() != index) {
+                continue;
+            }
+            if (shortcut.kind().equals(kind) && shortcut.id().equals(id)) {
+                return new ShortcutUpdate(row, true, true);
+            }
+            shortcuts.set(row, new PlayerShortcut(index, kind, id));
+            return new ShortcutUpdate(row, true, false);
+        }
+        shortcuts.add(new PlayerShortcut(index, kind, id));
+        return new ShortcutUpdate(0, false, false);
+    }
+
+    /** Go removeShortcutRow：按行号摘除。 */
+    public synchronized PlayerShortcut removeShortcutRow(int row) {
+        if (row < 0 || row >= shortcuts.size()) {
+            return null;
+        }
+        return shortcuts.remove(row);
+    }
+
+    public synchronized List<PlayerShortcut> shortcutSnapshot() {
+        return new ArrayList<>(shortcuts);
+    }
+
+    /** Go playerActor 判定：指定索引是否已有快捷方式（sitcross 幂等门）。 */
+    public synchronized boolean hasShortcutIndex(int index) {
+        for (PlayerShortcut shortcut : shortcuts) {
+            if (shortcut.index() == index) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public Motion motionSnapshot() {

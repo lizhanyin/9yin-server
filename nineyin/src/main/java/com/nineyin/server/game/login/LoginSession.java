@@ -25,6 +25,9 @@ public final class LoginSession {
     boolean neigongGranted;
     /** 经脉 View45 授予标志（每连接一次）。 */
     boolean meridianGranted;
+    /** 个性配置：ClientReady 是否已尝试推送存档 / 会话是否已见过一次上传。 */
+    boolean customizingPushed;
+    boolean customizingSeenUpload;
     /** 二期 NPC：场景目录/活跃下标集/生命周期；lastPositionSave 是 2s 节流基准。 */
     SceneLifecycle world;
     List<NpcSpawn> sceneNpcs = List.of();

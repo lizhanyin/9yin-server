@@ -180,7 +180,7 @@ public final class StarterGrants {
     }
 
     /** Go shortcutAddFrame：shortcut_rec 完整三列行。 */
-    static byte[] shortcutAddFrame(PlayerActor.PlayerShortcut shortcut) {
+    public static byte[] shortcutAddFrame(PlayerActor.PlayerShortcut shortcut) {
         if (shortcut.index() < 0) {
             throw new IllegalArgumentException("shortcut index " + shortcut.index() + " is negative");
         }

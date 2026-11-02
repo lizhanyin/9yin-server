@@ -110,6 +110,7 @@ public final class NineyinServer implements SummerApp {
     /** 经脉存档 DB 双源（role_meridians 快照）；失败仅告警，JSON 仍为主档。 */
     private static LoginFlow attachMeridianStore(LoginFlow flow, java.util.Optional<String> dsn) {
         dsn.ifPresent(d -> flow.attachMeridianDatabase(d));
+        dsn.ifPresent(d -> flow.attachCustomizingDatabase(d));
         return flow;
     }
 

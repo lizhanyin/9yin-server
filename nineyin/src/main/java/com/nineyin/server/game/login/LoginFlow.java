@@ -35,6 +35,7 @@ import com.nineyin.server.protocol.FightMessages;
 import com.nineyin.server.protocol.LoginMessages;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
+import com.nineyin.server.protocol.RecordMessages;
 import com.nineyin.server.protocol.SceneNames;
 import com.nineyin.server.protocol.SceneMessages;
 import com.nineyin.server.db.role.RoleStoreFacade;
@@ -67,6 +68,10 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.jingmai.MeridianStore meridianStore =
             com.nineyin.server.game.avatar.jingmai.MeridianStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "meridians.json"));
+    /** 个性配置存档（data/customizing.json 主档；DB 经 {@link #attachCustomizingDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.customizing.CustomizingStore customizingStore =
+            com.nineyin.server.game.avatar.customizing.CustomizingStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "customizing.json"));
     private final GmHub gmHub;
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
@@ -107,6 +112,16 @@ public final class LoginFlow {
             log.info("meridian store attached to MySQL role_meridians");
         } catch (RuntimeException e) {
             log.warn("meridian store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
+    /** 个性配置存档 DB 双源挂接（role_customizing；失败仅告警，JSON 仍为主档）。 */
+    public void attachCustomizingDatabase(String dsn) {
+        try {
+            customizingStore.attachDatabase(dsn);
+            log.info("customizing store attached to MySQL role_customizing");
+        } catch (RuntimeException e) {
+            log.warn("customizing store MySQL unavailable, JSON only: {}", e.getMessage());
         }
     }
 
@@ -879,6 +894,12 @@ public final class LoginFlow {
                     session.machine.id(), session.player.meridian().learned().size(),
                     session.player.meridian().totalLevel());
         }
+        if (session.player != null && !session.customizingPushed) {
+            // 个性配置（按键/操作习惯）：在客户端登录期上传默认键位（C2S 107）之前
+            // 推送存档（S2C 705 → on_parser_customizing），玩家自定义键位重登即恢复；
+            // 无存档不发（客户端保持默认并上传，首个 107 即建立基线）。
+            pushSavedCustomizing(connection, session);
+        }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
             StarterGrants.enableSkillActionSwitch(connection);
@@ -1002,12 +1023,98 @@ public final class LoginFlow {
                     }
                 }
             }
-            case 200, 201, 240, 217, 218 ->
+            case 107 -> handleCustomizingUpload(connection, session, custom);
+            case 200 -> handleSetShortcut(connection, session, custom);
+            case 201 -> handleRemoveShortcut(connection, session, custom);
+            case 240, 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
             case 54 -> handleManualParry(connection, session, custom);
             default -> log.info("session={} unrecognized custom msgId={} via {}",
                     session.machine.id(), messageId, route);
+        }
+    }
+
+    /**
+     * C2S 200 设置快捷栏（shortcut_game.lua set_shortcut：`[200, index, kind, id]`，
+     * kind∈skill/item/neigong/zhenfa）。帧序同 Go handleShortcutCustom：替换先 0x12 删
+     * 旧行再 0x11 增新行；幂等不变零帧。DB 模式同步写 role_shortcuts（重登回放）。
+     */
+    void handleSetShortcut(Connection connection, LoginSession session,
+                                   CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        if (custom.values.size() < 4) {
+            log.info("session={} set shortcut without index+kind+id", session.machine.id());
+            return;
+        }
+        int index = tolerantInt(custom, 1);
+        String kind = custom.values.get(2).textOrNull();
+        String id = custom.values.get(3).textOrNull();
+        if (index < 0 || index > 4096 || kind == null || kind.isEmpty()
+                || id == null || id.isEmpty() || kind.length() > 64 || id.length() > 256) {
+            log.info("session={} set shortcut invalid index={} kind={} id={}",
+                    session.machine.id(), index, kind, id);
+            return;
+        }
+        PlayerActor.ShortcutUpdate update = session.player.setShortcut(index, kind, id);
+        if (update.unchanged()) {
+            return;
+        }
+        if (update.existed()) {
+            connection.writeFrame(RecordMessages.recordDelRow(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                    RecordMessages.RECORD_SHORTCUT, update.oldRow()));
+        }
+        connection.writeFrame(StarterGrants.shortcutAddFrame(
+                new PlayerActor.PlayerShortcut(index, kind, id)));
+        persistShortcut(() -> inventoryStore.upsertShortcut(session.selected.id(), index, kind, id));
+        log.info("session={} shortcut set index={} kind={} id={} replaced={}",
+                session.machine.id(), index, kind, id, update.existed());
+    }
+
+    /**
+     * C2S 201 摘除快捷栏（`[201, 行号]`，Go removeShortcutRow 同语义按记录行号删）；
+     * 行不存在静默。DB 模式同步删 role_shortcuts 对应 index。
+     */
+    void handleRemoveShortcut(Connection connection, LoginSession session,
+                                      CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null || custom.values.size() < 2) {
+            return;
+        }
+        int row = tolerantInt(custom, 1);
+        PlayerActor.PlayerShortcut removed = session.player.removeShortcutRow(row);
+        if (removed == null) {
+            return;
+        }
+        connection.writeFrame(RecordMessages.recordDelRow(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                RecordMessages.RECORD_SHORTCUT, row));
+        persistShortcut(() -> inventoryStore.deleteShortcut(session.selected.id(), removed.index()));
+        log.info("session={} shortcut removed row={} index={} kind={} id={}",
+                session.machine.id(), row, removed.index(), removed.kind(), removed.id());
+    }
+
+
+    /** tag2 int 宽容读取：客户端 nx_int 负值以 u32 回绕上行，(int) 下转还原。 */
+    static int tolerantInt(CustomC2S.Message custom, int position) {
+        CustomC2S.Value value = custom.values.get(position);
+        if (value.tag != 2) {
+            throw new IllegalStateException("arg " + position + " is not int32");
+        }
+        return (int) value.int32;
+    }
+
+    /** 快捷栏 DB 持久化（inventoryStore 缺席或失败仅告警——内存态/帧已生效）。 */
+    private void persistShortcut(Runnable write) {
+        if (inventoryStore == null) {
+            return;
+        }
+        try {
+            write.run();
+        } catch (RuntimeException e) {
+            log.warn("persist shortcut: {}", e.getMessage());
         }
     }
 
@@ -1229,6 +1336,78 @@ public final class LoginFlow {
         } catch (RuntimeException e) {
             log.warn("persist meridian progress: {}", e.getMessage());
         }
+    }
+
+    // ------------------------------------------------------------------ 个性配置
+
+    /** 个性配置下行通道（52795 抓包钉死）：S2C 705 = on_parser_customizing(configStr)。 */
+    static byte[] customizingFrame(String config) {
+        return CustomMessages.customIntMessage(705, CustomMessages.Value.ofString(config));
+    }
+
+    /** ClientReady 推送存档的个性配置（无存档零帧；客户端保持默认并自行上传基线）。 */
+    void pushSavedCustomizing(Connection connection, LoginSession session) {
+        session.customizingPushed = true;
+        if (session.selected == null) {
+            return;
+        }
+        String saved;
+        try {
+            saved = customizingStore.load(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("load customizing: {}", e.getMessage());
+            return;
+        }
+        if (saved == null || saved.isEmpty()) {
+            return;
+        }
+        connection.writeFrame(customizingFrame(saved));
+        log.info("session={} pushed saved customizing config {} bytes", session.machine.id(),
+                saved.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+    }
+
+    /**
+     * C2S 107 个性配置上传（引擎 customizing_manager:SaveConfigToServer，`[107, configStr]`）。
+     * 时序闸：客户端登录期会先上传**默认键位**（此时未必已应用恢复帧）——会话首个
+     * 上传若库里有存档则跳过不落库（防默认覆盖玩家配置），其余上传全部落档；
+     * 两条路径都回发 705（F 同款回显，客户端幂等重灌/再确认恢复态）。
+     */
+    void handleCustomizingUpload(Connection connection, LoginSession session,
+                                         CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return; // 选角前的上传无法归属角色，忽略
+        }
+        String config = custom.values.size() > 1 ? custom.values.get(1).textOrNull() : null;
+        if (config == null || config.isEmpty()) {
+            return;
+        }
+        long roleId = session.selected.id();
+        String stored = null;
+        try {
+            stored = customizingStore.load(roleId);
+        } catch (RuntimeException e) {
+            log.warn("load customizing: {}", e.getMessage());
+        }
+        boolean firstUpload = !session.customizingSeenUpload;
+        session.customizingSeenUpload = true;
+        if (firstUpload && stored != null && !stored.isEmpty()) {
+            // 恢复前/中的默认键位转储：跳过落库，回发存档再确认恢复态。
+            connection.writeFrame(customizingFrame(stored));
+            log.info("session={} skipped default customizing dump ({} bytes), re-asserted saved {} bytes",
+                    session.machine.id(),
+                    config.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                    stored.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            return;
+        }
+        try {
+            customizingStore.save(roleId, config);
+        } catch (RuntimeException e) {
+            log.warn("persist customizing: {}", e.getMessage());
+            return;
+        }
+        connection.writeFrame(customizingFrame(config));
+        log.info("session={} saved customizing config {} bytes", session.machine.id(),
+                config.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
     }
 
     /** Go persistFaculty 闭包。 */

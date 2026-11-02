@@ -237,6 +237,71 @@ public final class RoleInventoryStore implements AutoCloseable {
                 (result) -> new Shortcut(result.getInt(1), result.getString(2), result.getString(3)));
     }
 
+    /**
+     * 快捷栏设置持久化（C2S 200 set_shortcut）：同 shortcut_index 原位更新
+     * （主键是 (role_id, seq)，先按 index 定位 seq，无则追加 seq=max+1）。
+     */
+    public void upsertShortcut(long roleId, int shortcutIndex, String kind, String id) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                Integer seq = null;
+                try (PreparedStatement find = connection.prepareStatement(
+                        "SELECT seq FROM role_shortcuts WHERE role_id = ? AND shortcut_index = ? "
+                                + "LIMIT 1")) {
+                    find.setLong(1, roleId);
+                    find.setInt(2, shortcutIndex);
+                    try (ResultSet result = find.executeQuery()) {
+                        if (result.next()) {
+                            seq = result.getInt(1);
+                        }
+                    }
+                }
+                if (seq != null) {
+                    try (PreparedStatement update = connection.prepareStatement(
+                            "UPDATE role_shortcuts SET kind = ?, id = ?, updated_at = UTC_TIMESTAMP(6) "
+                                    + "WHERE role_id = ? AND seq = ?")) {
+                        update.setString(1, kind);
+                        update.setString(2, id);
+                        update.setLong(3, roleId);
+                        update.setInt(4, seq);
+                        update.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement insert = connection.prepareStatement(
+                            "INSERT INTO role_shortcuts (role_id, seq, shortcut_index, kind, id, updated_at) "
+                                    + "VALUES (?, (SELECT COALESCE(MAX(s.seq), 0) + 1 FROM role_shortcuts s "
+                                    + "WHERE s.role_id = ?), ?, ?, ?, UTC_TIMESTAMP(6))")) {
+                        insert.setLong(1, roleId);
+                        insert.setLong(2, roleId);
+                        insert.setInt(3, shortcutIndex);
+                        insert.setString(4, kind);
+                        insert.setString(5, id);
+                        insert.executeUpdate();
+                    }
+                }
+                connection.commit();
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("upsertShortcut failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** 快捷栏摘除持久化（C2S 201 remove_shortcut，按 shortcut_index 删行）。 */
+    public void deleteShortcut(long roleId, int shortcutIndex) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM role_shortcuts WHERE role_id = ? AND shortcut_index = ?")) {
+            statement.setLong(1, roleId);
+            statement.setInt(2, shortcutIndex);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            throw new IllegalStateException("deleteShortcut failed: " + e.getMessage(), e);
+        }
+    }
+
     public List<Bagpack> bagpacks(long roleId) {
         return query("SELECT page, anchor, config_id, boost, expires_at FROM role_bagpacks "
                         + "WHERE role_id = ? ORDER BY page, anchor",

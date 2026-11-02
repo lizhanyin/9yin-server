@@ -56,8 +56,9 @@ final class ParryAndTimeSyncTest {
         assertEquals(2, frame[3] & 0xFF, "msgId tag2");
         assertEquals(294, u32(frame, 4));
         assertEquals(2, frame[8] & 0xFF, "v1(uptime) tag2 int32");
-        assertEquals(3, frame[13] & 0xFF, "v2(挂钟 ms) tag3 int64");
-        assertEquals(1_790_000_000_000L, u64(frame, 14));
+        assertEquals(3, frame[13] & 0xFF, "v2(1601 纪元 ms) tag3 int64");
+        // 52795 抓包实证：v2 = unix ms + 11644473600000（Windows FILETIME 基准毫秒）。
+        assertEquals(1_790_000_000_000L + LoginFlow.WINDOWS_EPOCH_TO_UNIX_MS, u64(frame, 14));
         assertEquals(3, frame[22] & 0xFF, "v3(unix 秒) tag3 int64");
         assertEquals(1_790_000_000L, u64(frame, 23));
         assertEquals(5, frame[31] & 0xFF, "v4(游戏日) tag5 float64");

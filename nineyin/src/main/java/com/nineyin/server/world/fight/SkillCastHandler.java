@@ -37,6 +37,11 @@ public final class SkillCastHandler {
     /** GCD 固定类别 50000（抓包；个人行 team=0xFFFF，GCD 行 team=skill_static.CoolDownTeam）。 */
     public static final int GCD_CATEGORY = 50000;
     public static final int PERSONAL_CD_TEAM = 0xFFFF;
+    /**
+     * 无 CoolDownTeam 技能的 GCD 行回退组：客户端 gui.lua SetCommonTeamCoolRange(50000,50001,51000)
+     * 只认 50001-51000（其中 50001-50100 无特效段）——0xFFFF 落在组段之外，改用 50001。
+     */
+    public static final int GCD_TEAM_FALLBACK = 50001;
     /** View40 已学技能容器（CanUse 行帧寻址）。 */
     public static final int SKILL_VIEW_ID = 40;
     /** 战斗闲时退出窗口：最近一次命中后 N 毫秒无战斗则回 NORMAL（抓包实证战斗态跨招持续）。 */
@@ -110,7 +115,7 @@ public final class SkillCastHandler {
         connection.writeFrame(FightMessages.cooldownRow(PlayerActor.PLAYER_OBJECT_ID,
                 PlayerActor.PLAYER_OWNER_ID, GCD_CATEGORY, start,
                 start + skill.publicCdMs(),
-                skill.cooldownTeam() > 0 ? skill.cooldownTeam() : PERSONAL_CD_TEAM));
+                skill.cooldownTeam() > 0 ? skill.cooldownTeam() : GCD_TEAM_FALLBACK));
         // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；CD 尽时置 1
         Integer row = context.skillRows().get(skill.id());
         if (row != null && row > 0) {
@@ -136,6 +141,7 @@ public final class SkillCastHandler {
             connection.writeFrame(player.logicStateFrame());
         }
         emitPerTargetSequence(context, skill, hits, playerName, staged);
+        feedMeridianZhenQi(context, hits);
 
         // 目标控制效果（击中者受控到 buff 租约终点）
         for (CombatSkill.Effect effect : skill.effects()) {
@@ -158,6 +164,46 @@ public final class SkillCastHandler {
         LOG.info("accepted skill id=" + skill.id() + " mp=" + player.actorState().mp()
                 + " sp=" + player.sp() + " hits=" + hits.size()
                 + " personal_cd=" + skill.personalCdMs() + "ms public_cd=" + skill.publicCdMs() + "ms");
+    }
+
+    /**
+     * 战斗真气（zhenqi.ini damage_ratio=0.1）：本次出招伤害合计折算真气入账当前修炼
+     * 经脉，变化即推 View45 行 CurFillValue + 玩家 ZQ 属性帧（修炼进度随打怪可见增长）。
+     */
+    private static void feedMeridianZhenQi(CastContext context, List<Hit> hits) {
+        int damage = 0;
+        for (Hit hit : hits) {
+            if (hit.damage() > 0) {
+                damage += hit.damage();
+            }
+        }
+        if (damage <= 0) {
+            return;
+        }
+        var state = context.player().meridian();
+        var result = state.addCombatZhenQi(damage);
+        if (!result.changed()) {
+            return;
+        }
+        String current = state.curJingMai();
+        var meridian = state.meridian(current);
+        int row = state.rowOf(current);
+        if (meridian == null || row <= 0) {
+            return;
+        }
+        if (result.leveledUp().isEmpty()) {
+            context.connection().writeFrame(
+                    com.nineyin.server.game.avatar.jingmai.JingMaiMessages.progressFrame(
+                            row, meridian.fill()));
+        } else {
+            context.connection().writeFrame(
+                    com.nineyin.server.game.avatar.jingmai.JingMaiMessages.levelUpFrame(
+                            row, meridian.level(), meridian.fill(),
+                            com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load()
+                                    .totalFillPerLevel(current)));
+        }
+        context.connection().writeFrame(
+                com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerPropsFrame(state));
     }
 
     /**

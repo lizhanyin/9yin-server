@@ -133,6 +133,25 @@ public final class FightMessages {
                 CustomMessages.Value.ofInt32(0));
     }
 
+    /**
+     * msg169 九值时间形态（52795 抓包 buf_qg_light 实证）：v1=0 挂/1 摘、
+     * v2=buff 串、v3/v4=施法者/承载者 obj、v5/v6=宽名×2、v7=到期 unix 毫秒(i64)、
+     * v8=buff_static Category（buf_qg_light=2048）。格挡 BuffInParry 同形态（v7 口径
+     * 为当时刻，此处对齐抓包用到期时刻）。
+     */
+    public static byte[] timedBuff(int addRemove, String buffConfigId, int category, long endEpochMs,
+                                   int bearerId, int bearerOwner, String playerName) {
+        return CustomMessages.customIntMessage(169,
+                CustomMessages.Value.ofInt32(addRemove),
+                CustomMessages.Value.ofString(buffConfigId),
+                CustomMessages.Value.ofObject(bearerId, bearerOwner),
+                CustomMessages.Value.ofObject(bearerId, bearerOwner),
+                CustomMessages.Value.ofWideString(playerName),
+                CustomMessages.Value.ofWideString(playerName),
+                CustomMessages.Value.ofInt64(endEpochMs),
+                CustomMessages.Value.ofInt32(category));
+    }
+
     // ------------------------------------------------------------------ 二进制
 
     /**

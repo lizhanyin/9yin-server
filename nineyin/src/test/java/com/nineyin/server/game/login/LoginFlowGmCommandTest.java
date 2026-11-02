@@ -116,6 +116,30 @@ class LoginFlowGmCommandTest {
     // ------------------------------------------------------------- 四期面板动作
 
     @Test
+    void zhenqiCapAppliesGateAndPushesPropsFrame() {
+        Env env = new Env();
+        GmCommand enable = env.enqueue("set_zhenqi_cap", Map.of("enabled", 1, "value", 300));
+        GmCommand badValue = env.enqueue("set_zhenqi_cap", Map.of("enabled", 1, "value", 0));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(enable).ok(), "开启硬闸应成功");
+        var meridian = env.session.player.meridian();
+        assertTrue(meridian.capEnabled());
+        assertEquals(300, meridian.capValue());
+        assertEquals(300, meridian.zhenQiDayValue(), "ZhenQiDayValue 显示阈值");
+        byte[] frame = env.channel.readOutbound();
+        assertTrue(frame != null && (frame[0] & 0xFF) == 0x10, "经脉属性单帧 0x10");
+        int count = (frame[10] & 0xFF) | (frame[11] & 0xFF) << 8;
+        assertEquals(8, count, "CurJingMai..ZQUnUsed 八属性");
+        assertEquals(300, int32Property(frame, "ZhenQiDayValue"), "帧内 ZhenQiDayValue=300");
+        assertFalse(reply(badValue).ok(), "阈值 <1 应失败");
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+        assertTrue(env.hub.get(env.session.machine.id()).lastAction.startsWith("每日真气硬闸已开启"),
+                "lastAction 回显开关文案");
+    }
+
+    @Test
     void powerLevelPushesLevelAndTitleFrames() {
         Env env = new Env();
         GmCommand command = env.enqueue("set_power_level", Map.of("value", 137));
@@ -234,6 +258,58 @@ class LoginFlowGmCommandTest {
             offset += 4; // 本测试用到的属性均为 INT32
         }
         return false;
+    }
+
+    /**
+     * 按官方表线型步进解析 0x10 帧里的 INT32 属性（containsInt32 只支持纯 INT32 帧；
+     * 经脉属性帧含 CurJingMai/LastJingMai 串列，必须逐条目按线型跳步）。
+     */
+    private static int int32Property(byte[] frame, String name) {
+        int count = (frame[10] & 0xFF) | (frame[11] & 0xFF) << 8;
+        int wanted = com.nineyin.server.protocol.PropertyTable.playerIdx(name);
+        int offset = 12;
+        for (int i = 0; i < count; i++) {
+            int index = (frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8;
+            offset += 2;
+            com.nineyin.server.protocol.PropertyTable.Entry entry =
+                    com.nineyin.server.protocol.PropertyTable.byIndex(index);
+            int type = entry == null ? 3 : entry.typeCode();
+            switch (type) {
+                case 1 -> {
+                    if (index == wanted) {
+                        return frame[offset] & 0xFF;
+                    }
+                    offset += 1;
+                }
+                case 2 -> {
+                    if (index == wanted) {
+                        return (frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8;
+                    }
+                    offset += 2;
+                }
+                case 3, 5 -> {
+                    if (index == wanted) {
+                        return (frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8
+                                | (frame[offset + 2] & 0xFF) << 16 | (frame[offset + 3] & 0xFF) << 24;
+                    }
+                    offset += 4;
+                }
+                case 4 -> {
+                    if (index == wanted) {
+                        throw new AssertionError(name + " is INT64, not INT32");
+                    }
+                    offset += 8;
+                }
+                case 7, 8 -> {
+                    int n = (frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8
+                            | (frame[offset + 2] & 0xFF) << 16 | (frame[offset + 3] & 0xFF) << 24;
+                    offset += 4 + n;
+                }
+                case 9 -> offset += 8;
+                default -> offset += 4;
+            }
+        }
+        throw new AssertionError(name + " not found in frame");
     }
 
     // ------------------------------------------------------------- 货币/怒气

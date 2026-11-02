@@ -123,6 +123,20 @@ class GmRemoteRoundTripTest {
         String neg = remote.syncRemote("GmRemote", "command", negSilver, String.class);
         assertFalse(JSON.parseObject(neg).getBooleanValue("ok"), "负碎银应被拒: " + neg);
 
+        // command：经脉每日硬闸参数校验（enabled∈{0,1} + value 1..10⁷）。
+        Map<String, Object> badCapEnabled = Map.of(
+                "sessionId", 7,
+                "action", "set_zhenqi_cap",
+                "params", Map.of("enabled", 2, "value", 500));
+        String capEnabledRejected = remote.syncRemote("GmRemote", "command", badCapEnabled, String.class);
+        assertFalse(JSON.parseObject(capEnabledRejected).getBooleanValue("ok"), "enabled=2 应被拒");
+        Map<String, Object> badCapValue = Map.of(
+                "sessionId", 7,
+                "action", "set_zhenqi_cap",
+                "params", Map.of("enabled", 1, "value", 0));
+        String capValueRejected = remote.syncRemote("GmRemote", "command", badCapValue, String.class);
+        assertFalse(JSON.parseObject(capValueRejected).getBooleanValue("ok"), "value=0 应被拒");
+
         // command：白名单动作入队后等游戏侧回执（消费线程 tryPop + succeed → 真实结果）。
         Thread consumer = new Thread(() -> {
             for (int i = 0; i < 200; i++) {

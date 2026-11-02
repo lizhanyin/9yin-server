@@ -71,7 +71,8 @@ public final class StarterQingGong {
     }
 
     /**
-     * Go grantFunctionUnlock：Task_Accepted 七列兼容行（id,9,0,"","","",0）
+     * Go grantFunctionUnlock：Task_Accepted 行（官方 28 列方言，前缀 id,0,"",0,"","",0 +
+     * 尾列自动补零——52795 抓包 task 1069 行 144B 全零形状逐列对齐）
      * + Task_Completed 位图全行 0..finalRow（append-only，含前导零行）。
      */
     public static List<byte[]> functionUnlockFrames(int objectId, int ownerId) {
@@ -79,9 +80,10 @@ public final class StarterQingGong {
         for (long taskId : acceptedTaskIds()) {
             frames.add(RecordMessages.recordAddCells(objectId, ownerId,
                     RecordMessages.RECORD_TASK_ACCEPTED,
-                    RecordMessages.Cell.ofInt(taskId), RecordMessages.Cell.ofInt(9), RecordMessages.Cell.ofInt(0),
+                    RecordMessages.Cell.ofInt(taskId), RecordMessages.Cell.ofInt(0),
+                    RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofInt(0),
                     RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofString(""),
-                    RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofInt(0)));
+                    RecordMessages.Cell.ofInt(0)));
         }
         Map<Long, Long> rowValues = new HashMap<>();
         long finalRow = 0;

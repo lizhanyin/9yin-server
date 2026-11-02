@@ -150,6 +150,18 @@ public final class Actor {
         return baseCost;
     }
 
+    /**
+     * 持续态扣点（qinggong_9 轻身缓降 CCQGP 按秒消耗）：不触发 &lt;50 自动回满
+     * （回满是跳跃动作语义，缓降要真实耗尽触发摘除）。付不起返回 -1。
+     */
+    public int drainQingGong(int cost) {
+        if (cost < 0 || qingGong < cost) {
+            return -1;
+        }
+        qingGong -= cost;
+        return cost;
+    }
+
     /** 重生（NPC 语义）：满血满淤血回 NORMAL；复活是显式状态迁移，不走治疗。 */
     public void respawnFull() {
         hp = maxHp;

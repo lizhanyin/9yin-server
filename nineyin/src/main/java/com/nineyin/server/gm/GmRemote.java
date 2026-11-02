@@ -118,6 +118,19 @@ public class GmRemote {
             case "fill_sp" -> null;
             // 战斗一期：Lua 脚本热重载（formula/skill overlay 调参免重启）。
             case "reload_scripts" -> null;
+            // 经脉：每日真气硬闸（是否开启 + 每日阈值，按角色持久化）。
+            case "set_zhenqi_cap" -> {
+                String enabledBad = intRange(params, "enabled", 0, 1);
+                if (enabledBad != null) {
+                    yield enabledBad;
+                }
+                yield intRange(params, "value", 1, 10_000_000);
+            }
+            // 四期面板动作（LoginFlow.applyGmCommand 已实现，此前漏挂白名单——
+            // 面板按钮一直被入口拒绝，补齐透传；数值域由游戏侧分支自校验）。
+            case "set_power_level" -> nonNegative(params, "value");
+            case "set_alignment", "set_vitals", "cancel_title" -> null;
+            case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
             default -> "unsupported action: " + action;
         };
     }

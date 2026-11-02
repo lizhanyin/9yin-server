@@ -64,6 +64,10 @@ public final class LoginFlow {
 
     private final RoleStoreFacade roleStore;
     private final FacultyStore facultyStore;
+    /** 经脉修炼存档（data/meridians.json 主档；DB 经 {@link #attachMeridianDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.jingmai.MeridianStore meridianStore =
+            com.nineyin.server.game.avatar.jingmai.MeridianStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "meridians.json"));
     private final GmHub gmHub;
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
@@ -95,6 +99,16 @@ public final class LoginFlow {
         this.scheduler = scheduler;
         this.inventoryStore = inventoryStore;
         this.panelStore = panelStore;
+    }
+
+    /** 经脉存档 DB 双源挂接（role_meridians 快照；失败仅告警，JSON 仍为主档）。 */
+    public void attachMeridianDatabase(String dsn) {
+        try {
+            meridianStore.attachDatabase(dsn);
+            log.info("meridian store attached to MySQL role_meridians");
+        } catch (RuntimeException e) {
+            log.warn("meridian store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
     }
 
     /** 处理一帧明文；返回 false 断连。 */
@@ -221,6 +235,16 @@ public final class LoginFlow {
             facultyStore.save(session.selected.id(), session.player.facultySnapshot());
             log.info("session={} initialized persistent normal faculty role={}",
                     session.machine.id(), session.selected.id());
+        }
+        // 经脉修炼存档（恢复失败/无档按 14 条初始经脉落档）。
+        var savedMeridian = meridianStore.load(session.selected.id());
+        session.player.restoreMeridian(savedMeridian);
+        if (savedMeridian == null) {
+            try {
+                meridianStore.save(session.selected.id(), session.player.meridianSnapshot());
+            } catch (RuntimeException e) {
+                log.warn("seed meridian store: {}", e.getMessage());
+            }
         }
 
         connection.writeFrame(SceneMessages.propertyTableFrame());
@@ -403,6 +427,8 @@ public final class LoginFlow {
                 drainGmCommands(connection, session);
                 connection.writeFrame(timeSyncFrame(clock.instant()));
                 facultyTickOnce(connection, session);
+                meridianTickOnce(connection, session);
+                com.nineyin.server.world.fight.QingGongHandler.glideTick(connection, session.player);
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
@@ -412,18 +438,23 @@ public final class LoginFlow {
     /**
      * 0x1E msg294 服务端时间广播（F 盘抓包 1s 一帧实证，连续帧 +1000/+1 递增）：
      * [服务器运行毫秒 i32, 时钟毫秒 i64, unix 秒 i64, 游戏日 f64]。
-     * v1 对齐 F 的"服务器启动后 ms"口径（JVM uptime 截 i32，回绕无害）；v2 用挂钟毫秒
-     * （F 为系统 uptime ms，语义未完全钉死，挂钟对客户端校时更有用）；v3 unix 秒；
-     * v4 F 恒 46327.464（游戏日，语义未钉），先常数跟齐。
+     * v1 对齐 F 的"服务器启动后 ms"口径（JVM uptime 截 i32，回绕无害）；
+     * v2 = 1601-01-01 UTC 纪元毫秒（Windows FILETIME 基准 ÷10⁴）——52795 抓包实证：
+     * 首帧 v2=13434237233402 恰为 v3=1789763633 的 unix ms + 11644473600000，
+     * 此前误发 unix 毫秒（口径差 1.16e13ms）；v3 unix 秒；v4 F 恒 46327.464
+     * （游戏日，语义未钉），先常数跟齐。
      */
     public static byte[] timeSyncFrame(Instant now) {
         long uptimeMs = java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime();
         return CustomMessages.customIntMessage(294,
                 CustomMessages.Value.ofInt32((int) uptimeMs),
-                CustomMessages.Value.ofInt64(now.toEpochMilli()),
+                CustomMessages.Value.ofInt64(now.toEpochMilli() + WINDOWS_EPOCH_TO_UNIX_MS),
                 CustomMessages.Value.ofInt64(now.getEpochSecond()),
                 CustomMessages.Value.ofFloat64(46327.464));
     }
+
+    /** 1601-01-01 UTC → 1970-01-01 UTC 的毫秒差（msg294 v2 口径）。 */
+    public static final long WINDOWS_EPOCH_TO_UNIX_MS = 11644473600000L;
 
     // -------------------------------------------------------------------- GM 队列
 
@@ -464,11 +495,42 @@ public final class LoginFlow {
             case "set_vitals" -> applyVitals(connection, session, command);
             case "wear_title" -> applyWearTitle(connection, session, command, true);
             case "cancel_title" -> applyWearTitle(connection, session, command, false);
+            // 经脉：每日真气硬闸（是否开启 + 每日阈值，角色级持久化）。
+            case "set_zhenqi_cap" -> applyZhenqiCap(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
             }
         }
+    }
+
+    /**
+     * 经脉每日真气硬闸（set_zhenqi_cap）：enabled∈{0,1} + value(1..10⁷)；
+     * 开启后当日 ZQPLValue 达阈值即拦截入账，ZhenQiDayValue 属性随开关显示阈值；
+     * 角色级设置随 meridians.json/role_meridians 持久化，重登沿用。
+     */
+    private void applyZhenqiCap(Connection connection, LoginSession session, GmCommand command) {
+        Integer enabled = command.intParam("enabled");
+        Integer value = command.intParam("value");
+        if (enabled == null || (enabled != 0 && enabled != 1)) {
+            command.fail("是否开启 enabled 必须为 0/1");
+            return;
+        }
+        if (value == null || value < 1 || value > 10_000_000) {
+            command.fail("每日阈值 value 必须在 1 至 10000000 之间");
+            return;
+        }
+        var meridian = session.player.meridian();
+        meridian.setDailyCap(enabled == 1, value);
+        connection.writeFrame(
+                com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerPropsFrame(meridian));
+        persistMeridian(session);
+        String action = String.format(java.util.Locale.ROOT, "每日真气硬闸已%s，阈值 %d（今日已获 %d）",
+                enabled == 1 ? "开启" : "关闭", meridian.capValue(), meridian.plValue());
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_zhenqi_cap enabled={} value={}",
+                session.machine.id(), enabled, value);
     }
 
     /** Go main.go set_move_speed/set_gravity 分支：改 motion → 单帧 0x10 → lastAction 回显。 */
@@ -746,6 +808,11 @@ public final class LoginFlow {
             } catch (RuntimeException e) {
                 log.warn("persist faculty progress: {}", e.getMessage());
             }
+            try {
+                meridianStore.save(session.selected.id(), session.player.meridianSnapshot());
+            } catch (RuntimeException e) {
+                log.warn("persist meridian progress: {}", e.getMessage());
+            }
         }
         if (session.facultyTicker != null) {
             session.facultyTicker.cancel(false);
@@ -791,6 +858,27 @@ public final class LoginFlow {
             }
             log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady (learned={})",
                     session.machine.id(), session.learnedSkills.size());
+        }
+        if (session.player != null && !session.meridianGranted) {
+            // 经脉系统授予（F 盘 52795 抓包同位：View45 容器+行在 46/43/40 之后）：
+            // View45 已学经脉 + active_jingmai_rec 行 + 玩家经脉属性帧。
+            for (byte[] frame : com.nineyin.server.game.avatar.jingmai.JingMaiMessages.viewFrames(
+                    session.player.meridian(),
+                    com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load())) {
+                connection.writeFrame(frame);
+            }
+            String cultivating = session.player.meridian().curJingMai();
+            if (!cultivating.isEmpty()) {
+                connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.activeRecordRow(
+                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, cultivating));
+                session.player.noteMeridianActivated();
+            }
+            connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerPropsFrame(
+                    session.player.meridian()));
+            session.meridianGranted = true;
+            log.info("session={} granted View=45 meridians={} totalLevel={}",
+                    session.machine.id(), session.player.meridian().learned().size(),
+                    session.player.meridian().totalLevel());
         }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
@@ -876,7 +964,7 @@ public final class LoginFlow {
         return true;
     }
 
-    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}；已实现 215/1006/54/211/431。 */
+    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}+150 经脉；已实现 215/1006/54/211/431/150/216。 */
     private void dispatchCustom(Connection connection, LoginSession session,
                                 CustomC2S.Message custom, String route) {
         int messageId = custom.messageId();
@@ -891,9 +979,31 @@ public final class LoginFlow {
                 }
                 persistFaculty(session);
             }
+            case 150 -> {
+                try {
+                    com.nineyin.server.game.avatar.jingmai.JingMaiCustomHandler.handle(
+                            connection, session.player, custom);
+                } catch (RuntimeException e) {
+                    log.info("session={} reject custom {} via {}: {}",
+                            session.machine.id(), messageId, route, e.getMessage());
+                    return;
+                }
+                persistMeridian(session);
+            }
             case 211 -> handleUseSkill(connection, session, custom);
             case 431 -> handleSelectTarget(connection, session, custom);
-            case 200, 201, 240, 216, 217, 218 ->
+            case 216 -> {
+                if (session.player != null) {
+                    try {
+                        com.nineyin.server.world.fight.QingGongHandler.handle(
+                                connection, session.player, custom);
+                    } catch (RuntimeException e) {
+                        log.info("session={} reject custom 216 via {}: {}",
+                                session.machine.id(), route, e.getMessage());
+                    }
+                }
+            }
+            case 200, 201, 240, 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
             case 54 -> handleManualParry(connection, session, custom);
@@ -1076,6 +1186,50 @@ public final class LoginFlow {
         }
         connection.writeFrame(session.player.vitalUpdate());
         persistFaculty(session);
+    }
+
+    /**
+     * 经脉 1s ticker（facultyTicker 同拍）：整分钟真气结算 → View45 行 CurFillValue
+     * 单帧；升级再补 Level/TotalFillValue 行帧 + 玩家 JingMaiTotalLevel/ZQ 属性帧；
+     * 有变化才持久化，静默秒零帧。
+     */
+    void meridianTickOnce(Connection connection, LoginSession session) {
+        if (session.player == null || session.selected == null || !session.meridianGranted) {
+            return;
+        }
+        var state = session.player.meridian();
+        var catalog = com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load();
+        var tick = state.tick();
+        if (!tick.changed()) {
+            return;
+        }
+        String current = state.curJingMai();
+        var meridian = state.meridian(current);
+        int row = state.rowOf(current);
+        if (meridian == null || row <= 0) {
+            return;
+        }
+        if (tick.leveledUp().isEmpty()) {
+            connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.progressFrame(
+                    row, meridian.fill()));
+        } else {
+            connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.levelUpFrame(
+                    row, meridian.level(), meridian.fill(), catalog.totalFillPerLevel(current)));
+        }
+        connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerPropsFrame(state));
+        persistMeridian(session);
+    }
+
+    /** 经脉存档落盘（失败仅告警，不影响会话）。 */
+    private void persistMeridian(LoginSession session) {
+        if (session.selected == null || session.player == null) {
+            return;
+        }
+        try {
+            meridianStore.save(session.selected.id(), session.player.meridianSnapshot());
+        } catch (RuntimeException e) {
+            log.warn("persist meridian progress: {}", e.getMessage());
+        }
     }
 
     /** Go persistFaculty 闭包。 */

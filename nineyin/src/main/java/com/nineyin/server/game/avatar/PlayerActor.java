@@ -32,7 +32,15 @@ public final class PlayerActor {
     /** Go innerPowerBuffSlot：内功 BuffStore 槽（BufferInfo4）。 */
     static final int INNER_POWER_BUFF_SLOT = 4;
 
-    static final class Motion {
+    /** qinggong_9 轻身缓降（buf_qg_light）：抓包/配置实证常量（buff_static[218]）。 */
+    public static final String GLIDE_BUFF_CONFIG = "buf_qg_light";
+    public static final long GLIDE_BUFF_STATIC_DATA = 218L;
+    public static final int GLIDE_BUFF_CATEGORY = 2048;
+    public static final long GLIDE_BUFF_LIFETIME_MS = 600_000L;
+    /** buff_varprop[23001] L1 CCQGP=-10：缓降每秒消耗轻功值 10。 */
+    public static final int GLIDE_POINT_COST_PER_SECOND = 10;
+
+    static class Motion {
         float moveSpeed = 25;
         float runSpeed = 25;
         float gravity = 9.8f;
@@ -56,6 +64,14 @@ public final class PlayerActor {
     final PlayerProgress progress;
     /** 面板实时状态（身份块字段 + 装备词缀累积层，四期）。 */
     private final PanelState panel = new PanelState();
+    /** 经脉修炼状态（修炼经脉/周天/进度/总等级权威源；登录恢复）。 */
+    private final com.nineyin.server.game.avatar.jingmai.PlayerMeridian meridian;
+    /** active_jingmai_rec 行是否已下发（jmActCount=1，激活位=当前修炼经脉）。 */
+    private boolean meridianActivated;
+    /** qinggong_9 轻身缓降租约（216 flag=1 挂 / flag=0 摘 / 点耗尽强摘）。 */
+    private boolean gliding;
+    private int glideBuffSlot;
+    private Instant glideEndsAt;
     private int logicStateOverride = -1;
 
     /** 右键格挡 BuffInParry：buff 槽 11（BufferInfo11@639）、StaticData 4558、24h（老分支+参考 setPlayerBlock）。 */
@@ -73,6 +89,8 @@ public final class PlayerActor {
         this.faction = "force_yihua";
         this.clock = clock;
         this.progress = PlayerProgress.create(clock);
+        this.meridian = com.nineyin.server.game.avatar.jingmai.PlayerMeridian.create(
+                com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load(), clock);
         syncEquippedNeiGongBuff(clock.instant());
         syncEquippedNeiGongResources();
     }
@@ -248,6 +266,81 @@ public final class PlayerActor {
 
     public PlayerProgress.Snapshot facultySnapshot() {
         return progress.snapshot();
+    }
+
+    // ------------------------------------------------------------------ jingmai/qinggong
+
+    /** 经脉修炼状态（登录 restore 后为持久化形态）。 */
+    public com.nineyin.server.game.avatar.jingmai.PlayerMeridian meridian() {
+        return meridian;
+    }
+
+    /** 登录恢复经脉存档。 */
+    public void restoreMeridian(com.nineyin.server.game.avatar.jingmai.PlayerMeridian.Snapshot snapshot) {
+        meridian.restore(snapshot, clock.instant());
+    }
+
+    public com.nineyin.server.game.avatar.jingmai.PlayerMeridian.Snapshot meridianSnapshot() {
+        return meridian.snapshot();
+    }
+
+    public boolean meridianActivated() {
+        return meridianActivated;
+    }
+
+    public void noteMeridianActivated() {
+        meridianActivated = true;
+    }
+
+    /** 缓降租约当前是否持有（ticker 消耗/到期摘除用）。 */
+    public synchronized boolean gliding() {
+        return gliding;
+    }
+
+    /** 挂缓降 buff（216 qinggong_9 flag=1）：返回槽位与到期时刻，无空闲槽返回 null。 */
+    public synchronized Instant engageGlide(int slot, Instant now) {
+        if (gliding) {
+            return glideEndsAt; // 幂等
+        }
+        Instant expiresAt = now.plusMillis(GLIDE_BUFF_LIFETIME_MS);
+        activateBuff(slot, GLIDE_BUFF_STATIC_DATA, GLIDE_BUFF_CONFIG, 1, expiresAt);
+        gliding = true;
+        glideBuffSlot = slot;
+        glideEndsAt = expiresAt;
+        return expiresAt;
+    }
+
+    /** 摘缓降 buff（216 flag=0 / 点耗尽 / 到期）：返回曾占用的槽位，未持有返回 -1。 */
+    public synchronized int releaseGlide() {
+        if (!gliding) {
+            return -1;
+        }
+        gliding = false;
+        int slot = glideBuffSlot;
+        glideBuffSlot = 0;
+        glideEndsAt = null;
+        if (slot > 0) {
+            clearBuffSlot(slot);
+        }
+        return slot;
+    }
+
+    /** 缓降每秒扣点（不触发 <50 自动回满）；付不起返回 false（调用方强摘）。 */
+    public synchronized boolean drainGlidePoint() {
+        return actor.drainQingGong(GLIDE_POINT_COST_PER_SECOND) >= 0;
+    }
+
+    /** 缓降到期时刻（未持有返回 null）。 */
+    public synchronized Instant glideEndsAt() {
+        return gliding ? glideEndsAt : null;
+    }
+
+    /** 轻功值单属性帧（缓降消耗/恢复推送）。 */
+    public byte[] qingGongPointFrame() {
+        Actor.State state = actor.snapshot();
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "QingGongPoint", PropertyValues.Value.ofInt32(state.qingGongPoint()));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     public void restoreFaculty(PlayerProgress.Snapshot value, Instant now) {
@@ -715,6 +808,10 @@ public final class PlayerActor {
             writer.appendIndexed(property);
             bump.run();
         }
+        for (PropertyValues.Indexed property : com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerProps(meridian)) {
+            writer.appendIndexed(property);
+            bump.run();
+        }
         for (PropertyValues.Indexed property : damageProperties()) {
             writer.appendIndexed(property);
             bump.run();
@@ -797,6 +894,7 @@ public final class PlayerActor {
         properties.addAll(baseMotionProperties(motionSnapshot()));
         properties.addAll(qinggongMotionProperties());
         properties.addAll(progress.properties(panel.equipBonus()));
+        properties.addAll(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerProps(meridian));
         properties.addAll(damageProperties());
         properties.addAll(panel.identityProperties());
         properties.addAll(panel.domainProperties());

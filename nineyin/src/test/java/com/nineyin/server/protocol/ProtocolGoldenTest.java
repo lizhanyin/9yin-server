@@ -106,8 +106,21 @@ class ProtocolGoldenTest {
 
     @Test
     void recordTableMatchesGolden() throws Exception {
-        assertArrayEquals(golden("record_table.bin"),
-                SceneMessages.recordTable(SceneMessages.QING_GONG_RECORD_SCHEMAS));
+        // 官方 447 schema 方言整表 verbatim（52795 抓包 0x0A 帧逐字节提取）。
+        byte[] frame = SceneMessages.recordTableFrame();
+        assertEquals(0x0A, frame[0]);
+        assertEquals(447, (frame[1] & 0xFF) | (frame[2] & 0xFF) << 8, "官方 447 schema");
+        assertEquals(29, RecordMessages.RECORD_TASK_ACCEPTED);
+        assertEquals(31, RecordMessages.RECORD_TASK_COMPLETED);
+        assertEquals(93, RecordMessages.RECORD_SHORTCUT);
+        assertEquals(109, RecordMessages.RECORD_COOLDOWN, "cooldown_rec 官方下标（CoolLogicManager 消费）");
+        assertEquals(116, RecordMessages.RECORD_QING_GONG);
+        assertEquals(446, RecordMessages.RECORD_ACTIVE_SKILL);
+        assertEquals(162, RecordMessages.RECORD_ACTIVE_JINGMAI);
+        assertArrayEquals(new byte[]{3, 4, 4, 2}, RecordSchemas.columnTypes(RecordMessages.RECORD_COOLDOWN));
+        assertArrayEquals(new byte[]{7}, RecordSchemas.columnTypes(RecordMessages.RECORD_ACTIVE_SKILL));
+        assertArrayEquals(new byte[]{7}, RecordSchemas.columnTypes(RecordMessages.RECORD_ACTIVE_JINGMAI));
+        SnapshotGoldens.assertOrRegen("record_table_official.bin", frame);
     }
 
     @Test
@@ -135,34 +148,54 @@ class ProtocolGoldenTest {
 
     @Test
     void recordAddStringMatchesGolden() throws Exception {
-        assertArrayEquals(golden("qinggong_record_add.bin"),
+        // 官方下标 116；帧体与旧方言同构（首 u16 换 rec=116）。
+        SnapshotGoldens.assertOrRegen("qinggong_record_add.bin",
                 RecordMessages.recordAddString(1, 1, RecordMessages.RECORD_QING_GONG, "qinggong_1"));
     }
 
     @Test
     void taskAcceptedAddMatchesGolden() throws Exception {
-        assertArrayEquals(golden("task_accepted_add.bin"),
-                RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_TASK_ACCEPTED,
-                        RecordMessages.Cell.ofInt(1069), RecordMessages.Cell.ofInt(9), RecordMessages.Cell.ofInt(0),
-                        RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofString(""),
-                        RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofInt(0)));
+        // 官方 28 列满宽 = 144B（52795 抓包 task 1069 行同长）。
+        byte[] frame = RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_TASK_ACCEPTED,
+                RecordMessages.Cell.ofInt(1069), RecordMessages.Cell.ofInt(0),
+                RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofInt(0),
+                RecordMessages.Cell.ofString(""), RecordMessages.Cell.ofString(""),
+                RecordMessages.Cell.ofInt(0));
+        assertEquals(144, frame.length, "官方 Task_Accepted 行 144B");
+        SnapshotGoldens.assertOrRegen("task_accepted_add.bin", frame);
     }
 
     @Test
     void taskCompletedAddMatchesGolden() throws Exception {
-        assertArrayEquals(golden("task_completed_row_zero.bin"),
+        SnapshotGoldens.assertOrRegen("task_completed_row_zero.bin",
                 RecordMessages.recordAddInt32(1, 1, RecordMessages.RECORD_TASK_COMPLETED, 0));
         // function_unlock_meta.json: final_row=1593 value=1<<26（task 51002 位）
-        assertArrayEquals(golden("task_completed_row_final.bin"),
+        SnapshotGoldens.assertOrRegen("task_completed_row_final.bin",
                 RecordMessages.recordAddInt32(1, 1, RecordMessages.RECORD_TASK_COMPLETED, 1 << 26));
     }
 
     @Test
     void shortcutSitcrossAddMatchesGolden() throws Exception {
-        assertArrayEquals(golden("shortcut_sitcross_add.bin"),
+        SnapshotGoldens.assertOrRegen("shortcut_sitcross_add.bin",
                 RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_SHORTCUT,
                         RecordMessages.Cell.ofInt(9), RecordMessages.Cell.ofString("skill"),
                         RecordMessages.Cell.ofString("zs_default_01")));
+    }
+
+    @Test
+    void cooldownRowMatchesOfficialCaptureShape() {
+        // 52795 抓包 cooldown 行 38B：rec=109 | i32 cat | i64 start | i64 end | u16 team。
+        byte[] personal = RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_COOLDOWN,
+                RecordMessages.Cell.ofInt(8837), RecordMessages.Cell.ofInt64(1789763651342L),
+                RecordMessages.Cell.ofInt64(1789763666342L), RecordMessages.Cell.ofInt(0xFFFF));
+        assertEquals(38, personal.length);
+        assertEquals(109, personal[10] | personal[11] << 8);
+        assertEquals(0xFFFF, (personal[36] & 0xFF) | (personal[37] & 0xFF) << 8, "个人行 team=u16 0xFFFF");
+        byte[] gcd = RecordMessages.recordAddCells(1, 1, RecordMessages.RECORD_COOLDOWN,
+                RecordMessages.Cell.ofInt(50000), RecordMessages.Cell.ofInt64(1789763651342L),
+                RecordMessages.Cell.ofInt64(1789763658342L), RecordMessages.Cell.ofInt(50260));
+        assertEquals(38, gcd.length);
+        assertEquals(50260, (gcd[36] & 0xFF) | (gcd[37] & 0xFF) << 8, "GCD 行 team=CoolDownTeam");
     }
 
     @Test

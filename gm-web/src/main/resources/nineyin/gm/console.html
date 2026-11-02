@@ -349,6 +349,19 @@
           onclick="fillSP()">回满</button>
       </section>
       <section>
+        <h2>经脉</h2>
+        <p class="muted">
+          每日真气硬闸：开启后当日已获真气（ZQPLValue，被动修炼 + 打怪折算同一池）达到阈值即停止入账，进度条停住，次日 UTC
+          日切自动恢复；关闭则不限量（进度条上限显示回落官方缺省 500）。设置为<b>角色级持久化</b>（重登沿用），修改立即下发属性帧。
+        </p>
+        <label><input id="zhenqi-cap-enabled" type="checkbox" /> 是否开启每日硬闸</label><br />
+        <label>每日阈值
+          <input id="zhenqi-cap-value" type="number" value="500" min="1" max="10000000"
+            style="min-width: 110px; width: 110px" /></label>
+        <button onclick="zhenqiCapSet()">应用设置</button>
+        <div id="zhenqi-cap-hint" class="muted"></div>
+      </section>
+      <section>
         <h2>洗练（身上装备 · 指定部位）</h2>
         <p class="muted">
           先选部位再点功能：<b>随机洗练</b>=词条属性+数值全随机重掷（op3）；<b>定向洗练</b>=保持现有词条属性不变，只在同属性族内随机重掷数值（op4）；<b>抛光</b>=保持词条属性不变，把每条数值拉到该属性族的最高档（组内最大值）。招式开光随机洗练已学招式词条。词条是全局属性包，穿在任何部位都生效；武器走
@@ -1713,6 +1726,15 @@
     }
     function popupGMPanel() {
       command({ action: "popup_gm_panel" });
+    }
+    // 经脉：每日真气硬闸（是否开启 + 每日阈值，角色级持久化）。
+    function zhenqiCapSet() {
+      let enabled = document.querySelector("#zhenqi-cap-enabled").checked ? 1 : 0;
+      let value = +document.querySelector("#zhenqi-cap-value").value;
+      if (!value || value < 1) {
+        return alert("每日阈值必须 ≥ 1");
+      }
+      command({ action: "set_zhenqi_cap", enabled: enabled, value: value });
     }
     // 伙伴：botCommand 走与 command() 相同的会话通道，只是动作名为 bot_*；
     // refreshBots 刷新 /api/bots 的伙伴状态面板。

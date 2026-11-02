@@ -56,9 +56,8 @@ public final class LoginFlow {
     static final int STARTER_SILVER = 99999;
     /** 选人界面实力档位种子（一期无实力持久化，固定 151=title027 返璞归真）。 */
     static final int ROLE_LIST_POWER_LEVEL = 151;
-    /** Go -npc-radius 默认 120 / -npc-patrol-count 默认 3。 */
+    /** Go -npc-radius 默认 120（巡逻已换 mappath 官方路线，无数量上限）。 */
     static final float NPC_RADIUS = 120.0f;
-    static final int NPC_PATROL_COUNT = 3;
     /** Go 位置保存节流（≥2s）。 */
     static final Duration POSITION_SAVE_INTERVAL = Duration.ofSeconds(2);
 
@@ -931,7 +930,7 @@ public final class LoginFlow {
                 log.warn("session={} activate ready scene objects: {}", session.machine.id(), e.getMessage());
                 return false;
             }
-            session.world.startPatrol(NPC_PATROL_COUNT);
+            session.world.startPatrol();
         }
         SessionException transition = session.machine.activity();
         if (transition != null) {

@@ -13,6 +13,10 @@ public final class NpcSpawn {
     public float y;
     public float z;
     public float orient;
+    /** mappath 巡逻路线（绑定吸附后非空；跨连接共享的不可变表）。 */
+    public PatrolRoute route;
+    /** 吸附起始路点下标。 */
+    public int routeStartIdx;
 
     public NpcSpawn(NpcResolver.ResolvedNpc resolved, float x, float y, float z, float orient) {
         this.resolved = resolved;
@@ -33,7 +37,10 @@ public final class NpcSpawn {
                 resolved.instanceKey, resolved.configId, resolved.scriptClass, resolved.transform);
         copy.properties.putAll(resolved.properties);
         copy.extensions.putAll(resolved.extensions);
-        return new NpcSpawn(copy, x, y, z, orient);
+        NpcSpawn cloned = new NpcSpawn(copy, x, y, z, orient);
+        cloned.route = route;
+        cloned.routeStartIdx = routeStartIdx;
+        return cloned;
     }
 
     /** Go synchronizeTransform：坐标是运行时状态，写回属性表。 */

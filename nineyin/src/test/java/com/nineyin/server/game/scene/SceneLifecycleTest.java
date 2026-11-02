@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import com.nineyin.server.world.npc.NpcCreator;
 import com.nineyin.server.world.npc.NpcResolver;
 import com.nineyin.server.world.npc.NpcSpawn;
+import com.nineyin.server.world.npc.PatrolRoute;
 import com.nineyin.server.protocol.PropertyValues.Value;
 import com.nineyin.server.transport.Connection;
 import com.nineyin.server.transport.FrameCodec;
@@ -26,7 +27,8 @@ import io.netty.channel.embedded.EmbeddedChannel;
 
 /**
  * 场景生命周期行为测试（合成 NPC，不依赖资源）：物化顺序、世代语义、
- * 巡逻步进与 0x20/0x10/0x0E 帧，对齐 Go scene_lifecycle 的可观察行为。
+ * mappath 路线巡逻（步进/弹回/跳点/视口重进）与 0x20/0x1F/0x0E 帧，
+ * 对齐 Go scene_lifecycle 的可观察行为。
  */
 class SceneLifecycleTest {
 
@@ -291,28 +293,93 @@ class SceneLifecycleTest {
     }
 
     @Test
-    void patrolStepAlternatesDirection() {
+    void patrolWalksRouteBouncesAndUsesWaypointFacing() {
         ChannelWorld env = newWorld();
-        env.world().registerNpc(2, syntheticNpc("npc_b", 20, 0, 20, 0));
+        // 路线 (20,0,20) → (23,0,20) → (26,0,20)，吸附首点；WalkSpeed=1.5 → 每腿 3m/1.5m/s=2000ms。
+        PatrolRoute route = new PatrolRoute("test_route", List.of(
+                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false),
+                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false),
+                new PatrolRoute.Waypoint(26f, 0f, 20f, 1.5f, false)));
+        NpcSpawn npc = syntheticNpc("npc_b", 20, 0, 20, 0);
+        npc.resolved.properties.put("WalkSpeed", Value.ofFloat32(1.5f));
+        npc.route = route;
+        npc.routeStartIdx = 0;
+        env.world().registerNpc(2, npc);
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
-        int replayTasks = env.scheduler().tasks.size(); // 物化重放批次（5）
-        env.world().startPatrol(1);
-        assertEquals(replayTasks + 1, env.scheduler().tasks.size());
-        env.scheduler().tasks.get(replayTasks).run(); // 3s 后第一步
+        int replayTasks = env.scheduler().tasks.size(); // 物化重放批次（5）+ 巡逻首步（1）
+        // 首步（5s 后）：0x20 去往 idx1 (23,0,20)，朝向=行进方向 atan2(3,0)=π/2。
+        env.scheduler().tasks.get(replayTasks - 1).run();
         List<byte[]> frames = env.drain();
-        assertEquals(2, frames.size()); // 0x20 + 0x10
+        assertEquals(2, frames.size()); // 0x20 + 0x1F 更新
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(21.5f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "X +1.5");
-        // 到点 0x1F（1.5s）与下一步（5s 周期）均已登记。
-        assertEquals(replayTasks + 3, env.scheduler().tasks.size());
-        env.scheduler().tasks.get(replayTasks + 1).run(); // 到点 0x1F
+        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "idx1 X");
+        assertEquals((float) Math.PI / 2,
+                Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-3f, "行进朝向");
+        // 到点 0x1F（2000ms）与下一步（2000+200ms）依次登记。
+        assertEquals(replayTasks + 2, env.scheduler().tasks.size());
+        env.scheduler().tasks.get(replayTasks).run(); // 到点 0x1F
         assertEquals(0x1F, env.drain().get(0)[0] & 0xFF);
-        env.scheduler().tasks.get(replayTasks + 2).run(); // 第二步：方向翻转
+        env.scheduler().tasks.get(replayTasks + 1).run(); // 第二步 → idx2 (26,0,20)
         frames = env.drain();
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(20.0f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "X 回摆");
+        assertEquals(26f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "idx2 X");
+        assertEquals(1.5f, Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-4f, "路点朝向");
+        // 第三步：idx3 越界 → 弹回 idx1。
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 2).run(); // 到点 0x1F
+        env.drain();
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run(); // 弹回步
+        frames = env.drain();
+        assertEquals(0x20, frames.get(0)[0] & 0xFF);
+        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "端点弹回");
+    }
+
+    @Test
+    void patrolSkipsUnreachableWaypoints() {
+        ChannelWorld env = newWorld();
+        // idx1 距 idx0 XZ 40m（>28m 上限）→ 跳过，直达 idx2。
+        PatrolRoute route = new PatrolRoute("test_gap", List.of(
+                new PatrolRoute.Waypoint(0f, 0f, 0f, 0f, false),
+                new PatrolRoute.Waypoint(40f, 0f, 0f, 0f, false),
+                new PatrolRoute.Waypoint(5f, 0f, 0f, 0f, false)));
+        NpcSpawn npc = syntheticNpc("npc_b", 0, 0, 0, 0);
+        npc.route = route;
+        npc.routeStartIdx = 0;
+        env.world().registerNpc(2, npc);
+        env.world().clientReady();
+        env.world().clientActivity();
+        env.drain();
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run(); // 首步
+        List<byte[]> frames = env.drain();
+        assertEquals(0x20, frames.get(0)[0] & 0xFF);
+        assertEquals(5f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "跳过 40m 脏点");
+    }
+
+    @Test
+    void patrolRestartsAfterViewportReentry() {
+        ChannelWorld env = newWorld();
+        PatrolRoute route = new PatrolRoute("test_reentry", List.of(
+                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false),
+                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false)));
+        NpcSpawn npc = syntheticNpc("npc_b", 20, 0, 20, 0);
+        npc.route = route;
+        npc.routeStartIdx = 0;
+        env.world().registerNpc(2, npc);
+        env.world().clientReady();
+        env.world().clientActivity();
+        env.drain();
+        int tasksBeforeLeave = env.scheduler().tasks.size();
+        env.world().unregister(2);
+        env.world().reconcileViewport();
+        env.drain();
+        // 物化后重进：registerNpc 立即重新开链（首步任务重新登记）。
+        env.world().registerNpc(2, npc);
+        assertEquals(tasksBeforeLeave + 1, env.scheduler().tasks.size());
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
+        List<byte[]> frames = env.drain();
+        assertEquals(0x20, frames.get(0)[0] & 0xFF);
+        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "重进后开链");
     }
 
     private static long u32(byte[] frame, int off) {

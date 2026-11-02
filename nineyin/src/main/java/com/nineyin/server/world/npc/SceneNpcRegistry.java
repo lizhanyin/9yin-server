@@ -30,15 +30,17 @@ public final class SceneNpcRegistry {
 
     private final List<NpcTemplateTable> tables;
     private final Path creatorRoot;
+    private final Path mappathDir;
     private final List<NpcSchema.FieldSpec> schema;
     private final Map<String, String> dirs;
     private final Map<String, CatalogResult> catalogs = new HashMap<>();
     private final Map<String, CatalogStats> stats = new HashMap<>();
 
-    private SceneNpcRegistry(List<NpcTemplateTable> tables, Path creatorRoot,
+    private SceneNpcRegistry(List<NpcTemplateTable> tables, Path creatorRoot, Path mappathDir,
                              List<NpcSchema.FieldSpec> schema, Map<String, String> dirs) {
         this.tables = tables;
         this.creatorRoot = creatorRoot;
+        this.mappathDir = mappathDir;
         this.schema = schema;
         this.dirs = dirs;
     }
@@ -53,7 +55,10 @@ public final class SceneNpcRegistry {
                     .forEach(dir -> dirs.put(dir.getFileName().toString().toLowerCase(Locale.ROOT),
                             dir.getFileName().toString()));
         }
-        return new SceneNpcRegistry(tables, creatorRoot, schema, dirs);
+        // mappath 巡逻路线表在 npc_creator 的兄弟目录（share/creator/mappath）。
+        Path mappathDir = creatorRoot.getParent() == null
+                ? null : creatorRoot.getParent().resolve("mappath");
+        return new SceneNpcRegistry(tables, creatorRoot, mappathDir, schema, dirs);
     }
 
     /** Go loadNPCTemplateTables：npcconfig 子目录全部 .txt（根目录直接子文件是分类字典，跳过）。 */
@@ -82,6 +87,10 @@ public final class SceneNpcRegistry {
             }
         }
         CatalogResult loaded = loadSceneSpawns(schema, tables, creatorRoot.resolve(folder));
+        if (mappathDir != null) {
+            // 官方 mappath 巡逻路线：PathId 绑定 + 就近吸附（目录缓存内一次完成）。
+            PatrolRoutes.bind(loaded.spawns(), PatrolRoutes.load(mappathDir, folder));
+        }
         synchronized (this) {
             catalogs.put(folder, loaded);
             stats.put(folder, loaded.stats());

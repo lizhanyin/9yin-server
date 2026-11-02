@@ -81,7 +81,10 @@ Level(1465,byte)/MaxLevel(2083)/TotalFillValue(765)。已激活经脉 = active_j
 - `JingMaiCustomHandler`：**C2S 150** sub=1 开始/停止修炼（`[150, 1, ConfigID|""]`，
   未学静默拒）、sub=2 真气刷新（回属性帧）。首次开始修炼补 active_jingmai_rec 行。
 - `MeridianStore`：`data/meridians.json` 主档 + MySQL `role_meridians` 快照双源
-  （FacultyStore 同款；DSN 存在时自动建表）。断线/变化落盘。
+  （FacultyStore 同款）。断线/变化落盘。建表走权威存档增量脚本
+  `admin/sql/0004_add_role_meridians_20261102.sql.gz`（deploy.bat 第[3]步按序重放；
+  基线 role_faculty 同形态：snapshot json + FK roles ON DELETE CASCADE），
+  `attachDatabase` 另有同款 `CREATE TABLE IF NOT EXISTS` 运行期兜底。
 
 ### 下发时机
 

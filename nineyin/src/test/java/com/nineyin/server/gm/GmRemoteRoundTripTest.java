@@ -165,6 +165,66 @@ class GmRemoteRoundTripTest {
         assertTrue(queuedJson.getBooleanValue("ok"), "消费成功应回 ok: " + queued);
         assertEquals("移动速度设为 25.00", queuedJson.getString("message"));
 
+        // command：修为动作数值域（set_faculty 非负、set_fill_speed base/multiplier 域）入口即拒。
+        Map<String, Object> negFaculty = Map.of(
+                "sessionId", 7,
+                "action", "set_faculty",
+                "params", Map.of("value", -1));
+        String negFacultyRejected = remote.syncRemote("GmRemote", "command", negFaculty, String.class);
+        assertFalse(JSON.parseObject(negFacultyRejected).getBooleanValue("ok"), "负修为应被拒: " + negFacultyRejected);
+        Map<String, Object> badSpeedBase = Map.of(
+                "sessionId", 7,
+                "action", "set_fill_speed",
+                "params", Map.of("base", 0, "multiplier", 1));
+        String badBaseRejected = remote.syncRemote("GmRemote", "command", badSpeedBase, String.class);
+        assertFalse(JSON.parseObject(badBaseRejected).getBooleanValue("ok"), "base=0 应被拒");
+        Map<String, Object> badSpeedMultiplier = Map.of(
+                "sessionId", 7,
+                "action", "set_fill_speed",
+                "params", Map.of("base", 200, "multiplier", 0));
+        String badMultiplierRejected = remote.syncRemote("GmRemote", "command", badSpeedMultiplier, String.class);
+        assertFalse(JSON.parseObject(badMultiplierRejected).getBooleanValue("ok"), "multiplier=0 应被拒");
+
+        // command：修为三动作白名单透传 + 游戏侧回执回环（consumer 按 action 分发）。
+        Thread facultyConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 2; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "set_faculty" -> {
+                        assertEquals(9_999_999, command.params().getIntValue("value"));
+                        command.succeed("修为设为 9999999");
+                    }
+                    case "fill_current_neigong" -> command.succeed("内功 ng_wd_001 修炼度已填满，升至第 35 层");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-faculty-consumer");
+        facultyConsumer.start();
+        Map<String, Object> facultyData = Map.of(
+                "sessionId", 7,
+                "action", "set_faculty",
+                "params", Map.of("value", 9_999_999));
+        String facultyQueued = remote.syncRemote("GmRemote", "command", facultyData, String.class);
+        Map<String, Object> fillData = Map.of(
+                "sessionId", 7,
+                "action", "fill_current_neigong",
+                "params", Map.of());
+        String fillQueued = remote.syncRemote("GmRemote", "command", fillData, String.class);
+        facultyConsumer.join(5000);
+        assertTrue(JSON.parseObject(facultyQueued).getBooleanValue("ok"), "set_faculty 应回 ok: " + facultyQueued);
+        assertEquals("修为设为 9999999", JSON.parseObject(facultyQueued).getString("message"));
+        assertTrue(JSON.parseObject(fillQueued).getBooleanValue("ok"), "fill_current_neigong 应回 ok: " + fillQueued);
+
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);
         assertFalse(JSON.parseObject(before).getBooleanValue("enabled"));

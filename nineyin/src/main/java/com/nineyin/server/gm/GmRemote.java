@@ -126,6 +126,16 @@ public class GmRemote {
                 }
                 yield intRange(params, "value", 1, 10_000_000);
             }
+            // 修炼：修为总量（Faculty 修炼点余额）+ 修速基础值×倍率 + 当前内功本层修炼度填满。
+            case "set_faculty" -> intRange(params, "value", 0, 2_000_000_000);
+            case "set_fill_speed" -> {
+                String baseBad = intRange(params, "base", 1, 1_000_000);
+                if (baseBad != null) {
+                    yield baseBad;
+                }
+                yield floatRange(params, "multiplier", 0.1f, 100f, "multiplier");
+            }
+            case "fill_current_neigong" -> null;
             // 四期面板动作（LoginFlow.applyGmCommand 已实现，此前漏挂白名单——
             // 面板按钮一直被入口拒绝，补齐透传；数值域由游戏侧分支自校验）。
             case "set_power_level" -> nonNegative(params, "value");

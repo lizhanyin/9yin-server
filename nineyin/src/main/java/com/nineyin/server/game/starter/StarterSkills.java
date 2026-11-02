@@ -111,8 +111,13 @@ public final class StarterSkills {
         Props.addView(properties, "VarPropNo", PropertyValues.Value.ofInt32(0));
         Props.addView(properties, "Quality", PropertyValues.Value.ofByte(1));
         Props.addView(properties, "WuXing", PropertyValues.Value.ofInt32(skillWuXing(skill.configId())));
-        Props.addView(properties, "CoolDownTime", PropertyValues.Value.ofInt32(
-                row == null ? 0 : row.coolDownMs()));
+        // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
+        // varprop 按级 CoolDownTime（官方 View40 行同源，客户端技能 CD 文本读它；
+        // 官方 skill_init 的 cooldown 全 0 → 生产恒走 varprop）。
+        long cdMs = row != null && row.coolDownMs() > 0 ? row.coolDownMs()
+                : com.nineyin.server.world.fight.CombatSkillCatalog.load().personalCdMs(
+                        skill.configId(), row != null ? row.level() : skill.level());
+        Props.addView(properties, "CoolDownTime", PropertyValues.Value.ofInt32((int) cdMs));
         Props.addView(properties, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(properties, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(properties, "PhyDamageMul", PropertyValues.Value.ofFloat32(1.0f));

@@ -124,3 +124,27 @@ buff_new/buff_static/buff_varprop（buf_<技能ID> 精确 buff）。
    不发则客户端图标恒不可用（能释放但显示灰）。实现：授予时全行置 1、施放置 0、
    max(个人CD,GCD) 到期置 1（事件驱动替代 exe 周期重播）。
 
+## 10. 技能 CD 文本显示源 = View40 行 CoolDownTime 属性（2026-11-02，view40_forensics.py）
+
+**现象**：真机所有技能 CD 文本恒显示 1s（服务端出招判定与 cooldown_rec 双行时长均正确）。
+
+**取证**（`F:\...\captures\local\127-0-0-1-59719` 2026-11-02 21:50，View40 0x18 行 207 条）：
+- 0x18 行布局：`18 | u16 view | u16 objIdx | u16 propCount | (u16 propIdx + 0x09 表线型值)*`。
+- 官方行的 `CoolDownTime`(idx 2034, i32) = **varprop 按级 CoolDownTime 毫秒**，17/17 全对齐：
+  jysg01=2000、tjq04=1000、tjq05=15000、tjq07=40000、hsqs01=2000、hsqs05=15000、
+  zs_default_01=5000（与出招 cooldown_rec 个人行 dur 同源）。
+- **skill_init.ini 的 `cooldown` 字段官方数据全 0，不是显示源**——下发 0 时客户端
+  CD 文本兜底显示 1s。
+- 官方行还带 Java 未发的属性：VarPropNo（如 275281=varprop 节 id）、AConsumeMP、
+  TargetShapePara2/HitShapePara2(f32)、Type(0)；UseLimit/Quality/Flow 官方值与 bak 语义
+  不同（xhmdl01: UseLimit=1/Quality=6/Flow=27011 vs 本服 9/1/5）——显示异常再取证。
+
+**修复**：`CombatSkillCatalog.personalCdMs(id, level)`（skill_new→skill_static→按级 varprop，
+不走完整 compile）；`StarterSkills`/`StarterGrants` View40 行 CoolDownTime 改为
+skill_init `cooldown>0` 显式覆盖优先、否则 varprop（生产官方数据恒走 varprop）。
+
+**附带**：msg294 时间广播 `[294, tick, uptimeMs, unix秒, 游戏日f64]` 1s 一发——
+cooldown_rec 的 start/end 是绝对 Unix 毫秒，客户端靠它对钟；msg414 三形态中
+"reset"=单类 CD 重置、"sync"+203 个小号 id（0..2925，物品/道具 CD 类别，不含技能
+CD 类别 16933/8837/50000）。
+

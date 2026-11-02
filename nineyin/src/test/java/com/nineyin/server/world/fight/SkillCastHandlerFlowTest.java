@@ -240,11 +240,12 @@ public class SkillCastHandlerFlowTest {
         harness.cast("CS_jh_sfgp01");
         List<byte[]> frames = harness.drain();
         List<String> sequence = describe(frames);
-        // 抓包序列：CD 行 ×3 → CanUse 行帧(置0) → 玩家全量 0x10 → 337 → 20 →
+        // 抓包序列：CD 行 ×3 → CanUse 行帧(置0) → 玩家全量 0x10 → 20 →
         // 命中才进的 LogicState 帧 → 每目标 [0x10, 0x13(21B), 24, 0x2D, 18]
         // →（有 buff 时 169+BufferInfo）→ 205。sfgp01 带自 buff（27299）。
+        // 337 坐标回显已停发（2026-11-02 真机反馈：高空出招被拍回地面）。
         assertEquals(List.of("0x11:rec5", "0x11:rec6", "0x11:rec5", "0x10:1",
-                "0x10:vital", "custom:337", "custom:20", "0x10:1",
+                "0x10:vital", "custom:20", "0x10:1",
                 "0x10:5", "0x13:21", "custom:24", "0x2D",
                 "custom:18", "custom:169", "0x10:1", "custom:205"), sequence,
                 "capture frame order");

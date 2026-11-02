@@ -26,9 +26,9 @@ public final class FacultyCustomHandler {
     /** Go S2CFacultyMessage。 */
     public static final int S2C_FACULTY_MESSAGE = 191;
 
-    // msg191 子命令（Go player_progress.go 调用点）
+    // msg191 子命令（Go player_progress.go 调用点）；SUB_LEVEL_UP 供 LoginFlow GM 填满回执复用。
     static final int SUB_ACT_BEGIN = 22;
-    static final int SUB_LEVEL_UP = 14;
+    public static final int SUB_LEVEL_UP = 14;
     static final int SUB_ACT_EXIT = 23;
     static final int SUB_ACT_PLAY = 24;
 

@@ -140,11 +140,13 @@ public final class SkillCastHandler {
                 PlayerActor.PLAYER_OWNER_ID, GCD_CATEGORY, start,
                 start + skill.publicCdMs(),
                 skill.cooldownTeam() > 0 ? skill.cooldownTeam() : GCD_TEAM_FALLBACK));
-        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；CD 尽时置 1
+        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；个人 CD 尽时置 1——
+        // 出招技能自身不吃公共 GCD（同套路不触发 7s，bug.txt；2026-11-02 前
+        // max(个人,GCD) 把 cd<7s 的技能图标也压到 7s，已改回个人 CD）
         Integer row = context.skillRows().get(skill.id());
         if (row != null && row > 0) {
             connection.writeFrame(FightMessages.skillRowCanUse(SKILL_VIEW_ID, row, false));
-            long canUseAt = Math.max(skill.personalCdMs(), skill.publicCdMs());
+            long canUseAt = skill.personalCdMs();
             // 大括号块保证解析到 schedule(Runnable)：单表达式 lambda 会因返回值落到 Callable 重载
             context.scheduler().schedule(() -> {
                 context.connection().writeFrame(
@@ -153,8 +155,11 @@ public final class SkillCastHandler {
         }
         // 玩家全量属性面（抓包 188 项 = stateProperties）
         connection.writeFrame(player.vitalUpdate());
-        connection.writeFrame(FightMessages.casterTransformSync(
-                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
+        // 不回显 msg337 施法者坐标（2026-11-02 真机反馈）：客户端会把 337 应用到本地
+        // 角色，高空出招时 211 上报的 y 与视觉高度不一致 → 人被拍回地面。官方抓包
+        // （62433）每招恒回 337，但全程地面战斗无法暴露该差异；本服坐标以客户端为
+        // 权威，211 的 x/y/z 只留作距离/形状判定。FightMessages.casterTransformSync
+        // 保留备用（远程观测者上线的场景再评估）。
         connection.writeFrame(FightMessages.skillAction(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
 

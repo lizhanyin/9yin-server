@@ -51,14 +51,16 @@ class SkillCastWiringTest {
         final Connection connection = new Connection(channel);
         final LoginFlow flow;
         final LoginSession session = new LoginSession();
+        /** flow/world 共用：出招命中 tick 挂在 flow 侧，测试用 runPending() 泵。 */
+        final DirectRunScheduler scheduler = new DirectRunScheduler();
 
         Wiring() throws Exception {
             java.nio.file.Path temp = java.nio.file.Files.createTempDirectory("skill-wiring");
             flow = new LoginFlow(new RoleStoreFacade(JsonRoleRepository.open(temp.resolve("roles.json"))),
                     FacultyStore.open(temp.resolve("faculty.json")), new GmHub(),
-                    Clock.systemUTC(), null, new DirectRunScheduler());
+                    Clock.systemUTC(), null, scheduler);
             session.player = PlayerActor.create("紫泉", 99999, Clock.systemUTC());
-            session.world = new SceneLifecycle(connection, new DirectRunScheduler());
+            session.world = new SceneLifecycle(connection, scheduler);
             session.world.begin("ini\\scene\\scene01", "scene01");
             session.world.registerNpc(2, combatNpc("monv030101", 1000, 100, 20, 100));
             session.fight = new FightState();
@@ -75,19 +77,33 @@ class SkillCastWiringTest {
         }
     }
 
-    /** 立即执行的单任务调度器（facultyTicker 等注册任务直跑）。 */
+    /**
+     * 收起不定时任务的单任务调度器（facultyTicker 等注册任务直跑）：
+     * schedule 只记录不执行（战斗收尾/多段命中 tick 默认不跑，测试只验接线首帧），
+     * 需要 tick 落地的用 {@link #runPending()} 手动泵（7da2ce3 起命中走调度）。
+     */
     static final class DirectRunScheduler extends SkillCastHandlerFlowTest.LoginFlowTestSchedulerAdapter {
+
+        final List<Runnable> pending = new java.util.ArrayList<>();
 
         @Override
         public java.util.concurrent.ScheduledFuture<?> schedule(Runnable command, long delay,
                                                                 java.util.concurrent.TimeUnit unit) {
-            return null; // 战斗收尾任务不立即跑（测试只验接线首帧）
+            pending.add(command);
+            return null;
         }
 
         @Override
         public java.util.concurrent.ScheduledFuture<?> scheduleWithFixedDelay(
                 Runnable command, long initialDelay, long period, java.util.concurrent.TimeUnit unit) {
             return null;
+        }
+
+        void runPending() {
+            for (Runnable task : List.copyOf(pending)) {
+                task.run();
+            }
+            pending.clear();
         }
     }
 
@@ -149,22 +165,18 @@ class SkillCastWiringTest {
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session, writer.toBytes()));
 
         List<byte[]> replies = wiring.drain();
-        assertTrue(replies.size() >= 6, "cast frames emitted via LoginFlow dispatch");
+        // 即时帧 5 张：CD 行 + active_skill_rec + GCD 行 + 玩家全量 0x10 + msg20
+        // （337 坐标回显已停发；本环境无 View40 行号故无 CanUse 帧；命中挂调度不即时）
+        assertEquals(5, replies.size(), "cast frames emitted via LoginFlow dispatch");
         assertEquals(0x11, replies.get(0)[0] & 0xFF);
         assertEquals(0x11, replies.get(1)[0] & 0xFF);
         assertEquals(0x11, replies.get(2)[0] & 0xFF);
         assertEquals(0x10, replies.get(3)[0] & 0xFF);
-        boolean sawSkillAction = false;
-        for (byte[] frame : replies) {
-            if ((frame[0] & 0xFF) == 0x1E) {
-                sawSkillAction = true;
-            }
-        }
-        assertTrue(sawSkillAction, "custom frames (337/20/...) emitted");
+        assertEquals(0x1E, replies.get(4)[0] & 0xFF, "msg20 技能动作帧");
     }
 
     @Test
-    void manualParryEngageRequiresCombatState() throws Exception {
+    void manualParryEngageOutsideCombatAndInCombat() throws Exception {
         Wiring wiring = new Wiring();
         PacketWriter engage = PacketWriter.ofCapacity(24);
         engage.writeU8(0x1E).writeU16(2);
@@ -172,12 +184,22 @@ class SkillCastWiringTest {
         engage.writeU8(3).writeU64(0);   // 按下
         byte[] engageFrame = engage.toBytes();
 
-        // 非战斗态（LogicState=0）：engage 静默拒绝（真机反馈 1）
+        // 非战斗态（LogicState=0）也可按格挡（原版右键起手式随时可用）：回 169 + 0x10 两帧
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session, engageFrame));
-        assertTrue(wiring.drain().isEmpty(), "parry engage outside combat is silent");
+        List<byte[]> replies = wiring.drain();
+        assertEquals(2, replies.size(), "msg169 + 0x10 parry frames outside combat");
+        assertEquals(0x1E, replies.get(0)[0] & 0xFF);
+        assertTrue(wiring.session.player.parrying());
+
+        // 松开复位，再验战斗内按下同样回两帧
+        PacketWriter release = PacketWriter.ofCapacity(24);
+        release.writeU8(0x1E).writeU16(2);
+        release.writeU8(2).writeU32(54);
+        release.writeU8(3).writeU64(1);   // 松开
+        assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session, release.toBytes()));
+        wiring.drain();
         assertTrue(!wiring.session.player.parrying());
 
-        // 命中敌人进战斗后再按：回 169 + 0x10 两帧
         PacketWriter cast = PacketWriter.ofCapacity(64);
         cast.writeU8(0x1E).writeU16(6);
         cast.writeU8(2).writeU32(211);
@@ -190,11 +212,14 @@ class SkillCastWiringTest {
         wiring.session.fight.selectTarget(wiring.session.world, 2, 1);
         wiring.flow.dispatch(wiring.connection, wiring.session, cast.toBytes());
         wiring.drain();
+        // 多段技能命中挂调度（7da2ce3）：泵 tick 后首段命中 → enterCombat
+        wiring.scheduler.runPending();
+        wiring.drain();
         assertTrue(wiring.session.player.fighting(), "hit enters combat");
 
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session, engageFrame));
-        List<byte[]> replies = wiring.drain();
-        assertEquals(2, replies.size(), "msg169 + 0x10 parry frames");
+        replies = wiring.drain();
+        assertEquals(2, replies.size(), "msg169 + 0x10 parry frames in combat");
         assertEquals(0x1E, replies.get(0)[0] & 0xFF);
         assertTrue(wiring.session.player.parrying());
     }

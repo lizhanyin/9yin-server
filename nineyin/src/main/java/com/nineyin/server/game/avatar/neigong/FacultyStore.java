@@ -86,6 +86,8 @@ public final class FacultyStore {
                 node.getIntValue("faculty_style"),
                 node.getString("faculty_name"),
                 node.getIntValue("fill_speed"),
+                node.getIntValue("fill_speed_base"),
+                node.getFloatValue("fill_speed_multiplier"),
                 lastAdvance,
                 books);
     }
@@ -235,6 +237,9 @@ public final class FacultyStore {
         node.field("faculty_style", snapshot.facultyStyle());
         node.field("faculty_name", snapshot.facultyName());
         node.field("fill_speed", snapshot.fillSpeed());
+        // 修速拆分层（GM set_fill_speed）：旧档缺省时 restore 回退 200 × 1。
+        node.field("fill_speed_base", snapshot.fillSpeedBase());
+        node.floatField("fill_speed_multiplier", snapshot.fillSpeedMultiplier());
         node.field("last_advance_utc", formatInstant(snapshot.lastAdvanceUtc()));
         List<String> books = new ArrayList<>();
         for (PlayerProgress.BookSnapshot book : snapshot.books()) {

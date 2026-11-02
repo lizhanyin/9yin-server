@@ -56,6 +56,21 @@ class CombatSkillCatalogTest {
         assertCd("CS_jh_sfgp08", 8864, 10000);
     }
 
+    /** View40 行 CoolDownTime 显示源 = varprop 按级值（127-0-0-1-59719 抓包 17/17 对齐）。 */
+    @Test
+    void personalCdMsMatchesView40Capture() {
+        assertEquals(2000, catalog.personalCdMs("CS_jh_jysg01", 1));
+        assertEquals(1000, catalog.personalCdMs("CS_wd_tjq04", 1));
+        assertEquals(15000, catalog.personalCdMs("CS_wd_tjq05", 1));
+        assertEquals(40000, catalog.personalCdMs("CS_wd_tjq07", 1));
+        assertEquals(5000, catalog.personalCdMs("zs_default_01", 1));
+        // 与 definition 编译的个人 CD 同源（出招 cooldown_rec 个人行时长 = 显示值）
+        assertEquals(catalog.definition("CS_jh_jysg01", 1).personalCdMs(),
+                catalog.personalCdMs("CS_jh_jysg01", 1));
+        assertEquals(0, catalog.personalCdMs("no_such_skill", 1));
+        assertEquals(0, catalog.personalCdMs(null, 1));
+    }
+
     private static void assertCd(String id, int category, long personalCdMs) {
         CombatSkill skill = catalog.definition(id, 1);
         assertNotNull(skill, id + " compiles");
@@ -63,6 +78,7 @@ class CombatSkillCatalogTest {
         assertEquals(personalCdMs, skill.personalCdMs(), id + " personal CD");
         assertEquals(7000, skill.publicCdMs(), id + " GCD (AddCoolDownTime)");
         assertEquals(50369, skill.cooldownTeam(), id + " CoolDownTeam (GCD row team)");
+        assertEquals("CS_jh_sfgp", skill.taolu(), id + " TaoLu（同套路共享）");
     }
 
     @Test

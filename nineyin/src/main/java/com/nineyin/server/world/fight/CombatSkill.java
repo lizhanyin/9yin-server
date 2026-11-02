@@ -12,6 +12,8 @@ import java.util.List;
  * @param script          SkillNormal / SkillLock
  * @param cooldownCategory 个人 CD 类别（cooldown_rec 第 1 列）
  * @param cooldownTeam    skill_static.CoolDownTeam（GCD 行第 4 列；0 = 无）
+ * @param taolu           skill_static.TaoLu（套路 ConfigID，如 CS_jh_sfgp；同套路共享。
+ *                        GCD 只跨套路生效——同套路技能互不触发 7s 公共 CD）
  * @param personalCdMs    varprop L CoolDownTime（个人 CD 毫秒）
  * @param publicCdMs      AddCoolDownTime（公共 GCD 毫秒，缺省回落个人 CD）
  * @param mpCost/spCost/qgCost skill_consume 的 AConsumeMP/SP/QGP
@@ -32,7 +34,7 @@ import java.util.List;
  */
 public record CombatSkill(
         String id, int staticData, String script, int level,
-        int cooldownCategory, int cooldownTeam, long personalCdMs, long publicCdMs,
+        int cooldownCategory, int cooldownTeam, String taolu, long personalCdMs, long publicCdMs,
         int mpCost, int spCost, int qgCost,
         int baseDamage, int damageWaves,
         TargetMode targetMode, float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
@@ -89,11 +91,6 @@ public record CombatSkill(
             return 0;
         }
         return baseDamage / 100f / damageWaves;
-    }
-
-    /** GCD 门控键（Go teamKey：有队用队，无队用负类别）。 */
-    public long cooldownGateKey() {
-        return cooldownTeam != 0 ? cooldownTeam : -(long) cooldownCategory;
     }
 
     public Duration personalCd() {

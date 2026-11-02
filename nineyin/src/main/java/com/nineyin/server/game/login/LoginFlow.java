@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.nineyin.server.game.avatar.neigong.FacultyStore;
+import com.nineyin.server.game.avatar.neigong.PlayerProgress;
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.game.avatar.RoleVisual;
 import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
@@ -80,6 +81,8 @@ public final class LoginFlow {
     private final RoleInventoryStore inventoryStore;
     /** 四期面板域 DB 源（称号/兵录/声望/坐骑；可空=回退种子值）。 */
     private final PanelDataStore panelStore;
+    /** 在线会话注册表（选角入世界 attachGmSnapshot 时登记）：优雅停机逐会话落盘依据。 */
+    private final java.util.Set<LoginSession> activeSessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
                      SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler) {
@@ -511,6 +514,10 @@ public final class LoginFlow {
             case "cancel_title" -> applyWearTitle(connection, session, command, false);
             // 经脉：每日真气硬闸（是否开启 + 每日阈值，角色级持久化）。
             case "set_zhenqi_cap" -> applyZhenqiCap(connection, session, command);
+            // 修炼：修为总量（Faculty）+ 修速基础值×倍率 + 当前内功本层修炼度填满。
+            case "set_faculty" -> applyFacultyValue(connection, session, command);
+            case "set_fill_speed" -> applyFillSpeed(connection, session, command);
+            case "fill_current_neigong" -> applyFillNeigong(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -545,6 +552,88 @@ public final class LoginFlow {
         command.succeed(action);
         log.info("session={} GM set_zhenqi_cap enabled={} value={}",
                 session.machine.id(), enabled, value);
+    }
+
+    /** GM set_faculty：修炼点余额（Faculty@798，内修按分钟折半消耗）。改值 → 0x10 全量 → 快照落库。 */
+    private void applyFacultyValue(Connection connection, LoginSession session, GmCommand command) {
+        Integer value = command.intParam("value");
+        if (value == null || value < 0) {
+            command.fail("修为必须非负");
+            return;
+        }
+        var progress = session.player.progress();
+        progress.setFaculty(value);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "修为设为 %d", value);
+        gmHub.update(session.machine.id(), s -> {
+            s.faculty = value;
+            s.lastAction = action;
+        });
+        command.succeed(action);
+        log.info("session={} GM set Faculty={}", session.machine.id(), value);
+    }
+
+    /**
+     * GM set_fill_speed：修速拆分 基础值×倍率。FillSpeed@773 下发实际值、NorFacultyAdd@774
+     * 下发基础值（同帧）；普通内修态即时生效，停修/演武态下次开修生效；随 faculty 快照持久化。
+     */
+    private void applyFillSpeed(Connection connection, LoginSession session, GmCommand command) {
+        Integer base = command.intParam("base");
+        Float multiplier = command.floatParam("multiplier");
+        if (base == null || base < 1) {
+            command.fail("基础值 base 必须为正整数");
+            return;
+        }
+        if (multiplier == null || multiplier.isNaN() || multiplier.isInfinite()
+                || multiplier < 0.1f || multiplier > 100f) {
+            command.fail("倍率 multiplier 必须在 0.1 至 100 之间");
+            return;
+        }
+        var progress = session.player.progress();
+        int fillSpeed = progress.setFillSpeed(base, multiplier);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "修炼速度设为 基础 %d × %.2f = %d/min",
+                base, multiplier, fillSpeed);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_fill_speed base={} multiplier={} -> {}",
+                session.machine.id(), base, multiplier, fillSpeed);
+    }
+
+    /**
+     * GM fill_current_neigong：当前修炼书本层修炼度填满并结算升级（帧序对齐演武卡
+     * actPay：0x18 书帧先行 → 0x10 全量 → 升级时 191/14）；恰达满级对齐自然修炼停修。
+     */
+    private void applyFillNeigong(Connection connection, LoginSession session, GmCommand command) {
+        var progress = session.player.progress();
+        int[] award = progress.fillCurrentFaculty();
+        if (award[0] <= 0) {
+            command.fail("当前没有修炼中的内功");
+            return;
+        }
+        if (award[1] == 0) {
+            String maxed = String.format(java.util.Locale.ROOT, "内功 %s 已达满级，无需填满",
+                    progress.facultyName());
+            gmHub.update(session.machine.id(), s -> s.lastAction = maxed);
+            command.succeed(maxed);
+            return;
+        }
+        connection.writeFrame(progress.bookFrame(award[0]));
+        connection.writeFrame(session.player.vitalUpdate());
+        if (award[2] == 1) {
+            connection.writeFrame(FacultyCustomHandler.facultyMessage(
+                    FacultyCustomHandler.SUB_LEVEL_UP, award[3]));
+        }
+        persistFaculty(session);
+        PlayerProgress.Book book = progress.book(progress.facultyName());
+        String action = String.format(java.util.Locale.ROOT, "内功 %s 修炼度已填满，升至第 %d 层",
+                progress.facultyName(), book == null ? 0 : book.level);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM fill_current_neigong {} -> level={}",
+                session.machine.id(), progress.facultyName(), book == null ? -1 : book.level);
     }
 
     /** Go main.go set_move_speed/set_gravity 分支：改 motion → 单帧 0x10 → lastAction 回显。 */
@@ -804,11 +893,31 @@ public final class LoginFlow {
         snapshot.guanYin = session.player.guanYin();
         snapshot.gold = session.player.gold();
         snapshot.faction = session.player.faction();
+        snapshot.faculty = session.player.progress().snapshot().faculty();
         gmHub.attach(snapshot.sessionId, snapshot);
+        trackActive(session);
+    }
+
+    /** 在线登记（选角入世界时调用）：优雅停机 shutdownFlush 的刷写依据。 */
+    void trackActive(LoginSession session) {
+        activeSessions.add(session);
     }
 
     /** 连接断开（含校验失败断连）：Go defer（pendingLocation/persistFaculty/world.close）+ gm.detach。 */
     public void onDisconnect(LoginSession session) {
+        activeSessions.remove(session);
+        persistSessionData(session);
+        if (session.facultyTicker != null) {
+            session.facultyTicker.cancel(false);
+        }
+        if (session.world != null) {
+            session.world.close();
+        }
+        gmHub.detach(session.machine.id());
+    }
+
+    /** 断连/停机共用落盘：pendingLocation + faculty + meridian（幂等，失败仅告警不影响其余）。 */
+    private void persistSessionData(LoginSession session) {
         if (session.pendingLocation != null && session.selected != null) {
             try {
                 session.selected = roleStore.saveLocation(session.selected, session.pendingLocation);
@@ -828,13 +937,32 @@ public final class LoginFlow {
                 log.warn("persist meridian progress: {}", e.getMessage());
             }
         }
-        if (session.facultyTicker != null) {
-            session.facultyTicker.cancel(false);
+    }
+
+    /**
+     * 优雅停机落盘：Summer 停机钩子的 Server.shutdown() 走 shutdownGracefully()，
+     * 不会触发在线连接的 channelInactive，须在此显式逐会话刷写。复用 onDisconnect
+     * 全套语义（落盘+停 ticker+关世界+摘除面板快照）；幂等，可安全与真实断连竞争。
+     * 调用前提：网络线程已停（Summer 钩子先 ServerMgr.shutdown 再 app.stop）。
+     *
+     * @return 本次刷写的会话数
+     */
+    public int shutdownFlush() {
+        java.util.List<LoginSession> pending = List.copyOf(activeSessions);
+        for (LoginSession session : pending) {
+            try {
+                onDisconnect(session);
+            } catch (RuntimeException e) {
+                log.warn("shutdown flush session={}: {}", session.machine.id(), e.getMessage());
+            }
         }
-        if (session.world != null) {
-            session.world.close();
-        }
-        gmHub.detach(session.machine.id());
+        return pending.size();
+    }
+
+    /** 关闭自持存档的 DB 池（meridian/customizing；优雅停机收尾，在 shutdownFlush 之后调用）。 */
+    public void closeStores() {
+        meridianStore.close();
+        customizingStore.close();
     }
 
     /**
@@ -1237,13 +1365,10 @@ public final class LoginFlow {
         }
         PlayerActor actor = session.player;
         boolean engage = state.exactInt32() == 0;
-        // 格挡闸门：仅战斗态（LogicState=Fighting）可按下——命中敌人才进战斗
-        // （62433 抓包模型），非战斗态的右键格挡直接忽略。
-        if (engage && !actor.fighting()) {
-            log.info("reject manual parry engage outside combat (LogicState={})",
-                    actor.actorState().logicState());
-            return;
-        }
+        // 非战斗也可按格挡：参考服 bug.txt「待机状态下使用气招或者架招不会进入战斗」
+        // = 架招可用但不切 LogicState，而非拒绝按下。LogicState 只随命中进/出战斗，
+        // 与格挡态正交——db884de 曾按 62433 战斗抓包模型加闸门，真机反馈非战斗
+        // 格挡失效后撤掉（2026-11-02）。
         long now = clock.instant().toEpochMilli();
         if (actor.parrying() == engage) {
             if (!engage) {

@@ -22,7 +22,7 @@ rem ============================================================
 
 rem ---- 环境路径（同名环境变量已定义时优先，便于临时覆盖） ----
 if not defined MYSQL_HOME  set "MYSQL_HOME=G:\pojie\ai\mysql-26"
-if not defined SERVER_ROOT set "SERVER_ROOT=F:\Game\Online\9yin\9yin_server1"
+if not defined SERVER_ROOT set "SERVER_ROOT=F:\Game\Online\9yin\9yin_server_new"
 if not defined DATA_SRC    set "DATA_SRC=G:\pojie\ai\9yin-go-server1\data"
 if not defined MYSQL_PORT  set "MYSQL_PORT=3306"
 if not defined MYSQL_USER  set "MYSQL_USER=nineyin"

@@ -43,8 +43,8 @@ class PlayerActorMotionTest {
         assertEquals(1, frameCount(frame), "仅 Gravity 一行");
         PlayerActor.Motion motion = player.motionSnapshot();
         assertEquals(0.5f, motion.gravity, 0f);
-        assertEquals(25f, motion.moveSpeed, 0f, "默认移动速度不变");
-        assertEquals(25f, motion.runSpeed, 0f);
+        assertEquals(5f, motion.moveSpeed, 0f, "默认移动速度不变（2026-11-02 起 5）");
+        assertEquals(5f, motion.runSpeed, 0f);
     }
 
     // ------------------------------------------------------------- 货币/怒气

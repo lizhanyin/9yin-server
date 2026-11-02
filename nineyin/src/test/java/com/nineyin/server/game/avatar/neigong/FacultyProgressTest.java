@@ -299,6 +299,119 @@ class FacultyProgressTest {
         }
     }
 
+    @Test
+    void fillCurrentFacultyFillsLevelAndCarriesRemainderZero() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            PlayerProgress.Book book = progress.book(progress.facultyName);
+            int beforeLevel = book.level;
+            int beforeTotal = book.total;
+            int beforeMaxPower = book.maxPower;
+            int[] award = progress.fillCurrentFaculty();
+            // 默认修炼书（远未满级）：[槽位, 发放=1, 升级=1, 满级=0]，恰好填满升一层余 0。
+            assertEquals(1, award[1]);
+            assertEquals(1, award[2]);
+            assertEquals(0, award[3]);
+            assertTrue(award[0] > 0);
+            assertEquals(beforeLevel + 1, book.level);
+            assertEquals(0, book.fill);
+            assertEquals(beforeTotal + 200, book.total);
+            assertEquals(beforeMaxPower + 20, book.maxPower);
+            assertEquals(book.maxPower, book.power);
+        }
+    }
+
+    @Test
+    void fillCurrentFacultyOnMaxLevelBookReportsMaxedWithoutChange() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            PlayerProgress.Book book = progress.book("ng_wd_002");
+            book.level = book.maxLevel;
+            progress.facultyReady("ng_wd_002", NOW);
+            int[] award = progress.fillCurrentFaculty();
+            assertTrue(award[0] > 0, "已知书返回槽位");
+            assertEquals(0, award[1], "满级书不再发放");
+            assertEquals(1, award[3], "满级标记");
+            assertEquals(book.maxLevel, book.level);
+        }
+    }
+
+    @Test
+    void fillCurrentFacultyWithoutTargetBookFails() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            progress.facultyName = "ng_none";
+            assertArrayEquals(new int[]{-1, 0, 0, 0}, progress.fillCurrentFaculty());
+        }
+    }
+
+    @Test
+    void fillSpeedSplitAppliesImmediatelyAndSettlesByProduct() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            progress.facultyBegin(false, NOW);
+            assertEquals(PlayerProgress.NORMAL_FACULTY_FILL_PER_MINUTE, progress.fillSpeed);
+            // 普通内修态：base 400 × 2.0 → 800 即时生效。
+            assertEquals(800, progress.setFillSpeed(400, 2.0f));
+            assertEquals(800, progress.fillSpeed);
+            // 快照携带拆分层。
+            PlayerProgress.Snapshot snapshot = progress.snapshot();
+            assertEquals(400, snapshot.fillSpeedBase());
+            assertEquals(2.0f, snapshot.fillSpeedMultiplier(), 0f);
+            // 1 分钟结算按乘积入账：fill +800、修炼点折半扣 400。
+            PlayerProgress.Book book = progress.book(progress.facultyName);
+            int fillBefore = book.fill;
+            int facultyBefore = progress.snapshot().faculty();
+            assertTrue(progress.advanceFaculty(NOW.plusSeconds(60)));
+            assertEquals(fillBefore + 800, book.fill);
+            assertEquals(facultyBefore - 400, progress.snapshot().faculty());
+            // 停修态只记住参数：fillSpeed 保持 0，下次开修按乘积起修。
+            progress.facultyExit(NOW);
+            assertEquals(0, progress.setFillSpeed(300, 2.0f));
+            assertEquals(0, progress.fillSpeed);
+            progress.facultyBegin(false, NOW);
+            assertEquals(600, progress.fillSpeed);
+        }
+    }
+
+    @Test
+    void legacySnapshotWithoutSpeedSplitFallsBackToDefaults() {
+        try (Env env = new Env()) {
+            // 旧契约 8 参构造：基础值/倍率缺省 → 200 × 1，restore 后开修仍 200/min。
+            PlayerProgress.Snapshot legacy = new PlayerProgress.Snapshot(
+                    "ng_yh_001", 1000, PlayerProgress.FACULTY_STATE_NONE, PlayerProgress.FACULTY_STYLE_NORMAL,
+                    "ng_yh_001", 0, NOW, List.of());
+            env.player.restoreFaculty(legacy, NOW);
+            PlayerProgress progress = env.player.progress();
+            assertEquals(PlayerProgress.NORMAL_FACULTY_FILL_PER_MINUTE, progress.fillSpeedBase);
+            assertEquals(1.0f, progress.fillSpeedMultiplier, 0f);
+            progress.facultyBegin(false, NOW);
+            assertEquals(200, progress.fillSpeed);
+        }
+    }
+
+    @Test
+    void norFacultyAddFollowsBaseAndZeroInActStyle() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            progress.setFillSpeed(500, 2.0f);
+            assertEquals(500, intProp(progress, "NorFacultyAdd"));
+            assertEquals(1000, intProp(progress, "FillSpeed"));
+            progress.facultyBegin(true, NOW);
+            assertEquals(0, intProp(progress, "NorFacultyAdd"), "演武态基准修速发 0");
+        }
+    }
+
+    private static int intProp(PlayerProgress progress, String name) {
+        for (com.nineyin.server.protocol.PropertyValues.Indexed property
+                : progress.properties(PlayerProgress.EquipBonus.NONE)) {
+            if (property.name().equals(name)) {
+                return property.value().i32();
+            }
+        }
+        throw new AssertionError("missing property " + name);
+    }
+
     private static byte unchecked(int value) {
         return (byte) value;
     }

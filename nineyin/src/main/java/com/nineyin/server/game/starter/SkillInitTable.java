@@ -13,11 +13,14 @@ import com.nineyin.util.ServerPaths;
  * 技能学习表（share/skill/skill_init.ini，节名 = 技能 ConfigID，CRLF）。
  * 每节字段：staticData/itemType/level/maxlevel/total/pauseTime/coolDown/consumeSP
  * （本表消费前六显示项中除 pauseTime 外的五项；PauseTime 仍取 StarterSkills 内联帧表）。
+ * 注意：官方数据的 coolDown 字段全 0，**不是** View40 行 CoolDownTime 显示源——
+ * 显示值取 varprop 按级 CoolDownTime（CombatSkillCatalog.personalCdMs，抓包实证），
+ * 本表 coolDown 仅作自定义覆盖兜底。
  * 文件缺失/为空 → 空表，View40 行回退内联值（与 NeiGongCatalog 同 best-effort 方言）。
  */
 public final class SkillInitTable {
 
-    /** 一条已学习技能（coolDown 为毫秒显示值，totalFill 为修炼总量显示值）。 */
+    /** 一条已学习技能（coolDown 为自定义覆盖毫秒，官方数据全 0；totalFill 为修炼总量显示值）。 */
     public record Row(String configId, int level, int staticData,
                       int itemType, int maxLevel, int coolDownMs, int totalFill) {
     }

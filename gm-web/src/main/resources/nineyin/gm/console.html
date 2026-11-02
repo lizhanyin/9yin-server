@@ -105,10 +105,10 @@
     #gm-nav {
       position: sticky;
       top: 57px;
-      flex: 0 0 172px;
+      flex: 0 0 196px;
       max-height: calc(100vh - 57px);
       overflow: auto;
-      padding: 12px 8px;
+      padding: 12px 6px;
       border-right: 1px solid var(--line);
     }
 
@@ -132,6 +132,44 @@
       color: var(--accent);
       border-left: 3px solid var(--accent);
       padding-left: 7px;
+    }
+
+    /* 二级菜单：一级=功能分组（可折叠），二级=板块链接 */
+    #gm-nav .grp-hdr {
+      display: flex;
+      align-items: center;
+      color: var(--accent2);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      padding: 9px 6px 4px 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #gm-nav .grp-hdr::before {
+      content: "▸";
+      margin-right: 5px;
+      font-size: 11px;
+      color: var(--muted);
+      transition: transform .15s;
+    }
+
+    #gm-nav .grp.open .grp-hdr::before {
+      transform: rotate(90deg);
+    }
+
+    #gm-nav .grp a {
+      padding-left: 22px;
+      font-size: 12.5px;
+    }
+
+    #gm-nav .grp a.active {
+      padding-left: 19px;
+    }
+
+    #gm-nav .grp:not(.open) a {
+      display: none;
     }
 
     main.grid {
@@ -693,7 +731,7 @@
           Gravity，数值越大下落越快，下一次起跳生效（数值范围 0.1–100）。
         </p>
         <label>移动速度
-          <input id="move-speed" type="number" value="25" min="0.1" max="100" step="0.5" /></label><button
+          <input id="move-speed" type="number" value="5" min="0.1" max="100" step="0.5" /></label><button
           onclick="setMoveSpeed()">应用</button><br />
         <label>下落重力
           <input id="gravity" type="number" value="9.8" min="0.1" max="100" step="0.1" /></label><button
@@ -1006,6 +1044,30 @@
             ">
           删除全部武学
         </button>
+      </section>
+      <section>
+        <h2>修为</h2>
+        <p class="muted">
+          修为=修炼点余额（Faculty，内修每分钟折半消耗，种子 999
+          万），<b>角色级持久化</b>（role_faculty 快照，重登沿用）；修炼速度拆为<b>基础值 ×
+          倍率</b>（默认 200 ×
+          1，倍率可填小数），实际值走 FillSpeed、基础值走 NorFacultyAdd
+          同帧下发；普通内修态改速即时生效，停修/演武态下次开修生效。填满当前修炼内功的本层修炼度立即升一层（0x18
+          书帧 + 0x10 属性 + 191/14 升层提示），恰达满级自动停修。
+        </p>
+        <input id="faculty-value" type="number" value="9999999" min="0"
+          max="2000000000" /><button onclick="setFaculty()">设置修为</button><button onclick="
+              if (confirm('确定把当前修炼内功的本层修炼度填满（立即升一层）？'))
+                command({ action: 'fill_current_neigong' });
+            ">
+          填满当前内功修炼度</button><br />
+        <label>基础值/min
+          <input id="fill-speed-base" type="number" value="200" min="1" max="1000000"
+            style="min-width: 90px; width: 90px" /></label>
+        <label>倍率
+          <input id="fill-speed-multiplier" type="number" value="1" min="0.1" max="100" step="0.1"
+            style="min-width: 90px; width: 90px" /></label>
+        <button onclick="setFillSpeed()">应用修炼速度</button>
       </section>
       <section>
         <h2>风物志卡牌</h2>
@@ -1619,35 +1681,129 @@
         '<span class="chip"><b>怒气</b>' +
         (p.sp != null ? p.sp : "-") +
         "</span>" +
+        '<span class="chip"><b>修为</b>' +
+        (p.faculty != null ? p.faculty : "-") +
+        "</span>" +
         '<span class="chip"><b>最近操作</b>' +
         (p.lastAction || "-") +
         "</span>";
     }
+    /** GM 面板功能分组（2026-11-02 定稿）：一级=分组、二级=板块；按 h2 标题精确
+     *  匹配，改名/新增的板块自动落入末尾「其他」组兜底，不会失联。 */
+    const GM_GROUPS = [
+      { name: "角色状态", items: ["在线角色", "五维属性", "实力等级", "体力 / 饱食 / 杀戮 / 酒量", "性格善恶", "称号管理"] },
+      { name: "货币与物品", items: ["碎银 / 官银 / 黄金 / 怒气", "礼包与物品", "世界宝箱"] },
+      { name: "装备与铸造", items: ["所有道具与换装", "洗练（身上装备 · 指定部位）", "模板生成（带词条装备）", "冶炼（已对齐 D:\\ 参考端）", "兵录设置"] },
+      { name: "外观与坐骑", items: ["时装", "时装 / 身份装发放", "风物志卡牌", "风物志头发", "坐骑管理", "待机站姿（持久化）"] },
+      { name: "武学与修炼", items: ["门派", "武学套路", "修为", "经脉", "经脉周天设置"] },
+      { name: "传送与场景", items: ["常用传送", "踢馆传送", "自定义切图与场景内瞬移", "场景天气", "副本", "世界 BOSS"] },
+      { name: "战斗与演练", items: ["训练木桩", "添加假人（战斗）", "伙伴系统", "移动参数", "御风神水（大轻功）"] },
+      { name: "任务与身份", items: ["场景任务验证", "暮色剧情验证", "九阴志全局门控", "身份系统（一键激活全部）", "门派声望（自定义）"] },
+      { name: "界面与操作", items: ["快捷栏位", "快捷键方案"] },
+      { name: "调试工具", items: ["S2C 自定义消息探针", "聊天与气泡调试", "动作与剧情测试"] },
+    ];
+
+    let sectionGroup = {};
+
+    function normTitle(t) {
+      return t.replace(/\s+/g, " ").trim();
+    }
+
     function buildNav() {
       let nav = document.querySelector("#gm-nav");
       if (!nav) return;
-      let links = [];
-      document
-        .querySelectorAll("main.grid > section")
-        .forEach(function (sec, i) {
-          let h = sec.querySelector("h2");
-          if (!h) return;
-          if (!sec.id) sec.id = "sec-" + i;
+      let sections = Array.from(document.querySelectorAll("main.grid > section"));
+      let byTitle = new Map();
+      sections.forEach(function (sec, i) {
+        if (!sec.id) sec.id = "sec-" + i;
+        let h = sec.querySelector("h2");
+        if (h) byTitle.set(normTitle(h.textContent), sec);
+      });
+      let listed = new Set();
+      let appendGroup = function (name, secs) {
+        let box = document.createElement("div");
+        box.className = "grp";
+        box.dataset.group = name;
+        let hdr = document.createElement("div");
+        hdr.className = "grp-hdr";
+        hdr.textContent = name;
+        hdr.title = secs.length + " 个板块";
+        hdr.onclick = function () {
+          toggleGroup(name);
+        };
+        box.appendChild(hdr);
+        secs.forEach(function (sec) {
+          sectionGroup[sec.id] = name;
+          listed.add(sec.id);
           let a = document.createElement("a");
-          a.textContent = h.textContent;
+          a.textContent = normTitle(sec.querySelector("h2").textContent);
           a.dataset.target = sec.id;
           a.onclick = function () {
             showSection(sec.id);
           };
-          nav.appendChild(a);
-          links.push(a);
+          box.appendChild(a);
         });
+        nav.appendChild(box);
+      };
+      GM_GROUPS.forEach(function (g) {
+        let secs = g.items
+          .map(function (title) {
+            return byTitle.get(normTitle(title));
+          })
+          .filter(Boolean);
+        appendGroup(g.name, secs);
+      });
+      // 未列入分组的板块 → 「其他」，防止改名/新增后导航失联
+      let stray = sections.filter(function (sec) {
+        return sec.querySelector("h2") && !listed.has(sec.id);
+      });
+      if (stray.length) appendGroup("其他", stray);
       let saved = localStorage.getItem("gm-tab");
       let target =
-        links.find(function (a) {
-          return a.dataset.target === saved;
-        }) || links[0];
-      if (target) showSection(target.dataset.target);
+        saved && sections.some(function (sec) { return sec.id === saved; })
+          ? saved
+          : sections[0] && sections[0].id;
+      if (target) showSection(target);
+    }
+    function collapsedSet() {
+      let raw = localStorage.getItem("gm-group-collapsed");
+      if (raw) {
+        try {
+          return new Set(JSON.parse(raw));
+        } catch (e) { /* 损坏则回退默认 */ }
+      }
+      // 初次访问：默认全收起，仅当前板块所在组展开
+      let all = new Set();
+      document
+        .querySelectorAll("#gm-nav .grp")
+        .forEach(function (b) {
+          all.add(b.dataset.group);
+        });
+      return all;
+    }
+    function saveCollapsed(set) {
+      localStorage.setItem(
+        "gm-group-collapsed",
+        JSON.stringify(Array.from(set))
+      );
+    }
+    function toggleGroup(name) {
+      let set = collapsedSet();
+      if (set.has(name)) set.delete(name);
+      else set.add(name);
+      saveCollapsed(set);
+      applyGroupStates();
+    }
+    function applyGroupStates() {
+      let active = document.querySelector("main.grid > section.active");
+      let activeGroup = active ? sectionGroup[active.id] : null;
+      let collapsed = collapsedSet();
+      document
+        .querySelectorAll("#gm-nav .grp")
+        .forEach(function (box) {
+          let name = box.dataset.group;
+          box.classList.toggle("open", !collapsed.has(name) || name === activeGroup);
+        });
     }
     function showSection(id) {
       document
@@ -1659,6 +1815,7 @@
         a.classList.toggle("active", a.dataset.target === id);
       });
       localStorage.setItem("gm-tab", id);
+      applyGroupStates();
     }
     async function loadClones() {
       cloneOptions = await (await fetch("/api/clones")).json();
@@ -1773,6 +1930,19 @@
       command({
         action: "set_gravity",
         value: +document.querySelector("#gravity").value,
+      });
+    }
+    function setFaculty() {
+      command({
+        action: "set_faculty",
+        value: +document.querySelector("#faculty-value").value,
+      });
+    }
+    function setFillSpeed() {
+      command({
+        action: "set_fill_speed",
+        base: +document.querySelector("#fill-speed-base").value,
+        multiplier: +document.querySelector("#fill-speed-multiplier").value,
       });
     }
     function spawnDummy(hp) {

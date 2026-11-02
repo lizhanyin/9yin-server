@@ -47,6 +47,7 @@ public final class NineyinServer implements SummerApp {
     private final GmHub gmHub = new GmHub();
     private RoleStoreFacade roleStore;
     private FacultyStore facultyStore;
+    private LoginFlow loginFlow;
     private SceneNpcRegistry npcRegistry;
     private ScheduledExecutorService sceneScheduler;
 
@@ -98,10 +99,10 @@ public final class NineyinServer implements SummerApp {
                 log.warn("panel data MySQL unavailable, seed values: {}", e.getMessage());
             }
         }
+        loginFlow = attachMeridianStore(new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
+                npcRegistry, sceneScheduler, inventoryStore, panelStore), dsn);
         ProtocolCustomMgr.get().setHandler(new NineyinProtocolHandler(
-                attachMeridianStore(new LoginFlow(roleStore, facultyStore, gmHub, Clock.systemDefaultZone(),
-                        npcRegistry, sceneScheduler, inventoryStore, panelStore), dsn),
-                "127.0.0.1", gamePort()));
+                loginFlow, "127.0.0.1", gamePort()));
         log.info("nineyin server initialized: root={} storage={} gmRpc=127.0.0.1:{} npcRegistry={}",
                 ServerPaths.serverRoot(), repository.getClass().getSimpleName(),
                 System.getProperty("minor.gm.port", "19081"), npcRegistry != null);
@@ -151,8 +152,21 @@ public final class NineyinServer implements SummerApp {
         log.info("nineyin server started");
     }
 
+    /**
+     * 优雅停机（Summer 停机钩子调用，此时 Netty 线程已停）：先停场景调度器避免
+     * 刷写竞态，再逐在线会话落盘（位置/内功/经脉），最后关 DB 池。注意 Summer 的
+     * Server.shutdown() 不触发在线连接 channelInactive，会话数据必须在这里显式刷。
+     */
     @Override
     public void stop() {
+        if (sceneScheduler != null) {
+            sceneScheduler.shutdownNow();
+        }
+        if (loginFlow != null) {
+            int flushed = loginFlow.shutdownFlush();
+            log.info("graceful shutdown flushed {} online session(s)", flushed);
+            loginFlow.closeStores();
+        }
         roleStore.close();
         facultyStore.close();
         log.info("nineyin server stopped");

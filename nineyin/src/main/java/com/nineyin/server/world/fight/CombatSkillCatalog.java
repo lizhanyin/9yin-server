@@ -145,6 +145,30 @@ public final class CombatSkillCatalog {
         return indexed.size();
     }
 
+    /**
+     * 个人 CD 显示值查询（View40 行 CoolDownTime）：skill_new→skill_static→
+     * 按级 varprop 的 CoolDownTime 毫秒。不走完整 compile——缺动作/伤害表的技术
+     * 也能取值。抓包实证（127-0-0-1-59719 View40 行，2026-11-02）：官方下发的
+     * CoolDownTime 与 varprop L1 CoolDownTime 17/17 全对齐（如 tjq05=15000、
+     * tjq07=40000、jysg01=2000）；skill_init.ini 的 cooldown 字段官方数据全 0，
+     * 不可作显示源（下发 0 客户端技能 CD 文本兜底显示 1s）。
+     */
+    public long personalCdMs(String id, int level) {
+        if (id == null || level < 1) {
+            return 0;
+        }
+        Section newFields = tables.skillNew.get(id);
+        if (newFields == null) {
+            return 0;
+        }
+        Section staticFields = tables.skillStatic.get(Integer.toString(newFields.int32("StaticData")));
+        if (staticFields == null) {
+            return 0;
+        }
+        Section varProp = levelVarProp(staticFields, newFields.last("script"), level);
+        return varProp == null ? 0 : varProp.int32("CoolDownTime");
+    }
+
     public int levelOneCount() {
         return levelOne.size();
     }
@@ -302,6 +326,7 @@ public final class CombatSkillCatalog {
 
         return new CombatSkill(skillId, staticData, script, level,
                 staticFields.int32("CoolDownCategory"), cooldownTeam,
+                staticFields.last("TaoLu"),
                 personalCd, publicCd,
                 consume == null ? 0 : consume.int32("AConsumeMP"),
                 consume == null ? 0 : consume.int32("AConsumeSP"),

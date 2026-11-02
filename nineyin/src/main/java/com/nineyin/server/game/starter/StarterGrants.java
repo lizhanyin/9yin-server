@@ -125,8 +125,13 @@ public final class StarterGrants {
                 .wuXingOf(skill.skillId());
         Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(
                 wuXing != 0 ? wuXing : com.nineyin.server.game.avatar.neigong.NeiGongCatalog.WUXING_TAIJI));
-        Props.addView(props, "CoolDownTime", PropertyValues.Value.ofInt32(
-                row == null ? 0 : row.coolDownMs()));
+        // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
+        // varprop 按级 CoolDownTime（官方 View40 行同源；官方 skill_init cooldown 全 0；
+        // dbSkillViewAdd 等级恒 1）。
+        long cdMs = row != null && row.coolDownMs() > 0 ? row.coolDownMs()
+                : com.nineyin.server.world.fight.CombatSkillCatalog.load()
+                        .personalCdMs(skill.skillId(), 1);
+        Props.addView(props, "CoolDownTime", PropertyValues.Value.ofInt32((int) cdMs));
         Props.addView(props, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(props, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(props, "PhyDamageMul", PropertyValues.Value.ofFloat32(1.0f));

@@ -59,7 +59,11 @@ public final class FightMessages {
 
     // ------------------------------------------------------------------ custom
 
-    /** msg337：施法者位置/朝向同步（[obj, x, y, z, orient, 0]，值取 211 请求）。 */
+    /**
+     * msg337：施法者位置/朝向同步（[obj, x, y, z, orient, 0]，值取 211 请求）。
+     * 2026-11-02 起出招不再回显（客户端会应用到本地角色，高空出招被拍回地面）；
+     * 保留 wire 格式备远程观测场景使用。
+     */
     public static byte[] casterTransformSync(int objectId, int ownerId,
                                              float x, float y, float z, float orient) {
         return CustomMessages.customIntMessage(337,

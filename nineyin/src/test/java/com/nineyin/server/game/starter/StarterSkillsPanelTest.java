@@ -9,18 +9,32 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.nineyin.server.protocol.PropertyTable;
 import com.nineyin.server.protocol.SceneMessages;
 import com.nineyin.server.protocol.WireType;
+import com.nineyin.util.ServerPaths;
 
 /**
  * 四期技能/内功属性面：skill_init 目录解析与覆盖、View40 行零值特效族、
  * View43 书行五维 Add。断言走 0x18 帧字节（u16 索引 + 官方表线型）。
  */
 class StarterSkillsPanelTest {
+
+    private static final Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
+
+    @BeforeAll
+    static void pinServerRoot() {
+        // CoolDownTime 显示源 = varprop（CombatSkillCatalog）；目录缺失时该断言跳过。
+        Assumptions.assumeTrue(Files.isDirectory(
+                GO_SERVER_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
+                "share/skill ini missing (needs Go repo resources)");
+        ServerPaths.overrideServerRoot(GO_SERVER_ROOT);
+    }
 
     @TempDir
     Path tempDir;
@@ -85,6 +99,15 @@ class StarterSkillsPanelTest {
         assertEquals(21, intValueOf(enriched, "MaxLevel"));
         assertEquals(200000, intValueOf(enriched, "TotalFillValue"));
         assertEquals(8000, intValueOf(enriched, "CoolDownTime"));
+        // 官方路径：skill_init cooldown 全 0（row=null 或 cooldown=0）→ varprop 按级 CD
+        // （抓包 59719 View40：hsqs01=2000；下发 0 会让客户端技能 CD 文本兜底显示 1s）。
+        assertEquals(2000, intValueOf(fallback, "CoolDownTime"),
+                "无目录行时 CoolDownTime 走 varprop（hsqs01 L1=2000）");
+        SkillInitTable.Row zeroCd = new SkillInitTable.Row("CS_yhwq_hsqs01", 1, 12636, 1000,
+                11, 0, 156550);
+        assertEquals(2000, intValueOf(SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, 1,
+                StarterSkills.skillRowProperties(skill, zeroCd)), "CoolDownTime"),
+                "skill_init cooldown=0 视为未设置，回落 varprop");
     }
 
     @Test

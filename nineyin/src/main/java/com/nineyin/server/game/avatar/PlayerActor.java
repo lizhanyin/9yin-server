@@ -41,8 +41,9 @@ public final class PlayerActor {
     public static final int GLIDE_POINT_COST_PER_SECOND = 10;
 
     static class Motion {
-        float moveSpeed = 25;
-        float runSpeed = 25;
+        // 默认移动/奔跑速度 5（2026-11-02 由 25 下调；25 过快，GM 面板可改）
+        float moveSpeed = 5;
+        float runSpeed = 5;
         float gravity = 9.8f;
     }
 
@@ -524,9 +525,11 @@ public final class PlayerActor {
         }
     }
 
-    /** 技能冷却（skillId → 就绪时刻）与公共 CD 门（gateKey → 就绪时刻）。 */
+    /** 技能冷却（skillId → 就绪时刻）与公共 GCD（跨套路才生效）。 */
     private final java.util.Map<String, Instant> skillCooldowns = new java.util.HashMap<>();
-    private final java.util.Map<Long, Instant> skillTeamCooldowns = new java.util.HashMap<>();
+    /** 公共 GCD 到期时刻与其发起套路：同套路只走个人 CD，切套路才付 7s（bug.txt 官方规则）。 */
+    private Instant publicCdUntil;
+    private String publicCdTaolu = "";
     private Instant skillLockUntil;
     private String currentSkillId = "";
     private String currentSkillEffectId = "";
@@ -579,14 +582,16 @@ public final class PlayerActor {
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
-    /** 当前是否战斗态（格挡闸门等）。 */
+    /** 当前是否战斗态（LogicState=Fighting）。 */
     public boolean fighting() {
         return actor.snapshot().logicState() == Actor.LOGIC_STATE_FIGHTING;
     }
 
     /**
-     * Go beginSkillUse：技能锁 → 个人 CD → 公共 CD → 死亡 → MP → SP → 轻功点，
+     * Go beginSkillUse：技能锁 → 个人 CD → 公共 GCD（跨套路）→ 死亡 → MP → SP → 轻功点，
      * 全过才扣资源、写 CD/当前技能、进 Fighting。拒绝返回原因（调用方静默记日志）。
+     * 公共 GCD 只在换套路时拦截（bug.txt「同套路不在触发公共7秒冷却，不同套路会看到
+     * 7秒CD」）——同套路连招各走各的个人 CD，cd&lt;7s 的技能不再被堆到 7s。
      */
     public synchronized SkillGate beginSkillUse(com.nineyin.server.world.fight.CombatSkill skill,
                                                 long targetKey, Instant now) {
@@ -599,11 +604,10 @@ public final class PlayerActor {
             return SkillGate.reject("personal cooldown remaining="
                     + java.time.Duration.between(now, ready).toMillis() + "ms");
         }
-        long gateKey = skill.cooldownGateKey();
-        Instant teamReady = skillTeamCooldowns.get(gateKey);
-        if (teamReady != null && now.isBefore(teamReady)) {
-            return SkillGate.reject("public cooldown team=" + gateKey + " remaining="
-                    + java.time.Duration.between(now, teamReady).toMillis() + "ms");
+        if (publicCdUntil != null && now.isBefore(publicCdUntil)
+                && !skill.taolu().equals(publicCdTaolu)) {
+            return SkillGate.reject("public cooldown (taolu switch from=" + publicCdTaolu
+                    + ") remaining=" + java.time.Duration.between(now, publicCdUntil).toMillis() + "ms");
         }
         Actor.State state = actor.snapshot();
         if (state.logicState() == Actor.LOGIC_STATE_DIED || state.hp() <= 0) {
@@ -625,7 +629,10 @@ public final class PlayerActor {
             progress.addSP(-skill.spCost());
         }
         skillCooldowns.put(skill.id(), now.plusMillis(skill.personalCdMs()));
-        skillTeamCooldowns.put(gateKey, now.plusMillis(skill.publicCdMs()));
+        // 每次出招都刷新 GCD 窗口与发起套路（62433 抓包：每招恒发个人+GCD 双行；
+        // 客户端按 team 列过滤，同套路技能不显示 7s——服务端同样只拦跨套路）。
+        publicCdUntil = now.plusMillis(skill.publicCdMs());
+        publicCdTaolu = skill.taolu();
         currentSkillId = skill.id();
         currentSkillEffectId = skill.id();
         currentSkillLevel = skill.level();

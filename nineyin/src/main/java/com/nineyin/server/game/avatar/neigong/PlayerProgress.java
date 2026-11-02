@@ -75,8 +75,16 @@ public final class PlayerProgress {
     }
 
     public record Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
-                           String facultyName, int fillSpeed, Instant lastAdvanceUtc,
-                           List<BookSnapshot> books) {
+                           String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
+                           Instant lastAdvanceUtc, List<BookSnapshot> books) {
+
+        /** 旧契约构造（快照无修速拆分层）：基础值/倍率取默认 200 × 1。 */
+        public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
+                        String facultyName, int fillSpeed, Instant lastAdvanceUtc,
+                        List<BookSnapshot> books) {
+            this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
+                    NORMAL_FACULTY_FILL_PER_MINUTE, 1.0f, lastAdvanceUtc, books);
+        }
     }
 
     static final class Attributes {
@@ -93,6 +101,10 @@ public final class PlayerProgress {
     public int facultyStyle;
     String facultyName;
     int fillSpeed;
+    /** 基础修速（FillSpeed 的拆分层一）：默认 200/min；GM set_fill_speed 可调，NorFacultyAdd@774 下发。 */
+    int fillSpeedBase = NORMAL_FACULTY_FILL_PER_MINUTE;
+    /** 修速倍率（拆分层二）：默认 1 倍；实际修速 = round(base × multiplier)（官服实证 FillSpeed=516=200×2.58）。 */
+    float fillSpeedMultiplier = 1.0f;
     Instant lastAdvance;
     final Attributes attributes = new Attributes();
 
@@ -359,10 +371,10 @@ public final class PlayerProgress {
         // 地点/道具加成后可变（F 盘实证 516）；演武为 0。客户端按值分档显示 ui_train_speed_0..5
         //（0=停止，实证 FillSpeed=0 对应停止档）。
         Props.add(properties, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed));
-        // NorFacultyAdd(774)：基准修速（普通内修每分钟 200），与加成后的 FillSpeed 分列下发；
-        // F 盘实证 FillSpeed=516 时此值恒 200。
+        // NorFacultyAdd(774)：基准修速（普通内修基础值，默认 200），与加成后的 FillSpeed 分列下发；
+        // F 盘实证 FillSpeed=516 时此值恒 200；GM set_fill_speed 调基础值后随之下发。
         Props.add(properties, "NorFacultyAdd", PropertyValues.Value.ofInt32(
-                facultyStyle == FACULTY_STYLE_ACT ? 0 : NORMAL_FACULTY_FILL_PER_MINUTE));
+                facultyStyle == FACULTY_STYLE_ACT ? 0 : fillSpeedBase));
         // PowerValue/MaxPowerValue：当前/上限功力（书行 power，如 ng_jh_201 满级 680）。
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
@@ -478,7 +490,7 @@ public final class PlayerProgress {
             saved.add(new BookSnapshot(item.configId, item.level, item.fill, item.total, item.power, item.maxPower));
         }
         return new Snapshot(curNeiGong, faculty, facultyState, facultyStyle, facultyName,
-                fillSpeed, lastAdvance, saved);
+                fillSpeed, fillSpeedBase, fillSpeedMultiplier, lastAdvance, saved);
     }
 
     // ------------------------------------------------------------------- 怒气 SP
@@ -518,6 +530,10 @@ public final class PlayerProgress {
         facultyState = value.facultyState();
         facultyStyle = value.facultyStyle() == FACULTY_STYLE_ACT ? FACULTY_STYLE_ACT : FACULTY_STYLE_NORMAL;
         fillSpeed = value.fillSpeed();
+        // 修速拆分层：旧档/异常值（base≤0、multiplier≤0）回退默认 200 × 1；fillSpeed 本身
+        // 原样恢复不打折（恢复中的普通内修态由下方 advanceFaculty 按原速追结算）。
+        fillSpeedBase = value.fillSpeedBase() > 0 ? value.fillSpeedBase() : NORMAL_FACULTY_FILL_PER_MINUTE;
+        fillSpeedMultiplier = value.fillSpeedMultiplier() > 0f ? value.fillSpeedMultiplier() : 1.0f;
         lastAdvance = value.lastAdvanceUtc();
         for (BookSnapshot saved : value.books()) {
             Book item = book(saved.configId());
@@ -572,13 +588,7 @@ public final class PlayerProgress {
             }
             faculty -= (int) cost;
             item.fill += (int) fill;
-            while (item.fill >= item.total && item.level < item.maxLevel) {
-                item.fill -= item.total;
-                item.level++;
-                item.total += 200;
-                item.maxPower += 20;
-                item.power = item.maxPower;
-            }
+            levelUpWhile(item);
             applyModernEffect(item);
             if (item.level >= item.maxLevel) {
                 item.fill = 0;
@@ -604,11 +614,11 @@ public final class PlayerProgress {
         return books.indexOf(target) + 1;
     }
 
-    /** Go facultyBegin：普通内修 200/min；演武不计每分钟（fillSpeed=0）。 */
+    /** Go facultyBegin：普通内修按 基础值×倍率（默认 200/min）；演武不计每分钟（fillSpeed=0）。 */
     public void facultyBegin(boolean actStyle, Instant now) {
         facultyState = FACULTY_STATE_CONVERT;
         facultyStyle = actStyle ? FACULTY_STYLE_ACT : FACULTY_STYLE_NORMAL;
-        fillSpeed = actStyle ? 0 : NORMAL_FACULTY_FILL_PER_MINUTE;
+        fillSpeed = actStyle ? 0 : computedFillSpeed();
         lastAdvance = now;
     }
 
@@ -638,14 +648,7 @@ public final class PlayerProgress {
         boolean levelUp = false;
         if (target.level < target.maxLevel) {
             target.fill += ACTIVE_FACULTY_CARD_REWARD;
-            while (target.fill >= target.total && target.level < target.maxLevel) {
-                target.fill -= target.total;
-                target.level++;
-                target.total += 200;
-                target.maxPower += 20;
-                target.power = target.maxPower;
-                levelUp = true;
-            }
+            levelUp = levelUpWhile(target);
             applyModernEffect(target);
         }
         boolean maxLevel = target.level >= target.maxLevel;
@@ -659,5 +662,77 @@ public final class PlayerProgress {
     public int facultyBookSlot() {
         Book target = book(facultyName);
         return target == null ? -1 : books.indexOf(target) + 1;
+    }
+
+    // ------------------------------------------------------------------ GM 修为/修速
+
+    /** 实际修速 = round(基础值 × 倍率)。GM set_fill_speed 与 facultyBegin 共用。 */
+    public int computedFillSpeed() {
+        return Math.round(fillSpeedBase * fillSpeedMultiplier);
+    }
+
+    /** GM set_faculty：直接设修炼点余额（入口已限非负；本处再钳一次防御）。 */
+    public void setFaculty(int value) {
+        faculty = Math.max(0, value);
+    }
+
+    /** GM set_fill_speed：设基础值/倍率并即时重算。返回当前实际修速。 */
+    public int setFillSpeed(int base, float multiplier) {
+        fillSpeedBase = base;
+        fillSpeedMultiplier = multiplier;
+        return reapplyFillSpeed();
+    }
+
+    /** 当前修炼书 configId（GM 回执/面板展示用；包外只读）。 */
+    public String facultyName() {
+        return facultyName;
+    }
+
+    /** GM set_fill_speed 生效入口：普通内修态即时重算 fillSpeed；停修/演武态只记住
+     * 基础值/倍率，下次 facultyBegin 生效（演武不按分钟累积，保持 0）。返回当前实际修速。 */
+    public int reapplyFillSpeed() {
+        if (facultyState == FACULTY_STATE_CONVERT && facultyStyle == FACULTY_STYLE_NORMAL) {
+            fillSpeed = computedFillSpeed();
+        }
+        return fillSpeed;
+    }
+
+    /** GM fill_current_neigong：把当前修炼书（facultyName）本层修炼度填满并结算升级；
+     * 恰好升到满级时对齐自然修炼语义（fill=0、停修）。返回约定同 awardActiveFaculty：
+     * [槽位(1 基,-1 无书), 是否发放, 是否升级, 是否满级]。 */
+    public int[] fillCurrentFaculty() {
+        Book target = book(facultyName);
+        if (target == null) {
+            return new int[]{-1, 0, 0, 0};
+        }
+        int slot = books.indexOf(target) + 1;
+        if (target.level >= target.maxLevel) {
+            return new int[]{slot, 0, 0, 1};
+        }
+        target.fill = target.total;
+        boolean levelUp = levelUpWhile(target);
+        applyModernEffect(target);
+        boolean maxLevel = target.level >= target.maxLevel;
+        if (maxLevel) {
+            target.fill = 0;
+            facultyState = FACULTY_STATE_NONE;
+            fillSpeed = 0;
+        }
+        return new int[]{slot, 1, levelUp ? 1 : 0, maxLevel ? 1 : 0};
+    }
+
+    /** 升级循环（advanceFaculty/awardActiveFaculty/fillCurrentFaculty 共用）：
+     * 修炼度攒满本层总量即升一层——total +200、maxPower +20、power 顶满。返回是否升层。 */
+    private static boolean levelUpWhile(Book item) {
+        boolean levelUp = false;
+        while (item.fill >= item.total && item.level < item.maxLevel) {
+            item.fill -= item.total;
+            item.level++;
+            item.total += 200;
+            item.maxPower += 20;
+            item.power = item.maxPower;
+            levelUp = true;
+        }
+        return levelUp;
     }
 }

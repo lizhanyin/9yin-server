@@ -30,6 +30,8 @@ public final class GmHub {
         public String lastAction = "";
         public Integer guanYin;
         public Integer gold;
+        /** 修炼点余额（Faculty@798，GM set_faculty 后随快照带出；null=未采集）。 */
+        public Integer faculty;
         public long updatedAtMs;
     }
 

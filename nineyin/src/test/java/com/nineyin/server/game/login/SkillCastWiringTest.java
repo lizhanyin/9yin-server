@@ -165,14 +165,15 @@ class SkillCastWiringTest {
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session, writer.toBytes()));
 
         List<byte[]> replies = wiring.drain();
-        // 即时帧 5 张：CD 行 + active_skill_rec + GCD 行 + 玩家全量 0x10 + msg20
-        // （337 坐标回显已停发；本环境无 View40 行号故无 CanUse 帧；命中挂调度不即时）
-        assertEquals(5, replies.size(), "cast frames emitted via LoginFlow dispatch");
+        // 即时帧 6 张：CD 行 + active_skill_rec + GCD 行 + 玩家全量 0x10 + 337 + msg20
+        // （本环境无 View40 行号故无 CanUse 帧；命中挂调度不即时）
+        assertEquals(6, replies.size(), "cast frames emitted via LoginFlow dispatch");
         assertEquals(0x11, replies.get(0)[0] & 0xFF);
         assertEquals(0x11, replies.get(1)[0] & 0xFF);
         assertEquals(0x11, replies.get(2)[0] & 0xFF);
         assertEquals(0x10, replies.get(3)[0] & 0xFF);
-        assertEquals(0x1E, replies.get(4)[0] & 0xFF, "msg20 技能动作帧");
+        assertEquals(0x1E, replies.get(4)[0] & 0xFF, "msg337 施法者位置回显");
+        assertEquals(0x1E, replies.get(5)[0] & 0xFF, "msg20 技能动作帧");
     }
 
     @Test

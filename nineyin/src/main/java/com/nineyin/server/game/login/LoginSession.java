@@ -28,6 +28,8 @@ public final class LoginSession {
     /** 个性配置：ClientReady 是否已尝试推送存档 / 会话是否已见过一次上传。 */
     boolean customizingPushed;
     boolean customizingSeenUpload;
+    /** 键位映射：post-spawn 是否已尝试推送存档（ShortcutKey 属性帧）。 */
+    boolean keybindPushed;
     /** 二期 NPC：场景目录/活跃下标集/生命周期；lastPositionSave 是 2s 节流基准。 */
     SceneLifecycle world;
     List<NpcSpawn> sceneNpcs = List.of();

@@ -136,6 +136,14 @@ public class GmRemote {
                 yield floatRange(params, "multiplier", 0.1f, 100f, "multiplier");
             }
             case "fill_current_neigong" -> null;
+            // 历练层：发历练（1..999 点）+ 潜能修为直设 + 转化速度加成 %。
+            case "add_livepoint" -> intRange(params, "points", 1, 999);
+            case "set_hold_faculty" -> nonNegative(params, "value");
+            case "set_live_speed_power" -> intRange(params, "value", 0, 1000);
+            // 演武碎银每日上限（两，0=不限制）+ 团练疲劳清除/剩余抵扣直设。
+            case "set_act_day_limit" -> intRange(params, "value", 0, 999_999);
+            case "clear_team_fatigue" -> null;
+            case "set_team_faculty_last" -> nonNegative(params, "value");
             // 四期面板动作（LoginFlow.applyGmCommand 已实现，此前漏挂白名单——
             // 面板按钮一直被入口拒绝，补齐透传；数值域由游戏侧分支自校验）。
             case "set_power_level" -> nonNegative(params, "value");

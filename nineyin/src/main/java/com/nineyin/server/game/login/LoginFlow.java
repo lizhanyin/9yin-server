@@ -362,6 +362,19 @@ public final class LoginFlow {
         }
     }
 
+    /** 键位主串（role_keybinds.bind_value）；库缺席/无行回 null（客户端保持默认 QWES）。 */
+    private String loadKeybind(LoginSession session) {
+        if (inventoryStore == null || session.selected == null) {
+            return null;
+        }
+        try {
+            return inventoryStore.keybind(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load keybind: {}", session.machine.id(), e.getMessage());
+            return null;
+        }
+    }
+
     private List<RoleInventoryStore.Equip> loadEquips(LoginSession session) {
         if (inventoryStore == null || session.selected == null
                 || !inventoryStore.hasRoleData(session.selected.id())) {
@@ -518,6 +531,14 @@ public final class LoginFlow {
             case "set_faculty" -> applyFacultyValue(connection, session, command);
             case "set_fill_speed" -> applyFillSpeed(connection, session, command);
             case "fill_current_neigong" -> applyFillNeigong(connection, session, command);
+            // 历练层：发历练/潜能修为直设/转化速度加成（LiveGroove/HoldFaculty/LiveSpeedPower）。
+            case "add_livepoint" -> applyAddLivepoint(connection, session, command);
+            case "set_hold_faculty" -> applyHoldFaculty(connection, session, command);
+            case "set_live_speed_power" -> applyLiveSpeedPower(connection, session, command);
+            // 演武碎银额度（GM 可设上限或不限制）+ 团练疲劳（清除/剩余抵扣直设）。
+            case "set_act_day_limit" -> applyActDayLimit(connection, session, command);
+            case "clear_team_fatigue" -> applyClearTeamFatigue(connection, session, command);
+            case "set_team_faculty_last" -> applyTeamFacultyLast(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -600,6 +621,116 @@ public final class LoginFlow {
         command.succeed(action);
         log.info("session={} GM set_fill_speed base={} multiplier={} -> {}",
                 session.machine.id(), base, multiplier, fillSpeed);
+    }
+
+    /**
+     * GM add_livepoint：发 N 点历练（×1000 毫按序填槽，槽满溢出丢弃）。改值 →
+     * 0x10 全量（LiveGroove_1..5 随帧）→ 快照落库。
+     */
+    private void applyAddLivepoint(Connection connection, LoginSession session, GmCommand command) {
+        Integer points = command.intParam("points");
+        if (points == null || points < 1 || points > 999) {
+            command.fail("历练点数 points 必须在 1 至 999 之间");
+            return;
+        }
+        var progress = session.player.progress();
+        int added = progress.addLivepoint(points);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "发放历练 %d 点（入槽 %d 毫历练）",
+                points, added);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM add_livepoint points={} addedMillis={}",
+                session.machine.id(), points, added);
+    }
+
+    /** GM set_hold_faculty：潜能修为直设（HoldFaculty@800；0x10 全量随帧 + 快照落库）。 */
+    private void applyHoldFaculty(Connection connection, LoginSession session, GmCommand command) {
+        Integer value = command.intParam("value");
+        if (value == null || value < 0) {
+            command.fail("潜能修为必须非负");
+            return;
+        }
+        var progress = session.player.progress();
+        progress.setHoldFaculty(value);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "潜能修为设为 %d", value);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_hold_faculty value={}", session.machine.id(), value);
+    }
+
+    /** GM set_live_speed_power：历练转化速度加成 %（LiveSpeedPower@809，卦象效果等价物）。 */
+    private void applyLiveSpeedPower(Connection connection, LoginSession session, GmCommand command) {
+        Integer value = command.intParam("value");
+        if (value == null || value < 0 || value > 1000) {
+            command.fail("转化加成 value 必须在 0 至 1000 之间");
+            return;
+        }
+        var progress = session.player.progress();
+        progress.setLiveSpeedPower(value);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "历练转化加成设为 %d%%", value);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_live_speed_power value={}", session.machine.id(), value);
+    }
+
+    /**
+     * GM set_act_day_limit：演武每日碎银上限（两）。≤0 = 不限制（ActDayValueMax=0，
+     * 客户端演武页两标签显示"不限制"）；>0 = 有限额（超限打卡静默拒绝）。
+     * 重设即重置今日已耗/已用（ActCostSuiYin/ActDayValueUsed 归零）。
+     */
+    private void applyActDayLimit(Connection connection, LoginSession session, GmCommand command) {
+        Integer liang = command.intParam("value");
+        if (liang == null || liang < 0 || liang > 999_999) {
+            command.fail("每日上限 value 必须在 0 至 999999 两之间（0 = 不限制）");
+            return;
+        }
+        var progress = session.player.progress();
+        int applied = progress.setActDayLimit(liang);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = applied > 0
+                ? String.format(java.util.Locale.ROOT, "演武每日碎银上限设为 %d 两", applied)
+                : "演武碎银改为不限制";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_act_day_limit liang={} appliedMillis={}",
+                session.machine.id(), liang, progress.actDayValueMax());
+    }
+
+    /** GM clear_team_fatigue：清团练疲劳（TeamFacultyValue=0，客户端剩余精力恢复 100%）。 */
+    private void applyClearTeamFatigue(Connection connection, LoginSession session, GmCommand command) {
+        var progress = session.player.progress();
+        int wasValue = progress.teamFacultyValue();
+        progress.clearTeamFacultyFatigue();
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "团练疲劳已清零（原消耗值 %d/80000）", wasValue);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM clear_team_fatigue was={}", session.machine.id(), wasValue);
+    }
+
+    /** GM set_team_faculty_last：团练剩余可抵扣修炼度直设（TeamFacultyLast@778）。 */
+    private void applyTeamFacultyLast(Connection connection, LoginSession session, GmCommand command) {
+        Integer value = command.intParam("value");
+        if (value == null || value < 0) {
+            command.fail("剩余抵扣修炼度必须非负");
+            return;
+        }
+        var progress = session.player.progress();
+        progress.setTeamFacultyLast(value);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT, "团练剩余抵扣修炼度设为 %d", value);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_team_faculty_last value={}", session.machine.id(), value);
     }
 
     /**
@@ -1028,6 +1159,12 @@ public final class LoginFlow {
             // 无存档不发（客户端保持默认并上传，首个 107 即建立基线）。
             pushSavedCustomizing(connection, session);
         }
+        if (session.player != null && !session.keybindPushed) {
+            // 键位映射（role_keybinds.bind_value，"1,87;2,83;…"=W/S/A/D）：post-spawn
+            // 以玩家属性 ShortcutKey（0x09 表索引 198，type7 string）下发——不发则
+            // 客户端恒为默认 QWES 映射，切 WASD 重登即丢（参考端 641B 同款帧）。
+            pushSavedKeybind(connection, session);
+        }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
             StarterGrants.enableSkillActionSwitch(connection);
@@ -1112,12 +1249,12 @@ public final class LoginFlow {
         return true;
     }
 
-    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}+150 经脉；已实现 215/1006/54/211/431/150/216。 */
+    /** Go 白名单 {200,201,240,211,215,216,217,218,1006}+150 经脉+235 历练；已实现 215/1006/235/54/211/431/150/216。 */
     private void dispatchCustom(Connection connection, LoginSession session,
                                 CustomC2S.Message custom, String route) {
         int messageId = custom.messageId();
         switch (messageId) {
-            case 215, 1006 -> {
+            case 215, 1006, 235 -> {
                 try {
                     FacultyCustomHandler.handle(connection, session.player, custom);
                 } catch (RuntimeException e) {
@@ -1409,11 +1546,29 @@ public final class LoginFlow {
             return;
         }
         int[] tick = session.player.facultyTick(clock.instant());
-        if (tick[1] == 0) {
+        boolean advanced = tick[1] != 0;
+        if (advanced) {
+            if (tick[0] > 0) {
+                connection.writeFrame(session.player.progress().bookFrame(tick[0]));
+            }
+            connection.writeFrame(session.player.vitalUpdate());
+            persistFaculty(session);
+        }
+        livepointTickOnce(connection, session);
+    }
+
+    /**
+     * 历练层 100 秒步进（facultyTickOnce 同拍）：累积 +1 历练/100s 进槽、按槽速转化产修为
+     * （普通档 70% + 30% 潜能）。有变化才 [0x10 vital]（LiveGroove/Faculty/HoldFaculty 随帧）
+     * + 持久化；静默秒零帧。
+     */
+    void livepointTickOnce(Connection connection, LoginSession session) {
+        if (session.player == null || session.selected == null) {
             return;
         }
-        if (tick[0] > 0) {
-            connection.writeFrame(session.player.progress().bookFrame(tick[0]));
+        var progress = session.player.progress();
+        if (!progress.livepointTick(clock.instant(), progress.livepointVip())) {
+            return;
         }
         connection.writeFrame(session.player.vitalUpdate());
         persistFaculty(session);
@@ -1468,6 +1623,34 @@ public final class LoginFlow {
     /** 个性配置下行通道（52795 抓包钉死）：S2C 705 = on_parser_customizing(configStr)。 */
     static byte[] customizingFrame(String config) {
         return CustomMessages.customIntMessage(705, CustomMessages.Value.ofString(config));
+    }
+
+    /**
+     * 键位映射下行帧（参考端 60310 抓包 frame 逐字节范本）：0x10 单属性帧，
+     * 玩家对象 + 属性 ShortcutKey（索引 198，type7）。线上串 = bind + " "，
+     * STRING 编码 u32(len+1)=643 + 字节 + NUL，与抓包完全一致。
+     */
+    static byte[] keybindFrame(String bindValue) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "ShortcutKey",
+                PropertyValues.Value.ofString(bindValue + " "));
+        return SceneMessages.objectProperties(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /** post-spawn 推送存档键位映射（无存档零帧；客户端保持默认 QWES）。 */
+    void pushSavedKeybind(Connection connection, LoginSession session) {
+        session.keybindPushed = true;
+        if (session.selected == null) {
+            return;
+        }
+        String bind = loadKeybind(session);
+        if (bind == null || bind.isEmpty()) {
+            return;
+        }
+        connection.writeFrame(keybindFrame(bind));
+        log.info("session={} pushed saved keybind {} bytes (ShortcutKey idx=198)",
+                session.machine.id(), bind.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
     }
 
     /** ClientReady 推送存档的个性配置（无存档零帧；客户端保持默认并自行上传基线）。 */

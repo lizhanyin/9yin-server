@@ -79,6 +79,11 @@ public final class FacultyStore {
         if (lastAdvanceText != null && !lastAdvanceText.isEmpty()) {
             lastAdvance = Instant.parse(lastAdvanceText);
         }
+        Instant lastLivepoint = null;
+        String lastLivepointText = node.getString("last_livepoint_utc");
+        if (lastLivepointText != null && !lastLivepointText.isEmpty()) {
+            lastLivepoint = Instant.parse(lastLivepointText);
+        }
         return new PlayerProgress.Snapshot(
                 node.getString("cur_neigong"),
                 node.getIntValue("faculty"),
@@ -89,7 +94,22 @@ public final class FacultyStore {
                 node.getIntValue("fill_speed_base"),
                 node.getFloatValue("fill_speed_multiplier"),
                 lastAdvance,
-                books);
+                books,
+                node.getIntValue("live_groove_1"),
+                node.getIntValue("live_groove_2"),
+                node.getIntValue("live_groove_3"),
+                node.getIntValue("live_groove_4"),
+                node.getIntValue("live_groove_5"),
+                node.getIntValue("hold_faculty"),
+                node.getIntValue("live_speed_power"),
+                lastLivepoint,
+                node.getIntValue("act_day_value"),
+                node.getIntValue("act_cost_suiyin"),
+                node.getIntValue("act_day_value_max"),
+                node.getIntValue("act_day_value_used"),
+                node.getIntValue("act_day_value_last"),
+                node.getIntValue("team_faculty_value"),
+                node.getIntValue("team_faculty_last"));
     }
 
     /** Go 风格 DSN（user:pass@tcp(host:port)/db）→ 独立小池；失败仅告警（JSON 仍可用）。 */
@@ -241,6 +261,23 @@ public final class FacultyStore {
         node.field("fill_speed_base", snapshot.fillSpeedBase());
         node.floatField("fill_speed_multiplier", snapshot.fillSpeedMultiplier());
         node.field("last_advance_utc", formatInstant(snapshot.lastAdvanceUtc()));
+        // 历练层（LiveGroove/HoldFaculty/LiveSpeedPower）：旧档缺省时 restore 回退 0 × 基准 now。
+        node.field("live_groove_1", snapshot.liveGroove1());
+        node.field("live_groove_2", snapshot.liveGroove2());
+        node.field("live_groove_3", snapshot.liveGroove3());
+        node.field("live_groove_4", snapshot.liveGroove4());
+        node.field("live_groove_5", snapshot.liveGroove5());
+        node.field("hold_faculty", snapshot.holdFaculty());
+        node.field("live_speed_power", snapshot.liveSpeedPower());
+        node.field("last_livepoint_utc", formatInstant(snapshot.lastLivepointUtc()));
+        // 演武碎银额度层 + 团练疲劳层（旧档缺省时 restore 回退新建默认/0）。
+        node.field("act_day_value", snapshot.actDayValue());
+        node.field("act_cost_suiyin", snapshot.actCostSuiYin());
+        node.field("act_day_value_max", snapshot.actDayValueMax());
+        node.field("act_day_value_used", snapshot.actDayValueUsed());
+        node.field("act_day_value_last", snapshot.actDayValueLast());
+        node.field("team_faculty_value", snapshot.teamFacultyValue());
+        node.field("team_faculty_last", snapshot.teamFacultyLast());
         List<String> books = new ArrayList<>();
         for (PlayerProgress.BookSnapshot book : snapshot.books()) {
             GoJson.Object bookNode = new GoJson.Object();

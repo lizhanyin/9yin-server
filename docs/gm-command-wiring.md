@@ -93,16 +93,18 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 
 | 帧 | 构造 | 时机 |
 | --- | --- | --- |
-| 0x10 全量对象属性 | `player.vitalUpdate()`（含 progress.properties：Faculty/State/Style/Name/Place/Fill/Total/Level/FillSpeed/NorFacultyAdd/Power…） | 每次 GM 修改/内修操作后 |
+| 0x10 全量对象属性 | `player.vitalUpdate()`（含 progress.properties：Faculty/State/Style/Name/Place/Fill/Total/Level/FillSpeed/NorFacultyAdd/LiveGroove 族/HoldFaculty/TeamFaculty 族/ActDayValue 族…） | 每次 GM 修改/内修操作后 |
 | 0x18 View43 书行 | `progress.bookFrame(slot)`（16 属性；**Level 是 byte，视图域 1465，勿用 CurLevel 索引**） | 升级/选书/ticker 变化时，**先 0x18 后 0x10**（面板先重读等级） |
 | 0x1E msg191 | `FacultyCustomHandler.facultyMessage(sub, arg2)`：14=升级（arg2=满级标记）/ 22=演武开始 / 23=退出 / 24=续开卡 | 升级必发 14；演武链 22→(14)→23，绝不出 24 |
 
-## 5. 动作清单（2026-11-02）
+## 5. 动作清单（2026-11-03）
 
-已实现（白名单+case 双接线，18 个）：
+已实现（白名单+case 双接线，24 个）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
 reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, wear_title,
-cancel_title, set_faculty, set_fill_speed, fill_current_neigong`
+cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
+add_livepoint, set_hold_faculty, set_live_speed_power,
+set_act_day_limit, clear_team_fatigue, set_team_faculty_last`
 
 修为三动作参数：
 
@@ -111,6 +113,21 @@ cancel_title, set_faculty, set_fill_speed, fill_current_neigong`
 | `set_faculty` | `value` 0..2e9 | role_faculty 快照 |
 | `set_fill_speed` | `base` 1..1e6 + `multiplier` 0.1..100（float） | role_faculty 快照 |
 | `fill_current_neigong` | 无参（当前修炼书本层填满，升一层） | role_faculty 快照 |
+
+演武碎银/团练疲劳三动作（2026-11-03）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_act_day_limit` | `value` 0..999999 两（**0=不限制**；重设即清今日已耗/已用） | role_faculty 快照 |
+| `clear_team_fatigue` | 无参（TeamFacultyValue 归零，客户端剩余精力恢复 100%） | role_faculty 快照 |
+| `set_team_faculty_last` | `value` ≥0（团练剩余可抵扣修炼度 TeamFacultyLast） | role_faculty 快照 |
+
+演武碎银链（客户端语义 lua 钉死）：主面板"可用碎银" = (ActDayValue−ActCostSuiYin)/1000 两
+（毫单位）；演武页两标签依赖 switch 2812（本服不推 → 恒显"不限制"）。打卡 1006/23 pay=1
+按 `faculty/actfacultyinfo.ini` 卡基价（**文**，原值勿乘 1000——乘错会导致碎银余额判不足全部静默拒绝）扣 CapitalType1 并入账
+ActCostSuiYin/ActDayValueUsed；有限额（max>0）超限或碎银不足 → 静默拒绝（零帧零变更）；
+pay=2/4（官银/银票）本服未建档，暂免扣只发奖。团练疲劳 = TeamFacultyValue（0..80000，
+faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100/80000 反算剩余精力%。
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
 `learn_all_neigong, learn_all_taolu, forget_all_taolu, grant_all_cards, unequip_card,
@@ -123,6 +140,7 @@ set_weather, popup_gm_panel, recast_*, gm_generate_*, story, custom_probe, keybi
 - 回环门禁：`nineyin/src/test/java/com/nineyin/server/gm/GmRemoteRoundTripTest.java`
   ——进程内起真实 summer（main+minor.gm），**Summer.hot 整个 JVM 只允许一次**，
   所有断言必须合在单个测试方法内；consumer 线程 tryPop + succeed 模拟游戏侧回执。
-- 分发单测：`LoginFlowGmCommandTest`；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分）。
+- 分发单测：`LoginFlowGmCommandTest`；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分）；
+  演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）。
 - 已知存量失败 7 个（View40 CD 显示修复遗留，与 GM 链路无关）：PlayerActorGoldenTest 2、
   LoginFlowTest 1、SkillCastHandlerFlowTest 3、RoleInventoryStoreIntegrationTest 1（需 MySQL）。

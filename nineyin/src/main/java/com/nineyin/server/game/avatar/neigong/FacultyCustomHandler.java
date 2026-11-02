@@ -25,6 +25,16 @@ public final class FacultyCustomHandler {
     public static final int FACULTY_MSG = 1006;
     /** Go S2CFacultyMessage。 */
     public static final int S2C_FACULTY_MESSAGE = 191;
+    /** 客户端 CLIENT_CUSTOMMSG_LIVEPOINT_INFO（client_custom_define.lua:145）：历练/潜能赎回。 */
+    public static final int LIVEPOINT_INFO = 235;
+    /** 潜能修为赎回价：N 黄金 → N×price 潜能修为转正式修为（-Dnineyin.livepoint.price 可配）。 */
+    public static final int HOLD_FACULTY_PRICE =
+            Integer.getInteger("nineyin.livepoint.price", 500);
+
+    // custom 235 子命令（form_holdfaculty_buy.lua:4-8）。
+    static final int LIVEPOINT_SUB_GETINFO = 1;
+    static final int LIVEPOINT_SUB_BUY = 2;
+    static final int LIVEPOINT_SUB_EXCHANGE = 3;
 
     // msg191 子命令（Go player_progress.go 调用点）；SUB_LEVEL_UP 供 LoginFlow GM 填满回执复用。
     static final int SUB_ACT_BEGIN = 22;
@@ -43,7 +53,7 @@ public final class FacultyCustomHandler {
     }
 
     public static boolean handles(int messageId) {
-        return messageId == USE_NEIGONG || messageId == FACULTY_MSG;
+        return messageId == USE_NEIGONG || messageId == FACULTY_MSG || messageId == LIVEPOINT_INFO;
     }
 
     public static void handle(Connection connection, PlayerActor player, CustomC2S.Message message) {
@@ -60,6 +70,10 @@ public final class FacultyCustomHandler {
             equipNeiGong(connection, player, values);
             return;
         }
+        if (messageId == LIVEPOINT_INFO) {
+            handleLivepoint(connection, player, values);
+            return;
+        }
         if (values.size() < 2 || values.get(1).tag != 2) {
             throw new IllegalStateException("1006 without int subcommand");
         }
@@ -74,6 +88,46 @@ public final class FacultyCustomHandler {
             case 31, 32 -> connection.writeFrame(player.vitalUpdate()); // 经脉：受理不伪造业务
             default -> throw new IllegalStateException("unknown 1006 subcommand " + sub);
         }
+    }
+
+    /**
+     * 235（历练/潜能赎回，custom_holdfaculty_msg）：sub1=GETINFO 回赎回价；
+     * sub2=BUY count 花黄金赎回潜能修为（count ≤ 黄金且 count×price ≤ 潜能，越界静默防刷）；
+     * sub3=修为兑换（form_faculty_exchange，一期受理不实现）。成功回 [CapitalType0 帧, 0x10]。
+     */
+    private static void handleLivepoint(Connection connection, PlayerActor player,
+                                        List<CustomC2S.Value> values) {
+        if (values.size() < 2 || values.get(1).tag != 2) {
+            throw new IllegalStateException("235 without int subcommand");
+        }
+        int sub = values.get(1).exactInt32();
+        switch (sub) {
+            case LIVEPOINT_SUB_GETINFO -> connection.writeFrame(CustomMessages.customIntMessage(
+                    LIVEPOINT_INFO,
+                    CustomMessages.Value.ofInt32(LIVEPOINT_SUB_GETINFO),
+                    CustomMessages.Value.ofInt32(HOLD_FACULTY_PRICE)));
+            case LIVEPOINT_SUB_BUY -> buyHoldFaculty(connection, player, values);
+            case LIVEPOINT_SUB_EXCHANGE -> { /* 修为兑换：受理不实现（后续接 form_faculty_exchange） */ }
+            default -> throw new IllegalStateException("unknown 235 subcommand " + sub);
+        }
+    }
+
+    /** 235/2：N 黄金 → N×price 潜能修为转正式修为（form_holdfaculty_buy.lua 客户端同校验）。 */
+    private static void buyHoldFaculty(Connection connection, PlayerActor player,
+                                       List<CustomC2S.Value> values) {
+        if (values.size() < 3 || values.get(2).tag != 2) {
+            throw new IllegalStateException("235/2 without int count");
+        }
+        int count = values.get(2).exactInt32();
+        long price = HOLD_FACULTY_PRICE;
+        long amount = (long) count * price;
+        if (count <= 0 || count > player.gold() || amount > player.progress().holdFaculty()) {
+            return; // 越界静默（客户端同校验，双保险防刷）
+        }
+        connection.writeFrame(player.setGold(player.gold() - count));
+        player.progress().setHoldFaculty((int) (player.progress().holdFaculty() - amount));
+        player.progress().addFaculty((int) amount);
+        connection.writeFrame(player.vitalUpdate());
     }
 
     /** 215：V1=ConfigID；未学会/缺失 → 断连。回 [0x10]。 */
@@ -116,7 +170,10 @@ public final class FacultyCustomHandler {
         connection.writeFrame(player.vitalUpdate());
     }
 
-    /** 1006/23 演武卡：card∈[0,2] pay∈{1,2,4} 否则静默；陈旧请求也吞。 */
+    /** 1006/23 演武卡：card∈[0,2] pay∈{1,2,4} 否则静默；陈旧请求也吞。
+     * 碎银支付（pay=1）按 actfacultyinfo.ini 卡基价（文）扣 CapitalType1 并入账今日额度
+     * （ActCostSuiYin/ActDayValueUsed 随 0x10 下发；有限额模式超限静默拒绝）；
+     * 官银（2）/银票（4）本服未建档，暂免扣只发奖。 */
     private static void actPay(Connection connection, PlayerActor player,
                                List<CustomC2S.Value> values) {
         if (values.size() < 4) {
@@ -127,7 +184,23 @@ public final class FacultyCustomHandler {
         if (card < 0 || card > 2 || (payment != 1 && payment != 2 && payment != 4)) {
             return;
         }
+        if (player.progress().facultyBookSlot() <= 0) {
+            return; // 无修炼书：陈旧请求，吞掉
+        }
+        int costWen = 0;
+        if (payment == 1) {
+            costWen = ActFacultyCatalog.load().cardBaseWen(
+                    player.progress().facultyName(), player.progress().actBookLevel(), card);
+            if (player.silver() < costWen
+                    || !player.progress().tryChargeActSuiYin(costWen)) {
+                return; // 碎银不足/超每日上限：静默拒绝
+            }
+        }
         int[] award = player.progress().awardActiveFaculty();
+        if (payment == 1 && costWen > 0) {
+            player.setSilver(player.silver() - costWen);
+            connection.writeFrame(player.silverUpdate());
+        }
         if (award[1] == 1) {
             // 书帧先行：面板在表单打开期间需重读等级。
             connection.writeFrame(player.progress().bookFrame(award[0]));

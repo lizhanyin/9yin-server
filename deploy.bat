@@ -178,7 +178,7 @@ for %%f in ("build\nineyin-gm-*.jar") do set "SRC_GM=%%~nxf"
 copy /y "build\%SRC_GM%" "%SERVER_ROOT%\" >nul
 rem 启动脚本镜像为仓库双进程版（游戏服 + gm-web 面板），旧份带时间戳备份
 if exist "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" (
-    copy /y "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" "%SERVER_ROOT%\启动本地九阴服务-Java版.bat.bak-%TS%" >nul
+    rem copy /y "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" "%SERVER_ROOT%\启动本地九阴服务-Java版.bat.bak-%TS%" >nul
 )
 copy /y "%~dp0启动本地九阴服务.bat" "%SERVER_ROOT%\启动本地九阴服务-Java版.bat" >nul
 if errorlevel 1 (

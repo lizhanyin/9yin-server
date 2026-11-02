@@ -716,7 +716,10 @@ public final class PlayerActor {
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
-    /** 出招收尾 stand 复位帧（0x10 State，idx19 官方表按名解析）。 */
+    /**
+     * 出招收尾 stand 复位帧（0x10 State，idx19 官方表按名解析）。
+     * 2026-11-02 起出招收尾停发（空中出招被强制贴地）；保留 wire 格式备用。
+     */
     public byte[] standStateFrame() {
         List<PropertyValues.Indexed> properties = new ArrayList<>(1);
         Props.add(properties, "State", PropertyValues.Value.ofString("stand"));

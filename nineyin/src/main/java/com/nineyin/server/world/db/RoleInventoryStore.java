@@ -238,6 +238,28 @@ public final class RoleInventoryStore implements AutoCloseable {
     }
 
     /**
+     * 键位主串（role_keybinds.bind_value，官服键位映射 "1,87;2,83;3,65;4,68;…"，87/83/65/68
+     * = W/S/A/D）。登录 post-spawn 以玩家属性 ShortcutKey（0x09 表索引 198，type7 string）
+     * 下发；不下发则客户端恒为默认 QWES 映射。无行/空串返回 null。
+     */
+    public String keybind(long roleId) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT bind_value FROM role_keybinds WHERE role_id = ?")) {
+            statement.setLong(1, roleId);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return null;
+                }
+                String value = result.getString(1);
+                return value == null || value.isEmpty() ? null : value;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("keybind: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 快捷栏设置持久化（C2S 200 set_shortcut）：同 shortcut_index 原位更新
      * （主键是 (role_id, seq)，先按 index 定位 seq，无则追加 seq=max+1）。
      */

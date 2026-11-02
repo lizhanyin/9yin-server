@@ -391,14 +391,17 @@ class FacultyProgressTest {
     }
 
     @Test
-    void norFacultyAddFollowsBaseAndZeroInActStyle() {
+    void norFacultyAddFollowsBaseAndKeepsBaseInActStyle() {
         try (Env env = new Env()) {
             PlayerProgress progress = env.player.progress();
             progress.setFillSpeed(500, 2.0f);
             assertEquals(500, intProp(progress, "NorFacultyAdd"));
             assertEquals(1000, intProp(progress, "FillSpeed"));
             progress.facultyBegin(true, NOW);
-            assertEquals(0, intProp(progress, "NorFacultyAdd"), "演武态基准修速发 0");
+            // 2026-11-03 对齐 F 抓包 #2194（演武帧 NorFacultyAdd 恒 200=基础值）：
+            // 基准修速不再随演武置 0，仅 FillSpeed 归 0（面板显示"停止"档）。
+            assertEquals(500, intProp(progress, "NorFacultyAdd"), "演武态基准修速仍发基础值");
+            assertEquals(0, intProp(progress, "FillSpeed"), "演武态实际修速归 0");
         }
     }
 

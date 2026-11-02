@@ -90,15 +90,14 @@ public final class CustomizingStore {
         this.database = new com.zaxxer.hikari.HikariDataSource(config);
         try (java.sql.Connection connection = database.getConnection();
              java.sql.Statement statement = connection.createStatement()) {
+            // 列名 customizing_value 对齐存量表（F 数据同步结构，3306/3307 实测一致）；
+            // 早于此处的历史版本曾用列名 config，与存量表分叉后 DB 读写全部静默失败。
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS role_customizing ("
                     + "role_id BIGINT UNSIGNED NOT NULL,"
-                    + "config VARBINARY(65535) NOT NULL,"
-                    + "version BIGINT UNSIGNED NOT NULL DEFAULT 1,"
+                    + "customizing_value VARBINARY(65535) NOT NULL,"
                     + "updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
                     + " ON UPDATE CURRENT_TIMESTAMP(6),"
-                    + "PRIMARY KEY (role_id),"
-                    + "CONSTRAINT fk_customizing_role FOREIGN KEY (role_id)"
-                    + " REFERENCES roles (role_id) ON DELETE CASCADE"
+                    + "PRIMARY KEY (role_id)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         } catch (Exception e) {
             // 建表失败不阻断：JSON 主档仍可用（权威建表走 admin/sql 升级脚本）。
@@ -128,7 +127,7 @@ public final class CustomizingStore {
         }
         try (java.sql.Connection connection = database.getConnection();
              java.sql.PreparedStatement statement = connection.prepareStatement(
-                     "SELECT config FROM role_customizing WHERE role_id = ?")) {
+                     "SELECT customizing_value FROM role_customizing WHERE role_id = ?")) {
             statement.setLong(1, roleId);
             try (java.sql.ResultSet result = statement.executeQuery()) {
                 if (!result.next()) {
@@ -177,10 +176,10 @@ public final class CustomizingStore {
         }
         try (java.sql.Connection connection = database.getConnection();
              java.sql.PreparedStatement statement = connection.prepareStatement(
-                     "INSERT INTO role_customizing (role_id, config, version, updated_at) "
-                             + "VALUES (?, ?, 1, UTC_TIMESTAMP(6)) "
-                             + "ON DUPLICATE KEY UPDATE config = VALUES(config), "
-                             + "version = version + 1, updated_at = UTC_TIMESTAMP(6)")) {
+                     "INSERT INTO role_customizing (role_id, customizing_value, updated_at) "
+                             + "VALUES (?, ?, UTC_TIMESTAMP(6)) "
+                             + "ON DUPLICATE KEY UPDATE customizing_value = VALUES(customizing_value), "
+                             + "updated_at = UTC_TIMESTAMP(6)")) {
             statement.setLong(1, roleId);
             statement.setBytes(2, config.getBytes(StandardCharsets.UTF_8));
             statement.executeUpdate();

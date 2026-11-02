@@ -76,7 +76,12 @@ public final class PlayerProgress {
 
     public record Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
                            String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
-                           Instant lastAdvanceUtc, List<BookSnapshot> books) {
+                           Instant lastAdvanceUtc, List<BookSnapshot> books,
+                           int liveGroove1, int liveGroove2, int liveGroove3, int liveGroove4, int liveGroove5,
+                           int holdFaculty, int liveSpeedPower, Instant lastLivepointUtc,
+                           int actDayValue, int actCostSuiYin, int actDayValueMax,
+                           int actDayValueUsed, int actDayValueLast,
+                           int teamFacultyValue, int teamFacultyLast) {
 
         /** 旧契约构造（快照无修速拆分层）：基础值/倍率取默认 200 × 1。 */
         public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
@@ -84,6 +89,29 @@ public final class PlayerProgress {
                         List<BookSnapshot> books) {
             this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
                     NORMAL_FACULTY_FILL_PER_MINUTE, 1.0f, lastAdvanceUtc, books);
+        }
+
+        /** 过渡契约构造（快照无历练/额度层）：历练与额度取新建默认，时间戳随修炼基准。 */
+        public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
+                        String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
+                        Instant lastAdvanceUtc, List<BookSnapshot> books) {
+            this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
+                    fillSpeedBase, fillSpeedMultiplier, lastAdvanceUtc, books,
+                    0, 0, 0, 0, 0, 0, 0, lastAdvanceUtc,
+                    UNLIMITED_ACT_DAY_VALUE, 0, 0, 0, UNLIMITED_ACT_DAY_VALUE, 0, 0);
+        }
+
+        /** 过渡契约构造（快照无历练/额度层）：历练与额度取新建默认，时间戳随修炼基准。 */
+        public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
+                        String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
+                        Instant lastAdvanceUtc, List<BookSnapshot> books,
+                        int liveGroove1, int liveGroove2, int liveGroove3, int liveGroove4, int liveGroove5,
+                        int holdFaculty, int liveSpeedPower, Instant lastLivepointUtc) {
+            this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
+                    fillSpeedBase, fillSpeedMultiplier, lastAdvanceUtc, books,
+                    liveGroove1, liveGroove2, liveGroove3, liveGroove4, liveGroove5,
+                    holdFaculty, liveSpeedPower, lastLivepointUtc,
+                    UNLIMITED_ACT_DAY_VALUE, 0, 0, 0, UNLIMITED_ACT_DAY_VALUE, 0, 0);
         }
     }
 
@@ -106,6 +134,31 @@ public final class PlayerProgress {
     /** 修速倍率（拆分层二）：默认 1 倍；实际修速 = round(base × multiplier)（官服实证 FillSpeed=516=200×2.58）。 */
     float fillSpeedMultiplier = 1.0f;
     Instant lastAdvance;
+    // ---- 历练层（LiveGroove，毫历练单位）----
+    /** 历练槽 1..5（LiveGroove_1..5@804..808，毫历练；UI 显示 = 值/1000，每槽上限 999 点）。 */
+    final int[] liveGroove = new int[GROOVE_COUNT];
+    /** 潜能修为（HoldFaculty@800）：非名俊转化 30% 分流至此，黄金按价赎回。 */
+    int holdFaculty;
+    /** 历练转化速度加成%（LiveSpeedPower@809，卦象等来源；0=无加成）。 */
+    int liveSpeedPower;
+    /** 历练层独立结算基准（100 秒步进，与 lastAdvance 分钟节拍并行）。 */
+    Instant lastLivepoint;
+    // ---- 演武碎银额度层（ActDayValue 块，0x09 表 790-797；单位文，1 两 = 1000 文）----
+    /** ActDayValue(790)：今日可用碎银额度（文）。不限制模式发大数占位（客户端 /1000 显示两）。 */
+    int actDayValue = UNLIMITED_ACT_DAY_VALUE;
+    /** ActCostSuiYin(791)：今日已耗碎银（文）。主/演武面板可用 = ActDayValue - 本值。 */
+    int actCostSuiYin;
+    /** ActDayValueMax(797)：每日上限（文）；0 = 不限制（演武页两标签显示"不限制"，switch 2812 关）。 */
+    int actDayValueMax;
+    /** ActDayValueUsed(796)：今日已用（文）。 */
+    int actDayValueUsed;
+    /** ActDayValueLast(795)：剩余总量（文，跨日累计语义；不限制模式发大数占位）。 */
+    int actDayValueLast = UNLIMITED_ACT_DAY_VALUE;
+    // ---- 团练疲劳层（TeamFaculty 块，0x09 表 775-780）----
+    /** TeamFacultyValue(777)：团练消耗值（0..TEAM_FACULTY_TOTAL）；客户端按 (总量-值)/总量 反算剩余精力%。 */
+    int teamFacultyValue;
+    /** TeamFacultyLast(778)：团练剩余可抵扣修炼度。 */
+    int teamFacultyLast;
     final Attributes attributes = new Attributes();
 
     /** Go newPlayerProgress。 */
@@ -163,12 +216,15 @@ public final class PlayerProgress {
         progress.books.add(book("ng_jh_001", 1, 1002, 1, 36, 700, 120, 120));
         progress.books.add(book("ng_em_001", 8, 1002, 1, 36, 700, 120, 120));
         progress.curNeiGong = progress.books.get(0).configId;
-        progress.faculty = 9_999_999;
+        // 完整官服模型：修为由历练转化供给。新角色种子可配（-Dnineyin.faculty.seed），
+        // 存量角色由快照 restore 覆盖；GM set_faculty 保留直设兜底。
+        progress.faculty = Integer.getInteger("nineyin.faculty.seed", INITIAL_FACULTY);
         progress.facultyState = FACULTY_STATE_CONVERT;
         progress.facultyStyle = FACULTY_STYLE_NORMAL;
         progress.facultyName = progress.books.get(0).configId;
         progress.fillSpeed = 200;
         progress.lastAdvance = Instant.now(clock);
+        progress.lastLivepoint = progress.lastAdvance;
         progress.attributes.sp = 100;
         progress.attributes.str = 30;
         progress.attributes.sta = 30;
@@ -372,9 +428,37 @@ public final class PlayerProgress {
         //（0=停止，实证 FillSpeed=0 对应停止档）。
         Props.add(properties, "FillSpeed", PropertyValues.Value.ofInt32(fillSpeed));
         // NorFacultyAdd(774)：基准修速（普通内修基础值，默认 200），与加成后的 FillSpeed 分列下发；
-        // F 盘实证 FillSpeed=516 时此值恒 200；GM set_fill_speed 调基础值后随之下发。
-        Props.add(properties, "NorFacultyAdd", PropertyValues.Value.ofInt32(
-                facultyStyle == FACULTY_STYLE_ACT ? 0 : fillSpeedBase));
+        // F 盘实证 FillSpeed=516 时此值恒 200（演武帧亦保持 200，F 抓包 #2194 diff 钉死）；
+        // GM set_fill_speed 调基础值后随之下发。
+        Props.add(properties, "NorFacultyAdd", PropertyValues.Value.ofInt32(fillSpeedBase));
+        // ---- 历练层（form_faculty.lua 数据绑定源；括号内为 0x09 官方属性表索引）----
+        // LiveGroove_1..5(804..808)：历练槽，毫历练单位（客户端显示 = 值/1000，槽上限 999）。
+        // 修炼界面 5 条历练进度条与"当前历练 X/999"总条的数据源；服务端 100 秒步进结算。
+        for (int i = 0; i < GROOVE_COUNT; i++) {
+            Props.add(properties, "LiveGroove_" + (i + 1),
+                    PropertyValues.Value.ofInt32(liveGroove[i]));
+        }
+        // LiveSpeedPower(809)：历练转化速度加成%（卦象等来源；客户端公式 speed×(1+power/100)）。
+        Props.add(properties, "LiveSpeedPower", PropertyValues.Value.ofInt32(liveSpeedPower));
+        // HoldFaculty(800)：潜能修为存量。非名俊转化 30% 分流至此；"历练转化"窗黄金赎回。
+        Props.add(properties, "HoldFaculty", PropertyValues.Value.ofInt32(holdFaculty));
+        // ---- 团练疲劳层（form_wuxue_faculty/form_team_faculty_member 数据绑定源）----
+        // TeamFacultyState(775)：团练状态（0=未在团练；团练全链未实现，占位 0）。
+        Props.add(properties, "TeamFacultyState", PropertyValues.Value.ofInt32(0));
+        // TeamFacultyValue(777)：团练消耗值（F 抓包登录帧实证随全量帧下发，如 79190）。
+        // 客户端按 faculty_team_action.ini TeamValue=80000 反算：剩余% = (80000-值)×100/80000。
+        Props.add(properties, "TeamFacultyValue", PropertyValues.Value.ofInt32(teamFacultyValue));
+        // TeamFacultyLast(778)：团练剩余可抵扣修炼度（团练面板 lbl_offset_faculty）。
+        Props.add(properties, "TeamFacultyLast", PropertyValues.Value.ofInt32(teamFacultyLast));
+        // ---- 演武碎银额度层（form_wuxue_faculty.lbl_suiyin / form_wuxue_act 数据绑定源）----
+        // ActDayValue(790)/ActCostSuiYin(791)：主面板"可用碎银 X 两" = (前-后)/1000（毫单位）。
+        Props.add(properties, "ActDayValue", PropertyValues.Value.ofInt32(actDayValue));
+        Props.add(properties, "ActCostSuiYin", PropertyValues.Value.ofInt32(actCostSuiYin));
+        // ActDayValueLast(795)/Used(796)/Max(797)：演武页"今日可用/剩余总量"三值。
+        // Max=0（不限制）或客户端 switch 2812 关闭时，演武页两标签显示"不限制"。
+        Props.add(properties, "ActDayValueLast", PropertyValues.Value.ofInt32(actDayValueLast));
+        Props.add(properties, "ActDayValueUsed", PropertyValues.Value.ofInt32(actDayValueUsed));
+        Props.add(properties, "ActDayValueMax", PropertyValues.Value.ofInt32(actDayValueMax));
         // PowerValue/MaxPowerValue：当前/上限功力（书行 power，如 ng_jh_201 满级 680）。
         Props.add(properties, "PowerValue", PropertyValues.Value.ofInt32(power));
         Props.add(properties, "MaxPowerValue", PropertyValues.Value.ofInt32(maxPower));
@@ -490,7 +574,11 @@ public final class PlayerProgress {
             saved.add(new BookSnapshot(item.configId, item.level, item.fill, item.total, item.power, item.maxPower));
         }
         return new Snapshot(curNeiGong, faculty, facultyState, facultyStyle, facultyName,
-                fillSpeed, fillSpeedBase, fillSpeedMultiplier, lastAdvance, saved);
+                fillSpeed, fillSpeedBase, fillSpeedMultiplier, lastAdvance, saved,
+                liveGroove[0], liveGroove[1], liveGroove[2], liveGroove[3], liveGroove[4],
+                holdFaculty, liveSpeedPower, lastLivepoint,
+                actDayValue, actCostSuiYin, actDayValueMax, actDayValueUsed, actDayValueLast,
+                teamFacultyValue, teamFacultyLast);
     }
 
     // ------------------------------------------------------------------- 怒气 SP
@@ -552,7 +640,44 @@ public final class PlayerProgress {
         } else {
             lastAdvance = now;
         }
+        // 历练层：槽值钳到上限；旧档 lastLivepointUtc 随修炼基准或取 now，随后离线补结算
+        //（在线累积离线不计，转化离线照结——离线时长本就由 lastLivepointUtc 起算）。
+        for (int i = 0; i < GROOVE_COUNT; i++) {
+            liveGroove[i] = Math.max(0, Math.min(GROOVE_CAP, grooveOf(value, i)));
+        }
+        holdFaculty = Math.max(0, value.holdFaculty());
+        liveSpeedPower = Math.max(0, value.liveSpeedPower());
+        Instant lastLivepointUtc = value.lastLivepointUtc();
+        // 0001-01-01 是 Store 侧 null 哨兵（formatInstant）；过旧/未来值一律重基 now 防离线结算爆走。
+        lastLivepoint = lastLivepointUtc != null && lastLivepointUtc.isAfter(EPOCH_GUARD)
+                && !lastLivepointUtc.isAfter(now) ? lastLivepointUtc : now;
+        livepointTick(now, livepointVip());
+        // 演武碎银额度层：负值/旧档缺省回退新建默认；上限语义保持（max>0 才受限）。
+        actDayValue = Math.max(0, value.actDayValue());
+        actCostSuiYin = Math.max(0, value.actCostSuiYin());
+        actDayValueMax = Math.max(0, value.actDayValueMax());
+        actDayValueUsed = Math.max(0, value.actDayValueUsed());
+        actDayValueLast = Math.max(0, value.actDayValueLast());
+        if (actDayValue <= 0) {
+            actDayValue = actDayValueMax > 0 ? actDayValueMax : UNLIMITED_ACT_DAY_VALUE;
+        }
+        if (actDayValueLast <= 0 && actDayValueMax <= 0) {
+            actDayValueLast = UNLIMITED_ACT_DAY_VALUE;
+        }
+        // 团练疲劳层：消耗值钳到官方总量内。
+        teamFacultyValue = Math.max(0, Math.min(TEAM_FACULTY_TOTAL, value.teamFacultyValue()));
+        teamFacultyLast = Math.max(0, value.teamFacultyLast());
         refreshAllModernEffects();
+    }
+
+    private static int grooveOf(Snapshot value, int index) {
+        return switch (index) {
+            case 0 -> value.liveGroove1();
+            case 1 -> value.liveGroove2();
+            case 2 -> value.liveGroove3();
+            case 3 -> value.liveGroove4();
+            default -> value.liveGroove5();
+        };
     }
 
     /** Go advanceFaculty：按整分钟以 FillSpeed 结算修炼，余数留在 lastAdvance。
@@ -600,6 +725,171 @@ public final class PlayerProgress {
         return false;
     }
 
+    // ------------------------------------------------------------------ 历练层
+
+    /** 名俊档开关（-Dnineyin.livepoint.vip）：true=无损转化；false=普通档 70% + 30% 进潜能。 */
+    public static boolean livepointVip() {
+        return Boolean.getBoolean("nineyin.livepoint.vip");
+    }
+
+    /**
+     * 历练层 100 秒步进结算（官方公式，form_faculty.lua:87-111 钉死）：
+     * <ol>
+     *   <li>累积：总历练未达 999 点时 +1000 毫（=1 点历练）进第一个未满槽，全满丢弃；</li>
+     *   <li>转化（每槽独立，槽非空才计）：{@code full = base_i × (100+power)/100}，
+     *       {@code actual = min(槽余, full)}，槽 -= actual（1 毫历练 = 1 修为）；
+     *       名俊 {@code faculty += actual}；普通档 {@code gain = actual×7/10} 进修为、
+     *       差额进潜能（HoldFaculty，黄金按价赎回）。五槽全满名俊 = 380 修为/100秒。</li>
+     * </ol>
+     * 余数留在 lastLivepoint（与 advanceFaculty 分钟节拍同模式）。返回是否有变化。
+     */
+    public boolean livepointTick(Instant now, boolean vip) {
+        if (lastLivepoint == null || now.isBefore(lastLivepoint)) {
+            lastLivepoint = now;
+            return false;
+        }
+        long steps = Duration.between(lastLivepoint, now).getSeconds() / LIVEPOINT_STEP_SECONDS;
+        if (steps <= 0) {
+            return false;
+        }
+        lastLivepoint = lastLivepoint.plusSeconds(steps * LIVEPOINT_STEP_SECONDS);
+        boolean changed = false;
+        for (long step = 0; step < steps; step++) {
+            changed |= accrueLivepoint();
+            changed |= convertLivepoint(vip);
+        }
+        return changed;
+    }
+
+    /** 在线累积：+1000 毫进第一个未满槽（总上限 999 点 = 5×999000 毫，全满丢弃）。 */
+    private boolean accrueLivepoint() {
+        for (int i = 0; i < GROOVE_COUNT; i++) {
+            if (liveGroove[i] < GROOVE_CAP) {
+                liveGroove[i] = Math.min(GROOVE_CAP, liveGroove[i] + LIVEPOINT_ACCRUE_MILLIS);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 转化：每槽按官方公式扣毫历练产修为；普通档 70% 进修为、30% 进潜能。 */
+    private boolean convertLivepoint(boolean vip) {
+        boolean changed = false;
+        for (int i = 0; i < GROOVE_COUNT; i++) {
+            if (liveGroove[i] <= 0) {
+                continue;
+            }
+            long full = (long) GROOVE_BASE_SPEED[i] * (100 + liveSpeedPower) / 100;
+            int actual = (int) Math.min(liveGroove[i], full);
+            liveGroove[i] -= actual;
+            if (vip) {
+                faculty += actual;
+            } else {
+                int gain = actual * 7 / 10;
+                faculty += gain;
+                holdFaculty += actual - gain;
+            }
+            changed = true;
+        }
+        return changed;
+    }
+
+    /** GM add_livepoint：发 N 点历练（×1000 毫按序填槽，溢出丢弃）。返回实际入槽毫数。 */
+    public int addLivepoint(int points) {
+        int remaining = Math.max(0, points) * LIVEPOINT_ACCRUE_MILLIS;
+        int added = 0;
+        for (int i = 0; i < GROOVE_COUNT && remaining > 0; i++) {
+            int space = GROOVE_CAP - liveGroove[i];
+            if (space <= 0) {
+                continue;
+            }
+            int put = Math.min(space, remaining);
+            liveGroove[i] += put;
+            added += put;
+            remaining -= put;
+        }
+        return added;
+    }
+
+    /** GM set_hold_faculty：直设潜能修为（入口已限非负，本处再钳防御）。 */
+    public void setHoldFaculty(int value) {
+        holdFaculty = Math.max(0, value);
+    }
+
+    /** GM set_live_speed_power：设转化速度加成 %（卦象效果等价物）。 */
+    public void setLiveSpeedPower(int value) {
+        liveSpeedPower = Math.max(0, value);
+    }
+
+    /** 潜能修为存量（235 BUY 与 GM 面板只读）。 */
+    public int holdFaculty() {
+        return holdFaculty;
+    }
+
+    // ------------------------------------------------------- 演武碎银/团练疲劳（GM 面）
+
+    /**
+     * 演武卡扣碎银额度：有限额模式（max>0）超限拒绝。成功则累计今日已耗/已用。
+     * 碎银余额（CapitalType1）校验与扣减在 PlayerActor 侧，本方法只管额度账本。
+     */
+    public boolean tryChargeActSuiYin(int costMillis) {
+        if (costMillis < 0) {
+            return false;
+        }
+        if (actDayValueMax > 0 && actCostSuiYin + (long) costMillis > actDayValueMax) {
+            return false;
+        }
+        actCostSuiYin += costMillis;
+        actDayValueUsed += costMillis;
+        return true;
+    }
+
+    /** 今日已耗碎银（毫；GM 面板只读）。 */
+    public int actCostSuiYin() {
+        return actCostSuiYin;
+    }
+
+    /** 每日上限（毫；0 = 不限制。GM 面板只读）。 */
+    public int actDayValueMax() {
+        return actDayValueMax;
+    }
+
+    /**
+     * GM set_act_day_limit：设演武每日碎银上限（两，面板输入刻度）。≤0 = 不限制
+     * （max=0、额度发大数占位）。重设即重置今日已耗/已用。返回应用后的上限（两）。
+     * 账本存文（1 两 = 1000 文，与卡基价/ActCostSuiYin 同刻度）。
+     */
+    public int setActDayLimit(int liang) {
+        actCostSuiYin = 0;
+        actDayValueUsed = 0;
+        if (liang <= 0) {
+            actDayValueMax = 0;
+            actDayValue = UNLIMITED_ACT_DAY_VALUE;
+            actDayValueLast = UNLIMITED_ACT_DAY_VALUE;
+            return 0;
+        }
+        actDayValueMax = (int) Math.min((long) liang * 1000, UNLIMITED_ACT_DAY_VALUE);
+        actDayValue = actDayValueMax;
+        return actDayValueMax / 1000;
+    }
+
+    /** GM clear_team_fatigue：清团练疲劳（消耗值归零；客户端剩余精力恢复 100%）。 */
+    public void clearTeamFacultyFatigue() {
+        teamFacultyValue = 0;
+    }
+
+    /** GM set_team_faculty_last：团练剩余可抵扣修炼度直设（非负钳制）。 */
+    public void setTeamFacultyLast(int value) {
+        teamFacultyLast = Math.max(0, value);
+    }
+
+    /** 团练消耗值（毫；GM 面板只读，显示换算 = 值/80000 精力消耗）。 */
+    public int teamFacultyValue() {
+        return teamFacultyValue;
+    }
+
+    /** GM set_hold_faculty 复用 setFaculty 语义；潜能购买入口在 FacultyCustomHandler（235/2）。 */
+
     /** Go facultyReady：选书；未知 id 静默接受（零帧零变更）。返回书槽（1 基），未知 -1。 */
     public int facultyReady(String configId, Instant now) {
         Book target = book(configId);
@@ -634,6 +924,30 @@ public final class PlayerProgress {
     public static final int ACTIVE_FACULTY_CARD_REWARD = 20_000;
     /** Go normalFacultyFillPerMinute。 */
     public static final int NORMAL_FACULTY_FILL_PER_MINUTE = 200;
+    /** 新角色修为种子（-Dnineyin.faculty.seed 可配；官服模型下历练是修为主供给）。 */
+    public static final int INITIAL_FACULTY = 10_000;
+
+    // ---- 历练层常量（form_faculty.lua:87-111 官方公式钉死）----
+    /** 历练槽位数（LiveGroove_1..5@804..808）。 */
+    public static final int GROOVE_COUNT = 5;
+    /** 每槽毫历练上限：999 点 × 1000。 */
+    public static final int GROOVE_CAP = 999_000;
+    /** 在线累积步长：每 100 秒 +1 历练（=1000 毫）进第一个未满槽。 */
+    public static final long LIVEPOINT_STEP_SECONDS = 100;
+    public static final int LIVEPOINT_ACCRUE_MILLIS = 1_000;
+    /**
+     * 槽基础转化速度（修为/100秒，槽非空才计）：10/20/50/100/200。
+     * 五槽全满名俊 = 380 修为/100秒（客户端同公式）；非名俊 ×0.7。
+     */
+    public static final int[] GROOVE_BASE_SPEED = {10, 20, 50, 100, 200};
+    /** 快照时间戳哨兵下界（2000-01-01）：早于此视为无效（Store null 哨兵 = 0001-01-01）。 */
+    static final Instant EPOCH_GUARD = Instant.ofEpochSecond(946684800L);
+
+    // ---- 演武碎银/团练疲劳层常量 ----
+    /** 不限制模式的额度占位数（毫 = 999999 两）：主面板"可用碎银"显示一个足够大的值。 */
+    public static final int UNLIMITED_ACT_DAY_VALUE = 999_999_999;
+    /** 团练精力总量（faculty_team_action.ini [setting] TeamValue=80000）：客户端按此反算剩余百分比。 */
+    public static final int TEAM_FACULTY_TOTAL = 80_000;
 
     /** Go awardActiveFaculty：演武卡结算。返回 [槽位(1 基,-1 无), 是否发放, 是否升级, 是否满级]。 */
     public int[] awardActiveFaculty() {
@@ -664,6 +978,12 @@ public final class PlayerProgress {
         return target == null ? -1 : books.indexOf(target) + 1;
     }
 
+    /** facultyName 书当前层（演武卡定价的 actfacultyinfo 层号；无书 0）。 */
+    public int actBookLevel() {
+        Book target = book(facultyName);
+        return target == null ? 0 : target.level;
+    }
+
     // ------------------------------------------------------------------ GM 修为/修速
 
     /** 实际修速 = round(基础值 × 倍率)。GM set_fill_speed 与 facultyBegin 共用。 */
@@ -674,6 +994,11 @@ public final class PlayerProgress {
     /** GM set_faculty：直接设修炼点余额（入口已限非负；本处再钳一次防御）。 */
     public void setFaculty(int value) {
         faculty = Math.max(0, value);
+    }
+
+    /** 修为增量入口（235/2 潜能赎回、历练转化共用；非负钳制）。 */
+    public void addFaculty(int delta) {
+        faculty = Math.max(0, faculty + delta);
     }
 
     /** GM set_fill_speed：设基础值/倍率并即时重算。返回当前实际修速。 */

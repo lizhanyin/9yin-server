@@ -155,11 +155,9 @@ public final class SkillCastHandler {
         }
         // 玩家全量属性面（抓包 188 项 = stateProperties）
         connection.writeFrame(player.vitalUpdate());
-        // 不回显 msg337 施法者坐标（2026-11-02 真机反馈）：客户端会把 337 应用到本地
-        // 角色，高空出招时 211 上报的 y 与视觉高度不一致 → 人被拍回地面。官方抓包
-        // （62433）每招恒回 337，但全程地面战斗无法暴露该差异；本服坐标以客户端为
-        // 权威，211 的 x/y/z 只留作距离/形状判定。FightMessages.casterTransformSync
-        // 保留备用（远程观测者上线的场景再评估）。
+        // msg337 施法者位置/朝向回显（值取 211 请求，官方每招恒发 62433）。
+        connection.writeFrame(FightMessages.casterTransformSync(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
         connection.writeFrame(FightMessages.skillAction(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
 
@@ -534,7 +532,10 @@ public final class SkillCastHandler {
             if (context.player().clearCurrentSkill(skill.id())) {
                 context.connection().writeFrame(FightMessages.activeSkillRowRemove(
                         PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
-                context.connection().writeFrame(context.player().standStateFrame());
+                // State=stand 复位帧停发（2026-11-02 真机反馈）：空中出招时客户端收到
+                // State=stand 会终止空中状态并把模型贴地（人被瞬移到地面）。官方抓包
+                // 每招收尾都发（12/12，但那次全程地面战斗暴露不了）；动作时间线由客户
+                // 端自行走完复位，若真机反馈地面出招收尾卡姿势，再按落地条件恢复。
             }
         }, delay, TimeUnit.MILLISECONDS);
         for (StagedBuff buff : staged) {

@@ -72,14 +72,14 @@ echo Server list : 127.0.0.1:4000
 echo Game        : 127.0.0.1:19061
 echo GM RPC      : 127.0.0.1:19081
 echo GM UI       : http://127.0.0.1:19080/  (gm-web: pick a server, then console)
-echo Logs        : logs\nineyin-java.current.log , logs\gm-web.current.log
+echo Logs        : logs\nineyin-java.log , logs\gm-web.log (logback rolling; *.console.log = crash capture)
 echo.
 
-start "Nine Yin Java 19061" /D "%ROOT%" "%JAVA_CMD%" --enable-native-access=ALL-UNNAMED -jar "%JAR%"  1>>"%LOGDIR%\nineyin-java.current.log" 2>>&1
+start "Nine Yin Java 19061" /D "%ROOT%" cmd /c ""%JAVA_CMD%" --enable-native-access=ALL-UNNAMED -jar "%JAR%" >>"%LOGDIR%\nineyin-java.console.log" 2>&1"
 
 rem Panel status polls want the game RPC port up first; brief wait.
 timeout /t 4 /nobreak >nul
-start "Nine Yin GM Web 19080" /D "%ROOT%" "%JAVA_CMD%" -jar "%GMJAR%"  1>>"%LOGDIR%\gm-web.current.log" 2>>&1
+start "Nine Yin GM Web 19080" /D "%ROOT%" cmd /c ""%JAVA_CMD%" -jar "%GMJAR%" >>"%LOGDIR%\gm-web.console.log" 2>&1"
 
 timeout /t 2 /nobreak >nul
 start "Nine Yin GM Panel (Java)" http://127.0.0.1:19080/

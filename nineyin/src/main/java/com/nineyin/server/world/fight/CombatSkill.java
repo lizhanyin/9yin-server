@@ -25,6 +25,9 @@ import java.util.List;
  * @param actionName      zhaoshi 时间线首段动作名（当前仅用于总时长；S2C 动作走 msg20）
  * @param actionDurationMs 首段动作时长（endFrame/30fps）
  * @param followups       后续动作段（编译保留；抓包显示 F exe 不下发 followup State 帧）
+ * @param hitFrameMs      多段判定时刻（zhaoshi trigger_effect 帧/30fps，剔除与技能同名的
+ *                        施法特效帧；52795 抓包实证：gxfhj02 的 4 个 _hurt 触发帧=每招 4 段、
+ *                        shl08 的 6 个=6 段、无 trigger_effect 的技能单段即时结算）
  * @param effects         效果列表（伤害/自buff/目标控制/红霸体/架势轮换）
  */
 public record CombatSkill(
@@ -34,6 +37,7 @@ public record CombatSkill(
         int baseDamage, int damageWaves,
         TargetMode targetMode, float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
         String actionName, long actionDurationMs, List<ActionSegment> followups,
+        List<Long> hitFrameMs,
         List<Effect> effects) {
 
     public enum TargetMode {

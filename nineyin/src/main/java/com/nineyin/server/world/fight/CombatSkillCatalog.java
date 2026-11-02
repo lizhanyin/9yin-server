@@ -247,7 +247,7 @@ public final class CombatSkillCatalog {
         boolean isDamage = staticFields.int32("IsDamage") != 0;
         Section hitShape = tables.hitShape.get(Integer.toString(varProp.int32("HitShapePkg")));
         TargetShape shape = compileTargetMode(hitShape, isDamage);
-        Actions actions = compileSkillActions(tables.actions.get(skillId));
+        Actions actions = compileSkillActions(tables.actions.get(skillId), skillId);
         if (actions.actionName().isEmpty()) {
             throw new SkipException("missing_player_action");
         }
@@ -309,7 +309,7 @@ public final class CombatSkillCatalog {
                 damage[0], damage[1],
                 shape.mode(), shape.radius(), varProp.f32("HeightDiff"),
                 shape.angle(), shape.width(),
-                actions.actionName(), actions.durationMs(), actions.followups(),
+                actions.actionName(), actions.durationMs(), actions.followups(), actions.hitFrameMs(),
                 effects);
     }
 
@@ -385,17 +385,29 @@ public final class CombatSkillCatalog {
         }
     }
 
-    private record Actions(String actionName, long durationMs, List<CombatSkill.ActionSegment> followups) {
+    private record Actions(String actionName, long durationMs, List<CombatSkill.ActionSegment> followups,
+                          List<Long> hitFrameMs) {
     }
 
-    /** Go compileSkillActions：zhaoshi 数值键=序号，值 `动作;?;endFrame;inBlend;?`（30fps）。 */
-    private static Actions compileSkillActions(Section fields) {
+    /**
+     * Go compileSkillActions：zhaoshi 数值键=序号，值 `动作;?;endFrame;inBlend;?`（30fps）。
+     * 多段判定（52795 抓包实证的过滤序）：`trigger_custom_N=段号;trigger_effect;帧号;效果名`
+     * ①效果名含 `_hurt` 的帧=伤害段（gxfhj02 的 CS_jhgp_gxfhj_hurt×4=每招 4 段、shl03×4；
+     * 目标中途死亡时观测段数偏少=服务端跳死目标，行为一致）；
+     * ②无 hurt 时取效果名以技能核心名（尾段去数字，如 sfgp01→sfg）前 3 字母开头的帧
+     * （shl08 的 shl08_NN×6=6 段）；刀光/fly/通用特效（如 mwcq_hurt_01 之外的 _01a 型）
+     * 与技能全名施法帧均剔除。皆无 → 单段即时结算。
+     */
+    private static Actions compileSkillActions(Section fields, String skillId) {
         if (fields == null) {
-            return new Actions("", 0, List.of());
+            return new Actions("", 0, List.of(), List.of());
         }
         record Raw(int order, String action, double endFrame, double inBlend) {
         }
         List<Raw> raw = new ArrayList<>(3);
+        List<Long> hurtFrames = new ArrayList<>(4);
+        List<Long> coreFrames = new ArrayList<>(4);
+        String corePrefix = skillCorePrefix(skillId);
         for (String[] field : fields.fields) {
             int order;
             try {
@@ -411,9 +423,34 @@ public final class CombatSkillCatalog {
             double inBlend = parseDoubleOr(parts[3], 0);
             raw.add(new Raw(order, parts[0].trim(), endFrame, inBlend));
         }
+        for (String[] field : fields.fields) {
+            if (!field[0].startsWith("trigger_custom_")) {
+                continue;
+            }
+            String[] parts = field[1].split(";");
+            // 布局：段号;trigger_effect;帧号;效果名
+            if (parts.length < 4 || !"trigger_effect".equals(parts[1].trim())) {
+                continue;
+            }
+            String effectName = parts[3].trim();
+            if (effectName.isEmpty() || effectName.equals(skillId)) {
+                continue; // 施法特效帧（与技能同名）不是伤害段
+            }
+            double frame = parseDoubleOr(parts[2], -1);
+            if (frame < 0) {
+                continue;
+            }
+            if (effectName.contains("_hurt")) {
+                hurtFrames.add(frameMs(frame));
+            } else if (!corePrefix.isEmpty() && effectName.startsWith(corePrefix)) {
+                coreFrames.add(frameMs(frame));
+            }
+        }
+        List<Long> hitFrames = !hurtFrames.isEmpty() ? hurtFrames : coreFrames;
+        hitFrames.sort(Long::compare);
         raw.sort((a, b) -> Integer.compare(a.order(), b.order()));
         if (raw.isEmpty()) {
-            return new Actions("", 0, List.of());
+            return new Actions("", 0, List.of(), hitFrames);
         }
         long duration = frameMs(raw.get(0).endFrame());
         long at = 0;
@@ -423,11 +460,24 @@ public final class CombatSkillCatalog {
             at += frameMs(raw.get(i - 1).endFrame()) - (long) (Math.max(raw.get(i).inBlend(), 0) * 1000);
             followups.add(new CombatSkill.ActionSegment(raw.get(i).action(), at, frameMs(raw.get(i).endFrame())));
         }
-        return new Actions(raw.get(0).action(), duration, followups);
+        return new Actions(raw.get(0).action(), duration, followups, hitFrames);
     }
 
     private static long frameMs(double endFrame) {
         return (long) (endFrame / 30.0 * 1000);
+    }
+
+    /** 技能核心名前缀（CS_jh_sfgp01→"sfg"、CS_jhgp_gxfhj02→"gxf"、CS_xy_shl08→"shl"）。 */
+    private static String skillCorePrefix(String skillId) {
+        String[] segments = skillId.split("_");
+        for (int i = segments.length - 1; i >= 0; i--) {
+            String segment = segments[i];
+            if (segment.matches(".*[A-Za-z].*\\d.*")) {
+                String letters = segment.replaceAll("[^A-Za-z]", "");
+                return letters.length() >= 3 ? letters.substring(0, 3) : letters;
+            }
+        }
+        return "";
     }
 
     private static double parseDoubleOr(String text, double fallback) {

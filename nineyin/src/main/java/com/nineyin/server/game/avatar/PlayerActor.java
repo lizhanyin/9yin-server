@@ -551,6 +551,11 @@ public final class PlayerActor {
         return true;
     }
 
+    /** 已在战斗中的活跃刷新（多段技后续段命中：防段间被闲时退出判定打断）。 */
+    public synchronized void touchCombat(Instant now) {
+        lastCombatAt = now;
+    }
+
     /**
      * 战斗闲时退出：距最近命中超过窗口且仍在 Fighting → 切回 NORMAL。
      * 返回是否发生 1→0 迁移（调用方据此发单帧）。

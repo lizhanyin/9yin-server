@@ -46,6 +46,15 @@ public final class SkillCastHandler {
     public static final int SKILL_VIEW_ID = 40;
     /** 战斗闲时退出窗口：最近一次命中后 N 毫秒无战斗则回 NORMAL（抓包实证战斗态跨招持续）。 */
     public static final long COMBAT_IDLE_EXIT_MS = 10_000;
+    /**
+     * 单体技能射程兜底（米）：attack_targetshape 对近战单体多为「非远程以自己为目标」
+     * （无半径可取），用宽松近战身位兜底防跨图命中；形状技能射程即其 HitShape 半径。
+     */
+    public static final float SELECTED_RANGE_METERS = 8.0f;
+
+    private static double square(float value) {
+        return (double) value * value;
+    }
 
     /** 出招上下文（LoginFlow 装配；learnedSkills 为 View40 已学集 id→level，skillRows 为 id→View40 行号）。 */
     public record CastContext(
@@ -91,6 +100,21 @@ public final class SkillCastHandler {
                 LOG.info("reject skill id=" + skillId + " without living selected target");
                 return;
             }
+            // 攻击距离闸门（bug.txt「攻击距离正常」项）：单体/以目标为中心的技能校验
+            // 施法者(211 上报坐标)→目标距离，超距静默拒（客户端面板变红提示为本地行为）。
+            // 射程 = max(HitShape 半径, 近战兜底 8 米)；形状技能（以己圆/扇/矩）天然以
+            // 施法者坐标为圆心，半径即射程，不走此闸。
+            SceneLifecycle.CombatNpcInfo targetInfo = context.world().combatNpcInfo(selected.objectId());
+            if (targetInfo != null) {
+                double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
+                        + square(z - targetInfo.z()));
+                double maxRange = Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
+                if (distance > maxRange) {
+                    LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
+                            + "m > " + (int) maxRange + "m");
+                    return;
+                }
+            }
         }
         Instant now = Instant.ofEpochMilli(context.clock().instant().toEpochMilli());
         long targetKey = selected == null ? 0
@@ -135,34 +159,28 @@ public final class SkillCastHandler {
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
 
         List<StagedBuff> staged = stageSkillBuffs(context, skill, now);
-        List<Hit> hits = settleDamage(context, skill, x, y, z, orient, now);
-        // 命中才进战斗（62433 抓包：出招 vital 仍 LogicState=0，命中后切 1）
-        if (hits.stream().anyMatch(hit -> hit.damage() > 0) && player.enterCombat(now)) {
-            connection.writeFrame(player.logicStateFrame());
-        }
-        emitPerTargetSequence(context, skill, hits, playerName, staged);
-        feedMeridianZhenQi(context, hits);
-
-        // 目标控制效果（击中者受控到 buff 租约终点）
-        for (CombatSkill.Effect effect : skill.effects()) {
-            if (effect.kind() == CombatSkill.EffectKind.TARGET_CONTROL
-                    && effect.buff() != null && effect.buff().lifetimeMs() > 0
-                    && hits.stream().anyMatch(hit -> hit.damage() > 0)) {
-                Instant until = now.plusMillis(effect.buff().lifetimeMs());
-                for (Hit hit : hits) {
-                    if (hit.damage() > 0) {
-                        context.fight().control(hit.target().combat(), until);
-                    }
-                }
-                LOG.info("target control skill=" + skill.id() + " buff=" + effect.buff().configId()
-                        + " targets=" + hits.size());
+        List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient);
+        if (skill.hitFrameMs().isEmpty()) {
+            // 单段技能：原路径（即时结算，帧序对齐 62433 抓包）。
+            List<Hit> hits = settleTargets(context, skill, targets, now);
+            // 命中才进战斗（62433 抓包：出招 vital 仍 LogicState=0，命中后切 1）
+            if (hits.stream().anyMatch(hit -> hit.damage() > 0) && player.enterCombat(now)) {
+                connection.writeFrame(player.logicStateFrame());
             }
+            emitPerTargetSequence(context, skill, hits, playerName, staged);
+            applyTargetControl(context, skill, hits, now);
+            feedMeridianZhenQi(context, hits);
+        } else {
+            // 多段技能（zhaoshi trigger_effect 帧位）：每段一次全套命中帧
+            // （52795 抓包实证：每段恒 [NPC 0x10, 0x13, msg24, 0x2D, msg18, msg205]，
+            // 同招各段伤害值相同=每招掷一次、段间重复；死亡目标后续段跳过）。
+            scheduleMultiHits(context, skill, targets, staged, hitTimes(skill), playerName);
         }
-
         scheduleEndOfAction(context, skill, staged);
         scheduleCombatIdleExit(context);
         LOG.info("accepted skill id=" + skill.id() + " mp=" + player.actorState().mp()
-                + " sp=" + player.sp() + " hits=" + hits.size()
+                + " sp=" + player.sp() + " targets=" + targets.size()
+                + (skill.hitFrameMs().isEmpty() ? "" : " ticks=" + skill.hitFrameMs().size())
                 + " personal_cd=" + skill.personalCdMs() + "ms public_cd=" + skill.publicCdMs() + "ms");
     }
 
@@ -177,6 +195,11 @@ public final class SkillCastHandler {
                 damage += hit.damage();
             }
         }
+        feedZhenQiAmount(context, damage);
+    }
+
+    /** 战斗真气按伤害合计入账（多段路径末段一次性喂入整招累计）。 */
+    private static void feedZhenQiAmount(CastContext context, int damage) {
         if (damage <= 0) {
             return;
         }
@@ -226,13 +249,13 @@ public final class SkillCastHandler {
     private record Hit(FightState.HitTarget target, int damage) {
     }
 
-    private static List<Hit> settleDamage(CastContext context, CombatSkill skill,
-                                          float x, float y, float z, float orient, Instant now) {
-        List<Hit> hits = new ArrayList<>(4);
+    /** 出招时刻的目标解析（单体/以己形状/以目标为中心形状；无伤害效果返回空表）。 */
+    private static List<FightState.HitTarget> resolveTargets(CastContext context, CombatSkill skill,
+                                                             float x, float y, float z, float orient) {
         boolean hasDamage = skill.effects().stream()
                 .anyMatch(effect -> effect.kind() == CombatSkill.EffectKind.DAMAGE && effect.amount() > 0);
         if (!hasDamage) {
-            return hits;
+            return List.of();
         }
         List<FightState.HitTarget> targets = new ArrayList<>(4);
         switch (skill.targetMode()) {
@@ -262,6 +285,13 @@ public final class SkillCastHandler {
             default -> {
             }
         }
+        return targets;
+    }
+
+    /** 单段结算：逐目标掷值落血（未命中记 0 值命中，发帧阶段整段跳过）。 */
+    private static List<Hit> settleTargets(CastContext context, CombatSkill skill,
+                                           List<FightState.HitTarget> targets, Instant now) {
+        List<Hit> hits = new ArrayList<>(4);
         for (FightState.HitTarget target : targets) {
             int damage = rollDamage(context, skill);
             if (damage > 0) {
@@ -278,6 +308,104 @@ public final class SkillCastHandler {
             hits.add(new Hit(target, 0)); // 未命中：HP 不动，发帧阶段整段跳过
         }
         return hits;
+    }
+
+    /** 目标控制效果（击中者受控到 buff 租约终点；多段路径在首段命中后调用）。 */
+    private static void applyTargetControl(CastContext context, CombatSkill skill,
+                                           List<Hit> hits, Instant now) {
+        for (CombatSkill.Effect effect : skill.effects()) {
+            if (effect.kind() == CombatSkill.EffectKind.TARGET_CONTROL
+                    && effect.buff() != null && effect.buff().lifetimeMs() > 0
+                    && hits.stream().anyMatch(hit -> hit.damage() > 0)) {
+                Instant until = now.plusMillis(effect.buff().lifetimeMs());
+                for (Hit hit : hits) {
+                    if (hit.damage() > 0) {
+                        context.fight().control(hit.target().combat(), until);
+                    }
+                }
+                LOG.info("target control skill=" + skill.id() + " buff=" + effect.buff().configId()
+                        + " targets=" + hits.size());
+            }
+        }
+    }
+
+    /** 多段调度时刻：trigger_effect 帧位毫秒（升序、去重；首段至少 1ms 后落拍）。 */
+    private static List<Long> hitTimes(CombatSkill skill) {
+        List<Long> times = new ArrayList<>(skill.hitFrameMs().size());
+        long previous = -1;
+        for (long frameMs : skill.hitFrameMs()) {
+            long at = Math.max(frameMs, 1);
+            if (at == previous) {
+                continue;
+            }
+            times.add(at);
+            previous = at;
+        }
+        return times;
+    }
+
+    /**
+     * 多段结算（52795 抓包实证形态）：出招时解析目标+掷一次伤害值（同招各段各目标同值），
+     * 按 trigger_effect 帧位逐段调度——每段对仍存活目标发全套命中帧；首段命中进战斗+
+     * 插 buff 帧+目标控制并刷新战斗活跃时刻；末段后按整招累计伤害喂经脉真气。
+     */
+    private static void scheduleMultiHits(CastContext context, CombatSkill skill,
+                                          List<FightState.HitTarget> targets,
+                                          List<StagedBuff> staged, List<Long> times,
+                                          String playerName) {
+        int damage = rollDamage(context, skill);
+        if (targets.isEmpty() || damage <= 0) {
+            // 无目标/未掷中：buff 帧照发（单段路径同款兜底），零命中零帧。
+            if (!staged.isEmpty()) {
+                emitBuffFrames(context, staged, playerName);
+            }
+            return;
+        }
+        long[] landedTotal = {0};
+        boolean[] firstTick = {true};
+        List<StagedBuff> pendingBuffs = new ArrayList<>(staged);
+        long lastAt = times.get(times.size() - 1);
+        for (int tick = 0; tick < times.size(); tick++) {
+            long at = times.get(tick);
+            final boolean lastTick = at == lastAt;
+            context.scheduler().schedule(() -> {
+                Instant now = context.clock().instant();
+                List<Hit> hits = new ArrayList<>(targets.size());
+                for (FightState.HitTarget target : targets) {
+                    Actor.State state = target.combat().state();
+                    if (state.hp() <= 0) {
+                        continue; // 前段已击杀：后续段跳过（不发帧）
+                    }
+                    FightState.DamageOutcome outcome =
+                            context.fight().applyDamage(target.combat(), damage, now);
+                    if (!outcome.applied()) {
+                        continue;
+                    }
+                    if (outcome.killed()) {
+                        scheduleRespawn(context, target);
+                    }
+                    hits.add(new Hit(target, damage));
+                }
+                if (hits.isEmpty()) {
+                    return;
+                }
+                if (firstTick[0]) {
+                    firstTick[0] = false;
+                    if (context.player().enterCombat(now)) {
+                        context.connection().writeFrame(context.player().logicStateFrame());
+                    }
+                    applyTargetControl(context, skill, hits, now);
+                } else {
+                    context.player().touchCombat(now); // 后续段刷新活跃时刻，防段间闲退
+                }
+                emitPerTargetSequence(context, skill, hits, playerName, pendingBuffs);
+                pendingBuffs.clear();
+                landedTotal[0] += (long) damage * hits.size();
+                if (lastTick) {
+                    feedZhenQiAmount(context, (int) Math.min(landedTotal[0], Integer.MAX_VALUE));
+                }
+            }, at, TimeUnit.MILLISECONDS);
+        }
     }
 
     /** formula.lua（Lua 权威/Java 兜底）：attack=装备+内功掷值，守方侧当前取缺省。 */

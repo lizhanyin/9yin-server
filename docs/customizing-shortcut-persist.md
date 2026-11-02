@@ -60,8 +60,45 @@
 - `ShortcutCustomFlowTest`（2）：200 首设-幂等-替换帧序（0x11/0x12/93 下标）/ 201 按行删 +
   缺行静默 / 非法参数零帧。
 
-## 五、遗留
+## 五、多段伤害与攻击距离（同批补齐）
+
+### 多段伤害（trigger_effect 帧位分次结算）
+
+52795 抓包钉死的形态：单次出招对同一目标发**多条** msg24/扣血帧（均值 8.7 条/招），
+同招各段**伤害值恒定**（113×3、97×4——每招掷一次、段间重复），每段全套命中帧
+[NPC 0x10 → 0x13 → msg24 → 0x2D → msg18 → msg205]，目标中途死亡后续段跳过。
+
+段时刻来源 = zhaoshi 动作表 `trigger_custom_N=段;trigger_effect;帧号;效果名`（30fps），
+按抓包对照实证的过滤序（`CombatSkillCatalog.compileSkillActions`）：
+
+1. 效果名含 `_hurt` 的帧 = 伤害段（gxfhj02 的 `CS_jhgp_gxfhj_hurt`×4 = 每招 4 段 ✓
+   shl03×4、gxfhj05×8——观测 2-3 段是目标中途死亡的自然截断）；
+2. 无 hurt 时取效果名以技能核心名（尾段去数字，sfgp01→sfg）前 3 字母开头的帧
+   （shl08 的 `shl08_NN`×6 = 6 段 ✓）；
+3. 刀光/fly/通用特效（mwcq_hurt_01 之外的 `_01a` 型）与技能全名施法帧剔除；
+   sfgp01 的 `CS_jh_sfgp01_1/_2`（帧4/77）→ 2 段，与 62433 抓包 2 msg24/招吻合 ✓；
+4. 皆无 → 单段即时结算（原路径不动）。
+
+实现（`SkillCastHandler.scheduleMultiHits`）：出招时解析目标 + 掷一次伤害值，按帧位
+逐段调度；首段命中进战斗+插 buff 帧+目标控制，后续段 `touchCombat` 防段间闲退；
+末段按整招累计伤害喂经脉真气。varprop 的 `HitCount` 与观测段数不相关（误导项，未采用）。
+
+### 攻击距离闸门
+
+SELECTED/SELECTED_AREA（单体需目标）技能：出招时校验施法者(211 上报坐标)→目标距离，
+射程 = max(HitShape 半径, 近战兜底 8 米)，**超距静默拒**（不进 CD/动作，与"被拒不回帧"
+惯例一致）；客户端面板变红提示为本地行为不受影响。形状技能（以己圆/扇/矩）以施法者
+坐标为圆心、半径即射程，天然有界不走此闸。starter 集里 `CS_wd_tjq02`（HitShape=0）即
+SELECTED 模式。
+
+## 六、测试
+
+- `MultiHitAndRangeTest`（3）：gxfhj02 段帧位 [233,600,900,1466]ms 编译断言 / 4 段
+  恒定伤害飘字 / 中途击杀后续段跳过（探针法动态断言）/ tjq02 超距零帧+贴身受理。
+- `CustomizingFlowTest`（3）/ `ShortcutCustomFlowTest`（2）：见上两节。
+
+## 七、遗留
 
 - 240（打坐 SITCROSS）与 217/218 仍在 backlog（打坐有独立状态机，另行批次）。
-- 多段伤害（varprop HitCount 分次结算，抓包 8.7 msg24/招）与攻击距离闸门为下一批
-  （见对账清单缺口①②）。
+- yydf04 型引导循环技（观测 6-8 段浮动 > 单趟动作帧数）当前按单趟帧位结算，未做
+  动作 Loop 循环判定。

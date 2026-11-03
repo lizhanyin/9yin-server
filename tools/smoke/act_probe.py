@@ -192,7 +192,10 @@ def main():
         sock.sendall(encode_frame(create_role_packet()))
         frames = recv_frames(sock, 3)
         print('create: %s' % ([hex(f[0]) for f in frames],))
-    sock.sendall(encode_frame(b'\x04'))
+    # 选角包 ≥0x54 字节（LoginFlow 2026-11-03 起校验长度，1B 旧包被静默丢弃）。
+    choose = bytearray(0x54)
+    choose[0] = 0x04
+    sock.sendall(encode_frame(bytes(choose)))
     frames = recv_frames(sock, 8)
     print('choose: %s' % [hex(f[0]) for f in frames][:14])
     sock.sendall(encode_frame(b'\x09'))
@@ -215,11 +218,12 @@ def main():
                 print('   op=0x%02X len=%d' % (op, len(f)))
         return got
 
-    step('1006/24 表单刷新', activity([ci(24)]))
-    step('1006/21 演武开始', activity([ci(21)]))
-    step('1006/23 打卡(card0 碎银)', activity([ci(23), cf(0), cf(1)]))
-    step('1006/23 打卡(card1 碎银)', activity([ci(23), cf(1), cf(1)]))
-    step('1006/22 退出', activity([ci(22), cf(0)]))
+    # 信封第 1 值 = msgId 1006，第 2 值 = 子命令（漏 1006 会被当独立 msgId 丢弃）。
+    step('1006/24 表单刷新', activity([ci(1006), ci(24)]))
+    step('1006/21 演武开始', activity([ci(1006), ci(21)]))
+    step('1006/23 打卡(card0 碎银)', activity([ci(1006), ci(23), cf(0), cf(1)]))
+    step('1006/23 打卡(card1 碎银)', activity([ci(1006), ci(23), cf(1), cf(1)]))
+    step('1006/22 退出', activity([ci(1006), ci(22), cf(0)]))
     sock.close()
 
 

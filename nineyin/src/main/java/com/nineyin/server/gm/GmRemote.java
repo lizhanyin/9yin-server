@@ -179,6 +179,19 @@ public class GmRemote {
                         "leg", "shoes", "wrist", "ear", "ring").contains(slot)
                         ? null : "armorSlot must be helmet/amulet/cloth/pants/leg/shoes/ear/ring";
             }
+            // 传送三动作（Go gm_panel.go switch_scene/switch_scene_preset/teleport）：
+            // 预设键入口即校验（表=GmScenePresets 107 键）；免费格式由游戏侧解析。
+            case "switch_scene_preset" -> {
+                String presetBad = nonEmpty(params, "preset");
+                if (presetBad != null) {
+                    yield presetBad;
+                }
+                String key = params.getString("preset");
+                yield com.nineyin.server.world.scene.GmScenePresets.preset(key) != null
+                        ? null : "unknown preset: " + key;
+            }
+            case "switch_scene" -> nonEmpty(params, "destination");
+            case "teleport" -> nonEmpty(params, "position");
             default -> "unsupported action: " + action;
         };
     }

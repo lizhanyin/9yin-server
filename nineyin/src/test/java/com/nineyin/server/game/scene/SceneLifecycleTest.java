@@ -28,8 +28,8 @@ import io.netty.channel.embedded.EmbeddedChannel;
 
 /**
  * 场景生命周期行为测试（合成 NPC，不依赖资源）：物化顺序、世代语义、
- * mappath 路线巡逻（步进/弹回/跳点/视口重进）与 0x20/0x1F/0x0E 帧，
- * 对齐 Go scene_lifecycle 的可观察行为。
+ * mappath 路线巡逻（0x21 广播拍/弹回/停留/视口重进）与 0x0D/0x1F/0x0E 帧，
+ * 对齐 Go scene_lifecycle 的可观察行为与官方 ServerAllDest 真机节拍。
  */
 class SceneLifecycleTest {
 
@@ -316,33 +316,33 @@ class SceneLifecycleTest {
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
-        int replayTasks = env.scheduler().tasks.size(); // 物化重放批次（5）+ 巡逻首步（1）
-        // 首步：第二段行进中 → 0x20 目标 w2（路点朝向 1.5 生效）。
-        env.scheduler().tasks.get(replayTasks - 1).run();
+        int tickerTask = env.scheduler().tasks.size() - 1; // 5 重放批 + 巡逻首拍
+        // 首拍：第二段行进中 → 0x21 目标 w2、速度 0.75、移动标志 1。
+        env.scheduler().tasks.get(tickerTask).run();
         List<byte[]> frames = env.drain();
-        assertEquals(2, frames.size()); // 0x20 + 0x1F 更新
-        assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(26f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "目标 w2");
-        assertEquals(1.5f, Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-4f, "路点朝向");
-        assertEquals(replayTasks + 2, env.scheduler().tasks.size()); // 到点 0x1F + 下一步
-        env.scheduler().tasks.get(replayTasks).run(); // 到点 0x1F
-        assertEquals(0x1F, env.drain().get(0)[0] & 0xFF);
+        assertEquals(1, frames.size());
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(1, frames.get(0)[1] | frames.get(0)[2] << 8, "单记录");
+        assertEquals(26f, Float.intBitsToFloat((int) u32(frames.get(0), 11)), 1e-4f, "目标 w2");
+        assertEquals(1.5f, Float.intBitsToFloat((int) u32(frames.get(0), 23)), 1e-4f, "路点朝向");
+        assertEquals(0.75f, Float.intBitsToFloat((int) u32(frames.get(0), 27)), 1e-4f, "walk 速度");
+        assertEquals(1, (int) u32(frames.get(0), 43), "行进标志");
+        // 下一拍已排（1s 周期链）。
+        assertEquals(tickerTask + 2, env.scheduler().tasks.size());
         // 推进时钟至回程段 w2→w1（offset 9500）。
         env.clock()[0] = epoch + 9500;
-        env.scheduler().tasks.get(replayTasks + 1).run();
+        env.scheduler().tasks.get(tickerTask + 1).run();
         frames = env.drain();
-        assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "回程 w1");
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 11)), 1e-4f, "回程 w1");
         assertEquals((float) -Math.PI / 2,
-                Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-3f, "行进朝向");
-        env.scheduler().tasks.get(env.scheduler().tasks.size() - 2).run(); // 到点 0x1F
-        env.drain();
+                Float.intBitsToFloat((int) u32(frames.get(0), 23)), 1e-3f, "行进朝向");
         // 端点弹回：回程 w1→w0（offset 13500）。
         env.clock()[0] = epoch + 13500;
         env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
         frames = env.drain();
-        assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "端点弹回");
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 11)), 1e-4f, "端点弹回");
     }
 
     @Test
@@ -360,15 +360,20 @@ class SceneLifecycleTest {
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
-        // 首步落在 w1 停留窗（4000..7000）：只排程不发帧。
-        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
-        assertTrue(env.drain().isEmpty(), "停留中不发移动帧");
-        assertEquals(7, env.scheduler().tasks.size()); // 5 重放 + 首步 + 停留等待
-        env.clock()[0] = epoch + 7500; // 停留结束：回程开腿
-        env.scheduler().tasks.get(6).run();
+        int tickerTask = env.scheduler().tasks.size() - 1;
+        // 首拍落在 w1 停留窗（4000..7000）：0x21 速度 0、标志 0（到达语义）。
+        env.scheduler().tasks.get(tickerTask).run();
         List<byte[]> frames = env.drain();
-        assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "停留后回程");
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(0f, Float.intBitsToFloat((int) u32(frames.get(0), 27)), 1e-4f, "停留速度 0");
+        assertEquals(0, (int) u32(frames.get(0), 43), "到达标志");
+        assertEquals(7, env.scheduler().tasks.size()); // 5 重放 + 首/次拍
+        env.clock()[0] = epoch + 7500; // 停留结束：回程开腿
+        env.scheduler().tasks.get(tickerTask + 1).run();
+        frames = env.drain();
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 11)), 1e-4f, "停留后回程");
+        assertEquals(0.75f, Float.intBitsToFloat((int) u32(frames.get(0), 27)), 1e-4f, "回程速度");
     }
 
     @Test
@@ -390,18 +395,19 @@ class SceneLifecycleTest {
         env.world().unregister(2);
         env.world().reconcileViewport();
         env.drain();
-        // 物化后重进：registerNpc 立即重新开链，且位置按时间表继续（不回起点）。
+        // 物化后重进：广播 ticker 已在跑（不重复启动），位置按时间表继续。
         env.clock()[0] = epoch + 3000;
         env.world().registerNpc(2, npc);
-        assertEquals(tasksBeforeLeave + 1, env.scheduler().tasks.size());
+        assertEquals(tasksBeforeLeave, env.scheduler().tasks.size(), "ticker 不重复启动");
         float xAfter = env.world().combatNpcInfo(2).x();
         assertTrue(xAfter > xBefore, "重进位置沿路线继续 " + xBefore + " → " + xAfter);
         assertTrue(xAfter > 20f && xAfter < 30f, "在首段上");
         env.clock()[0] = epoch + 8000;
-        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
+        env.scheduler().tasks.get(tasksBeforeLeave - 1).run();
         List<byte[]> frames = env.drain();
-        assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(30f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "重进后开链");
+        assertEquals(0x21, frames.get(0)[0] & 0xFF);
+        assertEquals(30f, Float.intBitsToFloat((int) u32(frames.get(0), 11)), 1e-4f, "重进后入巡");
+        assertEquals(1, (int) u32(frames.get(0), 43), "行进标志");
     }
 
     private static long u32(byte[] frame, int off) {

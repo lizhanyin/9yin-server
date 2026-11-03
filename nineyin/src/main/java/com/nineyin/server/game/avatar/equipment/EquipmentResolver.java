@@ -66,9 +66,11 @@ public final class EquipmentResolver {
         return new EquipmentResolver(packs, models);
     }
 
-    /** Go defaultModernShareRoot/item；结果常驻缓存（serverRoot 变化自动换表）。 */
+    /** Go defaultModernShareRoot/item；结果常驻缓存（serverRoot 变化自动换表）。
+     * 键加前缀：同 item 目录还有 ToolItemCatalog，裸路径键会互相污染缓存。 */
     public static EquipmentResolver loadDefault() {
-        return ResourceCache.of(ServerPaths.projectPath("resources", "modern", "share", "item"),
+        return ResourceCache.of("equipment-resolver:" + ServerPaths.projectPath(
+                        "resources", "modern", "share", "item"),
                 () -> load(ServerPaths.projectPath("resources", "modern", "share", "item")));
     }
 

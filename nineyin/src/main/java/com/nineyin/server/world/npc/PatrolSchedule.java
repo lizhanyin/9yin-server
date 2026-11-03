@@ -35,6 +35,15 @@ public final class PatrolSchedule {
     public record Dwelling(long waitMs) {
     }
 
+    /**
+     * 广播动作（官方 ServerAllDest 0x21 语义）：段目标坐标/朝向、当前速度
+     * （行进=该腿速度，停留=0）、移动标志。官方真机抓包：移动中 spd=WalkSpeed
+     * 且 tail=1，到达停留 spd=0 且 tail=0，每秒一拍全量广播。
+     */
+    public record Motion(float destX, float destY, float destZ, float destOrient,
+                         float speed, boolean moving) {
+    }
+
     private final String pathId;
     private final long epochMs;
     private final long cycleMs;
@@ -44,11 +53,14 @@ public final class PatrolSchedule {
     private final long[] dwells;
     private final int[] fromIdx;
     private final int[] toIdx;
+    private final float walkSpeed;
+    private final float runSpeed;
 
     private PatrolSchedule(String pathId, long epochMs, long cycleMs,
                            List<PatrolRoute.Waypoint> points,
                            long[] starts, long[] travels, long[] dwells,
-                           int[] fromIdx, int[] toIdx) {
+                           int[] fromIdx, int[] toIdx,
+                           float walkSpeed, float runSpeed) {
         this.pathId = pathId;
         this.epochMs = epochMs;
         this.cycleMs = cycleMs;
@@ -58,6 +70,8 @@ public final class PatrolSchedule {
         this.dwells = dwells;
         this.fromIdx = fromIdx;
         this.toIdx = toIdx;
+        this.walkSpeed = walkSpeed;
+        this.runSpeed = runSpeed;
     }
 
     /**
@@ -92,7 +106,7 @@ public final class PatrolSchedule {
                     cursor, k++, starts, travels, dwells, fromIdx, toIdx);
         }
         return new PatrolSchedule(route.pathId(), epochMs, cursor, List.copyOf(kept),
-                starts, travels, dwells, fromIdx, toIdx);
+                starts, travels, dwells, fromIdx, toIdx, walkSpeed, runSpeed);
     }
 
     private static List<PatrolRoute.Waypoint> filterByDy(List<PatrolRoute.Waypoint> waypoints) {
@@ -172,6 +186,28 @@ public final class PatrolSchedule {
             return new Moving(b.x(), b.y(), b.z(), facingOf(a, b), travelEnd - offset);
         }
         return new Dwelling(Math.max(0, travelEnd + dwells[k] - offset));
+    }
+
+    /**
+     * 时刻 nowMs 的 0x21 广播动作：目的地=段末路点，速度=该腿速度（run 腿取
+     * runSpeed），停留中速度 0。官方真机节拍每秒全量广播（含停留中的实体）。
+     */
+    public Motion motionAt(long nowMs) {
+        int k = segmentAt(nowMs);
+        PatrolRoute.Waypoint a = points.get(fromIdx[k]);
+        PatrolRoute.Waypoint b = points.get(toIdx[k]);
+        long offset = offsetOf(nowMs);
+        boolean moving = offset < starts[k] + travels[k];
+        float speed = moving ? (b.run() ? runSpeed : walkSpeed) : 0f;
+        return new Motion(b.x(), b.y(), b.z(), facingOf(a, b), speed, moving);
+    }
+
+    public float walkSpeed() {
+        return walkSpeed;
+    }
+
+    public float runSpeed() {
+        return runSpeed;
     }
 
     /** 朝向：路点有效朝向优先，否则按段行进方向。 */

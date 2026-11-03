@@ -51,6 +51,18 @@ public final class SkillCastHandler {
      * （无半径可取），用宽松近战身位兜底防跨图命中；形状技能射程即其 HitShape 半径。
      */
     public static final float SELECTED_RANGE_METERS = 8.0f;
+    /** 圈定技能落点宽容射程（米）：客户端按 TargetShape 本地限距，服务端仅防跨图。 */
+    public static final float GROUND_RANGE_METERS = 30.0f;
+    /** 冲锋招无 RushRange 时的射程回落（skill_static 实测 RushRange∈{8,15,30}）。 */
+    public static final float RUSH_RANGE_FALLBACK_METERS = 15.0f;
+    /**
+     * 官方回怒规则（2026-11-03 用户确认）：怒气增长只与单位时间打击次数有关、与伤害
+     * 高低无关——实招命中未格挡目标 +2/次（多段招每段每目标各算=叠加速更快）。
+     */
+    public static final int RAGE_PER_HIT_DEALT = 2;
+    /** 官方被击回怒（预留：本阶段无 NPC 攻击玩家路径，接线时用）：未格挡 +1/格挡 +2。 */
+    public static final int RAGE_TAKEN_UNPARRIED = 1;
+    public static final int RAGE_TAKEN_PARRIED = 2;
 
     private static double square(float value) {
         return (double) value * value;
@@ -82,6 +94,19 @@ public final class SkillCastHandler {
         float y = floatValue(values, 3);
         float z = floatValue(values, 4);
         float orient = floatValue(values, 5);
+        // 211 长格式（111B，圈定/指向/冲锋技能；短格式 87B 无这些值——宽容解析得 0/空）：
+        // idx 6-8 方向点 tx/ty/tz（指向型非零）、idx 9 空串、idx 10 目标对象
+        // （tag8，int64=objId|owner<<32）、idx 11-13 目标坐标。docs/combat-skill-211.md §1。
+        CastPoint aim = new CastPoint(floatValue(values, 11), floatValue(values, 12),
+                floatValue(values, 13));
+        CastPoint dir = new CastPoint(floatValue(values, 6), floatValue(values, 7),
+                floatValue(values, 8));
+        int aimObjId = 0;
+        int aimOwnerId = 0;
+        if (values.size() > 10 && values.get(10).tag == 8) {
+            aimObjId = (int) (values.get(10).int64 & 0xFFFFFFFFL);
+            aimOwnerId = (int) (values.get(10).int64 >>> 32);
+        }
 
         Integer learned = context.learnedSkills().get(skillId);
         if (learned == null || learned < 1) {
@@ -93,7 +118,11 @@ public final class SkillCastHandler {
             LOG.info("reject learned skill without compiled level id=" + skillId + " level=" + learned);
             return;
         }
+        // 冲锋射程（CanRush 且 RushRange>0；无值回落 15 米）——单体/圈定冲锋放宽 8 米身位闸
+        double rushRange = skill.canRush()
+                ? Math.max(skill.rushRangeM(), RUSH_RANGE_FALLBACK_METERS) : 0;
         FightState.SelectedTarget selected = null;
+        CastPoint castPoint = null;
         if (skill.requiresTarget()) {
             selected = context.fight().livingSelectedTarget(context.world());
             if (selected == null) {
@@ -102,16 +131,35 @@ public final class SkillCastHandler {
             }
             // 攻击距离闸门（bug.txt「攻击距离正常」项）：单体/以目标为中心的技能校验
             // 施法者(211 上报坐标)→目标距离，超距静默拒（客户端面板变红提示为本地行为）。
-            // 射程 = max(HitShape 半径, 近战兜底 8 米)；形状技能（以己圆/扇/矩）天然以
-            // 施法者坐标为圆心，半径即射程，不走此闸。
+            // 射程 = max(HitShape 半径, 近战兜底 8 米, 冲锋 RushRange)；形状技能（以己
+            // 圆/扇/矩）天然以施法者坐标为圆心，半径即射程，不走此闸。
             SceneLifecycle.CombatNpcInfo targetInfo = context.world().combatNpcInfo(selected.objectId());
             if (targetInfo != null) {
                 double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
                         + square(z - targetInfo.z()));
-                double maxRange = Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
+                double maxRange = Math.max(Math.max(skill.areaRadius(), SELECTED_RANGE_METERS),
+                        rushRange);
                 if (distance > maxRange) {
                     LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
                             + "m > " + (int) maxRange + "m");
+                    return;
+                }
+            }
+        } else if (skill.targetMode() == CombatSkill.TargetMode.GROUND_AREA
+                || skill.targetMode() == CombatSkill.TargetMode.GROUND_RECTANGLE) {
+            // 圈定范围/腾空圈定（bug.txt:48-49）：免选中目标，落点=长格式目标对象/坐标。
+            castPoint = resolveCastPoint(context, aimObjId, aimOwnerId, aim, dir);
+            if (castPoint == null) {
+                // 无任何落点线索：放行出招但伤害空集（Go "has no center; no targets
+                // settled" 同款——客户端本地必有圈指示，正常不会走到）。
+                LOG.info("ground skill id=" + skillId + " has no cast point; no targets settled");
+            } else {
+                double distance = Math.sqrt(square(x - castPoint.x()) + square(y - castPoint.y())
+                        + square(z - castPoint.z()));
+                double maxRange = Math.max(GROUND_RANGE_METERS, rushRange);
+                if (distance > maxRange) {
+                    LOG.info("reject ground skill id=" + skillId + " cast point out of range "
+                            + (int) distance + "m > " + (int) maxRange + "m");
                     return;
                 }
             }
@@ -126,11 +174,15 @@ public final class SkillCastHandler {
         if (selected != null) {
             targetKey = (selected.objectId() & 0xFFFFFFFFL) | ((long) selected.ownerId() << 32);
         }
+        int spBeforeCast = context.player().sp();
         PlayerActor.SkillGate gate = context.player().beginSkillUse(skill, targetKey, now);
         if (!gate.allowed()) {
             LOG.info("reject skill id=" + skillId + ": " + gate.reason());
             return;
         }
+        // 怒招消耗可能把其它怒招行也压到阈值下（如 40/80 双怒招，SP 100→60 时 80 招
+        // 应灰）：SP 变化即推全量怒招行过渡（变化才发）。
+        pushRageRowTransitions(context, spBeforeCast, context.player().sp());
 
         Connection connection = context.connection();
         PlayerActor player = context.player();
@@ -152,7 +204,9 @@ public final class SkillCastHandler {
                 PlayerActor.PLAYER_OWNER_ID, GCD_CATEGORY, start,
                 start + skill.publicCdMs(),
                 skill.cooldownTeam() > 0 ? skill.cooldownTeam() : GCD_TEAM_FALLBACK));
-        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；个人 CD 尽时置 1——
+        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；个人 CD 尽时按
+        // 「SP≥消耗」置 1——官方 CanUse 完全由服务端逐行推（61114 登录批 196 帧、
+        // 62433 战斗 2159 帧实证），CD 尽但怒气不够时必须保持 0，否则图标假可用。
         // 出招技能自身不吃公共 GCD（同套路不触发 7s，bug.txt；2026-11-02 前
         // max(个人,GCD) 把 cd<7s 的技能图标也压到 7s，已改回个人 CD）
         Integer row = context.skillRows().get(skill.id());
@@ -161,8 +215,8 @@ public final class SkillCastHandler {
             long canUseAt = skill.personalCdMs();
             // 大括号块保证解析到 schedule(Runnable)：单表达式 lambda 会因返回值落到 Callable 重载
             context.scheduler().schedule(() -> {
-                context.connection().writeFrame(
-                        FightMessages.skillRowCanUse(SKILL_VIEW_ID, row, true));
+                context.connection().writeFrame(FightMessages.skillRowCanUse(
+                        SKILL_VIEW_ID, row, context.player().sp() >= skill.spCost()));
             }, Math.max(canUseAt, 1), TimeUnit.MILLISECONDS);
         }
         // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
@@ -174,7 +228,7 @@ public final class SkillCastHandler {
         connection.writeFrame(FightMessages.skillAction(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
 
-        List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient);
+        List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient, castPoint);
         if (skill.hitFrameMs().isEmpty()) {
             // 单段技能：原路径（即时结算，帧序对齐 62433 抓包）。
             List<Hit> hits = settleTargets(context, skill, targets, now);
@@ -183,6 +237,7 @@ public final class SkillCastHandler {
                 connection.writeFrame(player.logicStateFrame());
             }
             emitPerTargetSequence(context, skill, hits, playerName);
+            awardRagePerHit(context, hits);
             applyTargetControl(context, skill, hits, now);
             feedMeridianZhenQi(context, hits);
         } else {
@@ -264,9 +319,13 @@ public final class SkillCastHandler {
     private record Hit(FightState.HitTarget target, int damage) {
     }
 
-    /** 出招时刻的目标解析（单体/以己形状/以目标为中心形状；无伤害效果返回空表）。 */
+    /**
+     * 出招时刻的目标解析（单体/以己形状/以目标为中心形状/地面落点形状；无伤害效果返回空表）。
+     * GROUND_* 以 {@code castPoint}（211 长格式落点）为中心，矩形投影用施法者朝向。
+     */
     private static List<FightState.HitTarget> resolveTargets(CastContext context, CombatSkill skill,
-                                                             float x, float y, float z, float orient) {
+                                                             float x, float y, float z, float orient,
+                                                             CastPoint castPoint) {
         boolean hasDamage = skill.effects().stream()
                 .anyMatch(effect -> effect.kind() == CombatSkill.EffectKind.DAMAGE && effect.amount() > 0);
         if (!hasDamage) {
@@ -284,6 +343,12 @@ public final class SkillCastHandler {
             }
             case CASTER_CIRCLE, CASTER_SECTOR, CASTER_RECTANGLE ->
                     targets.addAll(context.fight().shapedTargets(context.world(), x, y, z, orient, skill));
+            case GROUND_AREA, GROUND_RECTANGLE -> {
+                if (castPoint != null) {
+                    targets.addAll(context.fight().shapedTargets(context.world(),
+                            castPoint.x(), castPoint.y(), castPoint.z(), orient, skill));
+                }
+            }
             case SELECTED_AREA -> {
                 FightState.SelectedTarget target =
                         context.fight().livingSelectedTarget(context.world());
@@ -301,6 +366,101 @@ public final class SkillCastHandler {
             }
         }
         return targets;
+    }
+
+    /**
+     * 211 长格式落点中心（圈定/冲锋圈定技能）：可解析的目标对象（战斗 NPC）位置 →
+     * 目标坐标(11-13)非零 → 方向点(6-8)非零 → 选中 NPC 位置（Go 近似 SelectedArea
+     * 的行为兜底）→ null（无中心，伤害空集）。
+     */
+    private static CastPoint resolveCastPoint(CastContext context, int aimObjId, int aimOwnerId,
+                                              CastPoint aim, CastPoint dir) {
+        if (aimObjId != 0) {
+            SceneLifecycle.CombatNpcInfo info = context.world().combatNpcInfo(aimObjId);
+            if (info != null && info.combat() && info.ownerId() == aimOwnerId) {
+                return new CastPoint(info.x(), info.y(), info.z());
+            }
+        }
+        if (aim.present()) {
+            return aim;
+        }
+        if (dir.present()) {
+            return dir;
+        }
+        FightState.SelectedTarget selected = context.fight().livingSelectedTarget(context.world());
+        if (selected != null) {
+            SceneLifecycle.CombatNpcInfo info = context.world().combatNpcInfo(selected.objectId());
+            if (info != null) {
+                return new CastPoint(info.x(), info.y(), info.z());
+            }
+        }
+        return null;
+    }
+
+    /** 211 长格式坐标点（全 0 视为未提供——世界原点不在可玩区域）。 */
+    private record CastPoint(float x, float y, float z) {
+
+        boolean present() {
+            return x != 0f || y != 0f || z != 0f;
+        }
+    }
+
+    /**
+     * 官方回怒：每次实招命中未格挡目标 +2（按打击次数不按伤害；多段招每段每目标
+     * 各算）。变化才发单属性 SP 帧（饱和 0..100，满值不加帧）+ 怒招行可用性过渡。
+     */
+    private static void awardRagePerHit(CastContext context, List<Hit> hits) {
+        int landed = 0;
+        for (Hit hit : hits) {
+            if (hit.damage() > 0) {
+                landed++;
+            }
+        }
+        awardRage(context, landed * RAGE_PER_HIT_DEALT);
+    }
+
+    private static void awardRage(CastContext context, int delta) {
+        if (delta <= 0) {
+            return;
+        }
+        PlayerActor player = context.player();
+        int before = player.sp();
+        PlayerActor.SPUpdate update = player.addSP(delta);
+        if (update.sp() != before) {
+            context.connection().writeFrame(update.frame());
+            pushRageRowTransitions(context, before, update.sp());
+        }
+    }
+
+    /**
+     * 怒气维度的 View40 行可用性过渡（bug.txt「怒招不够怒气快捷栏不灰」）：SP 跨过
+     * 某技能 AConsumeSP 阈值时推该行 CanUse（变化才发，官方稀疏风格）。0→1 即真机
+     * 怒招可释放特殊动画的触发源；值=资源可用性（SP≥消耗）——CD 灰由客户端
+     * cooldown_rec 扫描独立承担（官方 61579 批对 CD 中的行也恒推 1，LoginFlow 的
+     * 2s 心跳批同语义）。消耗族与 View40 行同源（skillRowData，免整编译）。
+     */
+    private static void pushRageRowTransitions(CastContext context, int beforeSp, int afterSp) {
+        if (beforeSp == afterSp || context.skillRows().isEmpty()) {
+            return;
+        }
+        CombatSkillCatalog catalog = CombatSkillCatalog.load();
+        for (Map.Entry<String, Integer> learned : context.learnedSkills().entrySet()) {
+            String id = learned.getKey();
+            CombatSkillCatalog.SkillRowData rowData =
+                    catalog.skillRowData(id, learned.getValue());
+            int cost = rowData == null ? 0 : rowData.aConsumeSP();
+            if (cost <= 0) {
+                continue;
+            }
+            Integer row = context.skillRows().get(id);
+            if (row == null || row <= 0) {
+                continue;
+            }
+            if ((beforeSp >= cost) != (afterSp >= cost)) {
+                context.connection().writeFrame(FightMessages.skillRowCanUse(
+                        SKILL_VIEW_ID, row, afterSp >= cost));
+            }
+        }
     }
 
     /** 单段结算：逐目标掷值落血（未命中记 0 值命中，发帧阶段整段跳过）。 */
@@ -409,6 +569,7 @@ public final class SkillCastHandler {
                     context.player().touchCombat(now); // 后续段刷新活跃时刻，防段间闲退
                 }
                 emitPerTargetSequence(context, skill, hits, playerName);
+                awardRagePerHit(context, hits); // 每段每目标各 +2（官方多段叠加速更快）
                 landedTotal[0] += (long) damage * hits.size();
                 if (lastTick) {
                     feedZhenQiAmount(context, (int) Math.min(landedTotal[0], Integer.MAX_VALUE));
@@ -507,10 +668,39 @@ public final class SkillCastHandler {
                 return null;
             }
         }
+        evictReplaceCategoryBuffs(context, buff, slot, now);
         long lifetime = buff.lifetimeMs() > 0 ? buff.lifetimeMs() : CombatSkillCatalog.DEFAULT_BUFF_LEASE_MS;
         Instant expiresAt = now.plusMillis(lifetime);
         player.activateBuff(slot, buff.staticData(), buff.configId(), buff.level(), expiresAt);
         return new StagedBuff(slot, buff.staticData(), buff.configId(), expiresAt);
+    }
+
+    /**
+     * 官方互斥组逐出（buff_static ReplaceCategory，2026-11-03）：同组新 buff 顶掉其它
+     * 槽位的旧 buff——架招族 Category=9/ReplaceCategory=220214（太极 6013/6055 与花神
+     * 15101 同组），「架招 buff 只能有一个」。逐出即发空槽帧（客户端 BuffStore 按槽
+     * 权威，不做本地替换）；本槽复用（同 configId 或同 preferredSlot）不逐出自己。
+     */
+    private static void evictReplaceCategoryBuffs(CastContext context, CombatSkill.Buff buff,
+                                                  int targetSlot, Instant now) {
+        CombatSkillCatalog catalog = CombatSkillCatalog.load();
+        long replaceCategory = catalog.buffReplaceCategory(buff.staticData());
+        if (replaceCategory <= 0) {
+            return;
+        }
+        for (java.util.Map.Entry<Integer, Long> active
+                : context.player().activeBuffStaticDatas(now).entrySet()) {
+            int slot = active.getKey();
+            if (slot == targetSlot
+                    || catalog.buffReplaceCategory(active.getValue()) != replaceCategory) {
+                continue;
+            }
+            if (context.player().clearBuffSlot(slot)) {
+                context.connection().writeFrame(context.player().buffSlotFrame(slot, ""));
+                LOG.info("evict same replace_category=" + replaceCategory + " buff slot=" + slot
+                        + " for incoming " + buff.configId());
+            }
+        }
     }
 
     /** 动作总时长后：0x12 删 active_skill_rec + State="stand"；buff 到期清槽发空帧。 */

@@ -27,10 +27,10 @@
 ```
 客户端 1006/24（开修炼面板） → 服务端：
   [0x10 n=1 FacultyName=""]            ← 故意清空逼 binder 重跑
-  [0x10 全量帧 188 属性]                ← LogicState=0 Style=1 FillSpeed=200
+  [0x10 面板瘦集 186 属性]              ← LogicState=0 Style=1 FillSpeed=200
 
 客户端 1006/21（点"演武"按钮） → 服务端：
-  [0x10 全量帧 188 属性]                ← 仅 3 值变化：LogicState 0→108、FacultyStyle 1→2、FillSpeed→0
+  [0x10 面板瘦集 186 属性]              ← 仅 3 值变化：LogicState 0→108、FacultyStyle 1→2、FillSpeed→0
   [0x1E custom [191,22,0]]             ← ACT_BEGIN：客户端开演武表单+演武相机
 
 每秒节奏（持续整个演武）：
@@ -49,6 +49,10 @@
 - 客户端每 3 张卡自动 **22→24→21** 循环重开（引擎按 LogicState 0→108 翻转重启动作）。
 - 动作 = 客户端引擎 `LS_FACULTY=108`（share/logicstate_define.lua:11）映射；
   服务端职责就是上面的 108↔0 翻转帧。
+- **24/21/23 响应的 0x10 全部是同一套 186 名"面板瘦集"**（#2190/#2194/#2203 逐帧
+  diff 全等，与出招瘦集 CAST_PANEL_NAMES 零差集）。不含 Mount/CurRideMount/
+  ActDay*/TeamFaculty*/NorFacultyAdd——这些只在登录帧下发（全会话 ActDay* 仅现于
+  登录帧 #18，ActCostSuiYin=660）。我服 SelectSchool 无数据源，实发 n=185。
 
 ## 3. 我服实现（2026-11-03，全部落地）
 
@@ -75,8 +79,15 @@
 3. E2E 探针 `tools/smoke/act_probe.py`：登录包为 25B 头（账号槽长 u32@0x15）+
    账号/密钥/登录串三槽（**长度必须 16 的倍数**）+ clientType + loginType 尾 4B；
    选角包 ≥0x54 字节；打卡信封第 1 值=1006、第 2 值=sub(int)、card/payment 为 f64。
-4. 演武动作若真机仍不出：服务端帧已与参考逐字节等价（含补齐块），下一步只能抓
-   **我服 19061** 的演武会话对比帧外条件（captures 工具链 capture_deep.py）。
+4. **演武待机动画不出（2026-11-03 晚已修）**：帧序本身早已正确（真机 55512 会话
+   LS=108+[22,0]×3 全在线上），根因是 0x10 整推 218 项登录全集——帧尾重推
+   `Mount=''`/`CurRideMount=0` 清客户端视觉状态，把帧首刚下发的 LogicState=108
+   （LS_FACULTY 待机动作）立即打回普通待机。与空中位置重置同类根因。修复 =
+   1006 全家族响应改走 `castVitalUpdate()` 186 名瘦集（FacultyCustomHandler
+   `writePanelUpdate`）。ActDay*/团练块改只在登录帧下发（与参考一致）。
+5. act_probe.py 两处坑：选角包必须 ≥0x54B（1B 旧包被静默丢弃）；信封第 1 值必须
+   是 msgId=1006、第 2 值才是子命令（只发子命令会被当独立 msgId 记
+   "unrecognized" 丢弃）。
 
 ## 5. 团练（未实现，仅疲劳值下发）
 

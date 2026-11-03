@@ -246,6 +246,9 @@ C2S 解析器另接受 `5=double(8B) 7=widestr`（custom_c2s.go:106-204）。
 | 240 | 打坐开关 | (int 1 开始/0 停止/2 被打断)。**重复 1=按住不是切换**；2 必须当正常停处理否则战斗打断瞬间断连 |
 | 307 | 仓库（子消息 4） | — |
 | 1006 | 内功面板总线 | 1 选书 / 11 普通内修开始 / 21 演武开始 / 22 关闭 / **23 三选卡（两个 double:0/double:1 枚举值）** / 24 刷新 / 14 升级通知 |
+| **30** | **MOVEITEM 移动物品**（穿/脱装备、页间移动） | `(fromView, fromSlot, toView, toSlot)`。脱下=`[1,槽,121,0]`（toSlot=0 自动选格）；穿上=`[121,格,1,身体槽]`。menu2.exe 证据：`MOVEITEM (%d,%d)->(%d,%d)` / `MOVEITEM addtoolbox anchor not found`（扩容包链）；**不承载"使用"语义** |
+| **31** | **USEITEM 使用物品**（右键） | **恰好 4 值** `[31, view(int), slot(int), count(int≥1)]`；3/5 值或 count=0 拒（`reject malformed native item use values=%v`）。按物品类型分流：装备→右键穿（链成员 `cmpl $0x1f` 自检 msgId==31）、风物志卡片→收录（`USEITEM fwz card %s (view=%d pos=%d)`）、食物/秘籍/坐骑→各子链 |
+| **886-889** | **一键穿 OnestepEquip** | `(uid 字符串)`，uid=ViewAdd 下发 `MD5(roleId:bag:slot)` 前 8 字节 hex；未命中 `onestep equip uid=%s not found in bags` |
 
 **枚举可能是 double**：1006/23 实测发 `double:0, double:1`；接受 int32/int64/float/double 的精确整数值，分数/NaN/越界拒绝（custom_c2s.go:29-57）。
 

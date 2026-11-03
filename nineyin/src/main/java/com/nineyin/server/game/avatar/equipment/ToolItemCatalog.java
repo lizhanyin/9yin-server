@@ -89,10 +89,10 @@ public final class ToolItemCatalog {
         }
     }
 
-    /** 常驻缓存（同 EquipmentResolver.loadDefault 键策略）。 */
+    /** 常驻缓存（键加前缀：同 item 目录还有 EquipmentResolver，裸路径键会互相污染）。 */
     public static ToolItemCatalog loadDefault() {
         Path itemRoot = ServerPaths.projectPath("resources", "modern", "share", "item");
-        return ResourceCache.of(itemRoot, () -> load(itemRoot));
+        return ResourceCache.of("tool-item-catalog:" + itemRoot, () -> load(itemRoot));
     }
 
     private ToolItemCatalog() {

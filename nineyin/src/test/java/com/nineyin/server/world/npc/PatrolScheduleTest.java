@@ -71,6 +71,30 @@ class PatrolScheduleTest {
     }
 
     @Test
+    void motionAtMatchesOfficialAllDestSemantics() {
+        // 官方 0x21 语义（真机抓包）：行进中 spd=该腿速度且 moving=true（tail=1）；
+        // 到达停留 spd=0 且 moving=false（tail=0）；目的地=段末路点。
+        PatrolRoute r = route(
+                new Waypoint(0f, 0f, 0f, 0f, false, 0),
+                new Waypoint(3f, 0f, 0f, 0f, false, 1000));
+        PatrolSchedule schedule = PatrolSchedule.build(r, 1.5f, 4f, 0L);
+        PatrolSchedule.Motion traveling = schedule.motionAt(1000L);
+        assertTrue(traveling.moving());
+        assertEquals(3f, traveling.destX(), 1e-4f);
+        assertEquals(1.5f, traveling.speed(), 1e-4f, "行进中=WalkSpeed");
+        PatrolSchedule.Motion dwelling = schedule.motionAt(2500L);
+        assertEquals(3f, dwelling.destX(), 1e-4f, "停留目的地=到达路点");
+        assertEquals(0f, dwelling.speed(), 1e-4f, "停留速度 0");
+        assertEquals(false, dwelling.moving());
+        // run 腿速度取 RunSpeed。
+        PatrolRoute runRoute = route(
+                new Waypoint(0f, 0f, 0f, 0f, false, 0),
+                new Waypoint(8f, 0f, 0f, 0f, true, 0));
+        PatrolSchedule runSchedule = PatrolSchedule.build(runRoute, 1f, 4f, 0L);
+        assertEquals(4f, runSchedule.motionAt(1000L).speed(), 1e-4f, "run 腿=RunSpeed");
+    }
+
+    @Test
     void filtersHighJumpWaypointsAndRejectsUnusable() {
         // w1/w2 相对保留点高差均 >6m → 只剩 w0 → 不可用。
         PatrolRoute bad = route(

@@ -196,3 +196,64 @@ State/ActionSet 等移动模式与外观属性官方**不随出招重发**；Jav
 **修复**：`PlayerActor.castVitalUpdate()` = stateProperties 过滤到 `CAST_PANEL_NAMES`
 白名单（186 名，逐名取自 #2007）；SkillCastHandler 出招改用之；SpeedRatio 默认 100→0
 （exe 出招面板实发 0；旧 Go newPlayer 的 100 过时）。登录面板不动。
+
+**2026-11-03 真机闭环**：三轮修复上线后用户实测空中出招不再落地，问题解决。
+七项偏差全量对齐参考服 exe（lock200 / CurSkillTarget 自身 / n=6 清除帧 / 槽 12+ConfigID
+复用 / FILETIME 纪元 / buff 面板内嵌无 169 / CAST_PANEL_NAMES 白名单+SpeedRatio=0），
+其中出招面板瘦身（⑦）为决定性修复。
+
+## 11. 怒招消耗下发 + 圈定/冲锋/腾空（bug.txt:45-49，2026-11-03）
+
+### 11.1 怒招消耗下发（View40 行补集）
+
+官方 View40 行携带而本服原缺失的属性族（`StarterSkills.skillRowProperties` 现经
+`CombatSkillCatalog.skillRowData(id, level)` 下发）：
+
+| 属性 | 官方索引 | 值源 | 说明 |
+|---|---|---|---|
+| VarPropNo | 2239 | 匹配 varprop 行号（=客户端 varpkg） | 原恒 0 |
+| UseLimit | 2238 | skill_new.UseLimit | 原恒 9；缺省回落 9 |
+| AConsumeHP/MP/SP/QGP | 2245/2246/2252/2254 | varprop→Consume→skill_consume | 仅 >0 才发（官方稀疏风格）；**怒招由此带出 AConsumeSP → 客户端显示怒气消耗并在怒气不足灰图标** |
+| TargetShapePara1/2 | 2259/2260 | varprop→TargetShapePkg→attack_targetshape | f32；新装载该表 |
+| HitShapePara1/2 | 2261/2262 | varprop→HitShapePkg→attack_hitshape | f32；地面圈指示/射程提示 |
+
+官方行的 `Type(0)` 跳过（属名在 0x09 表多处出现，玩家域解析到 idx181 语义不明）。
+服务端 SP 闸门本就存在（`PlayerActor.beginSkillUse`：SP&lt;AConsumeSP 拒 + 扣减），
+此前体感「没检查」= 客户端看不到消耗 + 怒气无获得途径单向扣。
+
+### 11.2 怒气获得（官方机制，用户 2026-11-03 确认）
+
+怒气增长**只与单位时间打击次数有关、与伤害高低无关**：
+
+- 攻击：实招命中**未格挡**目标 +2/次（多段招每段每目标各算=叠加速更快）；对方招架状态不增加。
+- 被击：自己未格挡 +1、自己格挡（招架）+2 —— 本阶段无 NPC 攻击玩家路径，常量
+  `RAGE_TAKEN_UNPARRIED/PARRIED` 预留未接线。
+- 实现：`SkillCastHandler.awardRagePerHit`（单段结算后/多段每段）→ `PlayerActor.addSP`
+  饱和 0..100，变化才发单属性 SP 帧（满值不发）。
+
+### 11.3 211 长格式落点与 GROUND 目标模式
+
+**长格式（111B）解析**（原只读 idx 0-5）：idx 6-8 方向点 tx/ty/tz（指向型非零）、
+idx 9 空串、idx 10 目标对象（tag8=int64 `objId|owner<<32`）、idx 11-13 目标坐标。
+
+**落点中心优先级**（`resolveCastPoint`）：可解析目标对象（战斗 NPC）位置 → idx11-13
+非零 → idx6-8 非零 → 选中 NPC 位置（Go 近似兜底）→ null（放行不结算，Go "no center" 同款）。
+
+**TargetMode 新增**（`compileTargetMode`）：
+
+| HitShape | 原映射 | 新映射 | 语义 |
+|---|---|---|---|
+| 11（玩家点选地面圆） | SELECTED_AREA（需选中目标→无选中即静默拒=**圈定技能放不出的根因**） | **GROUND_AREA** | 免选中，圆心=落点 |
+| 12（地面矩形） | CASTER_RECTANGLE | **GROUND_RECTANGLE** | 免选中，落点+施法朝向投影 |
+| 2（以目标为圆心） | SELECTED_AREA | 不变 | 需选中目标 |
+
+腾空圈定（IsAirSkill）无独立服务端门：空中出招已通（§9 七项修复），GROUND 落点 +
+HeightDiff 高度差过滤天然覆盖（圆心在地面、目标在地面 dy≈0）。
+
+**射程闸**：CanRush（skill_static）技能距离上限放宽到 RushRange（无值回落 15 米，
+实测值域 {8,15,30}）；GROUND 落点用 max(RushRange, 30 米) 宽容闸（客户端按 TargetShape
+本地限距，服务端仅防跨图）。冲锋位移信任客户端（用户确认）：服务端只结算伤害，
+玩家位置由客户端移动同步驱动，msg337 仍回显 211 坐标。
+
+**测试**：`GroundChargeAndRageTest`（圈定免选中按落点命中/超程拒/无落点零伤害；
+冲锋 12m 放行 25m 拒+非冲锋同距对比；怒招 SP 闸门/扣减/命中回怒+SP 帧）。

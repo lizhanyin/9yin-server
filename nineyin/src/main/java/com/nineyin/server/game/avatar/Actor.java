@@ -135,8 +135,10 @@ public final class Actor {
     }
 
     /**
-     * Go UseQingGong（无消耗系数档）：成功扣点；成功后余量 &lt; 50 自动回满
-     * （回满在闸门之后——动作必须先付得起）。返回实付点数，付不起返回 -1。
+     * Go UseQingGong（无消耗系数档）：成功扣点，返回实付点数，付不起返回 -1。
+     * 2026-11-03 去掉「余量 &lt;50 自动回满」本地规则：官方轻功回复是分档慢回复
+     * （101-150 每 3s +10 / 51-100 +5 / 0-50 +3，玩家资料 0→150 需 96s 实测），
+     * 回满会让消耗经济失去意义。
      */
     public int useQingGong(int baseCost) {
         if (baseCost < 0) {
@@ -146,10 +148,21 @@ public final class Actor {
             return -1;
         }
         qingGong -= baseCost;
-        if (qingGong < 50) {
-            qingGong = maxQingGong + maxQingGongAdd;
-        }
         return baseCost;
+    }
+
+    /**
+     * 官方分档回复一步（玩家资料实测口径，2026-11-03）：按回复前余量取档——
+     * 101..上限 → +10、51..100 → +5、0..50 → +3；封顶 max+Add。返回是否有变化。
+     */
+    public boolean recoverQingGongTiered() {
+        int cap = maxQingGong + maxQingGongAdd;
+        if (qingGong >= cap) {
+            return false;
+        }
+        int gain = qingGong >= 101 ? 10 : qingGong >= 51 ? 5 : 3;
+        qingGong = Math.min(cap, qingGong + gain);
+        return true;
     }
 
     /**
@@ -170,5 +183,34 @@ public final class Actor {
         hitHp = maxHp;
         mp = maxMp;
         logicState = LOGIC_STATE_NORMAL;
+    }
+
+    /**
+     * Go RestoreWhileSit：打坐（LS_SITCROSS）每秒权威结算一步。死亡/非坐姿不恢复
+     * ——UI 的 HPUpSpeed 等速率字段仅展示，真实恢复只发生在服务器 tick。
+     * 淤血条（HitHP）不低于回复后的 HP。
+     *
+     * @return 资源是否发生变化（调用方据此发 0x10）
+     */
+    public boolean restoreWhileSit(int hpAmount, int mpAmount) {
+        if (hpAmount < 0 || mpAmount < 0) {
+            return false;
+        }
+        if (logicState != LOGIC_STATE_SITCROSS || hp <= 0) {
+            return false;
+        }
+        boolean changed = false;
+        if (hpAmount > 0 && hp < maxHp) {
+            hp = Math.min(maxHp, hp + hpAmount);
+            if (hitHp < hp) {
+                hitHp = hp;
+            }
+            changed = true;
+        }
+        if (mpAmount > 0 && mp < maxMp) {
+            mp = Math.min(maxMp, mp + mpAmount);
+            changed = true;
+        }
+        return changed;
     }
 }

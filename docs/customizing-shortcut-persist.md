@@ -97,7 +97,92 @@ SELECTED 模式。
   恒定伤害飘字 / 中途击杀后续段跳过（探针法动态断言）/ tjq02 超距零帧+贴身受理。
 - `CustomizingFlowTest`（3）/ `ShortcutCustomFlowTest`（2）：见上两节。
 
-## 七、遗留
+## 七、操作模式持久化（C2S 99，2026-11-04 补）
+
+> 真机反馈：快捷键保存后重登异常。键位数据两域（144B customizing + 198 主串）都已闭环，
+> 缺的是**操作模式**——键位方案与模式错配的表象。用户钉死方向：99 要存且要下发。
+
+### 协议（lua64 源码钉死）
+
+| 方向 | ID | 载荷 | 语义 |
+|---|---|---|---|
+| C2S | **99** | `[99, mode]`（单 int） | `CLIENT_CUSTOMMSG_SET_OPERATEMODE`：`form_system_interface_setting.switch_mode` → `custom_set_operate_mode` → `game_visual:CustomSend(99, mode)`；0=3D（WASD）/ 1=2.5D（点击） |
+| S2C | 0x10 属性 | `OperateMode`（0x09 表索引 **223**，type3 int32） | 玩家属性回推；跨服重连 lua 直接 `QueryProp("OperateMode")`，正常登录由引擎消费恢复模式 |
+
+注意：F 盘参考服抓包（50768~62185 七会话）**无 99 上行也无 223 下行**（会话里没切过模式），
+回推形态无参考端范本，按属性表 + 跨服 lua 语义实现。保存界面（form_shortcut_save）
+点保存时引擎另发 ShortcutKey1/2 属性写与 107 配置串，**不发 99**——99 只在
+3D↔2.5D 切换确认框点确定时发。
+
+### 实现（LoginFlow + RoleInventoryStore）
+
+- `dispatchCustom` 增 `case 99`：`handleSetOperateMode` 校验 mode∈{0,1}（非法静默零帧），
+  回推 `operateModeFrame`（0x10 单属性帧），落库失败仅告警。
+- 持久化：`role_keybinds.operate_mode`（TINYINT NULL，NULL=从未设置；键位域同表）。
+  UPSERT 注意 bind_value NOT NULL 无默认值，首插补空串（`admin/sql/0008`，幂等 ALTER）。
+- 登录 post-spawn：`pushSavedKeybind` 后紧跟 `pushSavedOperateMode`（共用 keybindPushed 闸），
+  无存档零帧（客户端保持本地默认）。
+
+## 八、键位方案槽三串闭环（C2S 195，2026-11-04 补）
+
+> 真机反馈：保存面板"方案一/方案二 恒未保存"。面板 `check_saved` 读**服务端属性视图**
+> `ShortcutKey1/2`（QueryProp），不回推则界面不认——键位串本身早在走，缺的是方案槽协议。
+
+### 协议（bak 抓包 12173/1578 双帧钉死 + form_shortcut_save.lua 语义）
+
+| 方向 | ID | 载荷 | 语义 |
+|---|---|---|---|
+| C2S | **195** | `[195, scheme, str]`（引擎级，非 lua custom_define） | `ShortcutKey:EndEdit(commit, scheme)` 上传键位串；scheme **0=当前启用/1=方案一/2=方案二**（样本 658B，形 "项,键码;…"） |
+| S2C | 0x10 属性 | ShortcutKey=**198** / ShortcutKey1=**199** / ShortcutKey2=**200**（均 type7，串尾补空格 u32=len+1） | 官服收到 195 不回包（抓包无 198/199/200 即时回显）；但我们回推——客户端属性视图以服务端下发为准 |
+
+模型（form_shortcut_save.lua）：方案一/二=两份存档串；**当前使用哪套 = bind_value（198）**
+——客户端"启用"方案 N 时引擎以 scheme 0 上传该集，bind_value 自动跟随启用集，
+重登回推 198 即用户所启用的那套；模式（223）随启用时 switch_mode 的 99 同步。
+
+### 实现（LoginFlow + RoleInventoryStore）
+
+- `case 195` → `handleKeybindUpload`：scheme∈{0,1,2} + 串校验（≤4096、仅数字/逗号/分号），
+  回推对应属性帧 + `role_keybinds` 落列（0→bind_value、1→shortcut_key1、2→shortcut_key2）。
+  **UPSERT 坑：slot 0 目标列即 bind_value，列单写**（"Column specified twice" 硬错）。
+- 登录 post-spawn：`pushSavedKeybind`（198）后补 `pushSavedKeybindSchemes`（199/200，
+  无档零帧）+ `pushSavedOperateMode`（223），共 keybindPushed 一闸。
+- 探针 `probe_operate_mode.py` 扩到 14 项：195×3 槽回显 / DB 三列 / 重登四属性全回推。
+
+## 九、跨场景重推（2026-11-04 修复）
+
+> 真机反馈：跨场景后键位数据消失。根因：切图 0x0C 清客户端玩家对象，addObject(0x0D)
+> 重建的属性档不含键位四项；`completeSceneReentry` 旧注释假设"键位是连接级不重发"是错的
+> （个性配置 705 确是连接级——它落在 lua 配置对象上，不随对象清）。
+
+修复：`completeSceneReentry` 标志复位清单加 `keybindPushed = false`，重入收尾经
+`grantOncePerConnectionRows` 与轻功/经脉/皮肤/时装同链重推 198/199/200/223。
+单测 `LoginFlowSceneSwitchTest.sceneSwitchRearmsKeybindPushForPropertyReplay`
+（MySQL 集成式：scratch 角色种四列 → 切图收尾 → 断言四单属性帧）；
+探针扩到 21 项（GM switch_scene_preset 全链，注意会话需先发 0x0A 进 InWorld 相位）。
+
+## 十、0x0D 属性档内嵌（2026-11-04"模式没推"修复）
+
+> 真机反馈：模式帧发了但客户端不认。日志实证 "pushed saved operate mode" 两帧均在——
+> **帧到了引擎不读**：引擎在玩家对象创建时读 0x0D 属性档，post-ready 0x10 补推太晚。
+
+- 官服佐证：登录 0x0D 大档（count=121）内含 198（642 形态=641 串+NUL，**无尾空格**），
+  且档内+单属性帧**双发**（frame#16 + frame#26）——Java 同款双发。
+- 实现：`PlayerActor.KeybindArchive(bindValue, operateMode)` + `addObject` 三参重载，
+  onChooseRole / applySceneSwitch 两调用点传入 `loadKeybind/loadOperateMode`；
+  post-ready 单属性帧链不动（幂等重复=官服形态）。
+- 195 校验放宽：`[0-9,;]+` → 可打印 ASCII（真机引擎另发 649B 形态串被旧正则误拒）。
+- 探针 24 项：新增 0x0D 档解析（count@0x3d 驱动，**idx=0 是合法属性 Type 勿当哨兵**；
+  choose 链帧必须保留——玩家档在 choose 突发里，ready 突发全是 NPC 档）；
+  切图段按操作码等待（环境 0x10 会插队，收帧计数会错过 0x0C）。
+
+## 十一、运维注意
+
+- **部署顺序**：必须先 Stop 旧进程再 cp 覆盖 jar——运行中 JVM 的 jar 被覆写会直接
+  崩进程（2026-11-04 01:05 事故：cp 在 kill 前执行，服务无异常日志即死）。
+- 服务端仍有原因不明的突然终止（01:15 一次，无 hs_err 无异常，用户会话中被杀），
+  复现时先查 hs_err_pid*.log 与 Windows 事件日志。
+
+## 十二、遗留
 
 - 240（打坐 SITCROSS）与 217/218 仍在 backlog（打坐有独立状态机，另行批次）。
 - yydf04 型引导循环技（观测 6-8 段浮动 > 单趟动作帧数）当前按单趟帧位结算，未做

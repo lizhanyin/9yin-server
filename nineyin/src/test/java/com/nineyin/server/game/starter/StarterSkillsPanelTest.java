@@ -71,14 +71,20 @@ class StarterSkillsPanelTest {
     void starterRowsCarryBakSemanticEffectFamily() {
         StarterSkills.LearnedSkill skill = new StarterSkills.LearnedSkill(
                 "CS_yhwq_hsqs01", 12636, 1000, 1, 11, 0, 156550, (float) (43 * 1000.0 / 30));
-        // 无目录行：内联值 + bak 语义属性族（25 属性；空目录 WuXing 缺省 5=太极）
+        // 无目录行：内联值 + bak 语义属性族 + 目录补集（VarPropNo/消耗族/形状参数；
+        // 空目录 WuXing 缺省 5=太极）
         byte[] fallback = SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, 1,
                 StarterSkills.skillRowProperties(skill, null));
-        assertEquals(24, count(fallback), "9 内联（Level byte 替 CurLevel）+ 15 属性族");
+        assertEquals(29, count(fallback), "24 原属性 + 补集 5（AConsumeMP+4 形状参数；"
+                + "hsqs01 无 AConsumeHP/SP/QGP 不发）");
         assertEquals(12636, intValueOf(fallback, "StaticData"));
         assertEquals(11, intValueOf(fallback, "MaxLevel"));
         assertEquals(1, byteValueOf(fallback, "Level"), "等级走 Level(1465,BYTE)");
-        assertEquals(9, intValueOf(fallback, "UseLimit"), "UseLimit=9（bak 语义）");
+        assertEquals(9, intValueOf(fallback, "UseLimit"), "UseLimit 缺目录值回落 9（bak 语义）");
+        assertEquals(252701, intValueOf(fallback, "VarPropNo"), "VarPropNo=L1 varprop 行号");
+        assertEquals(21, intValueOf(fallback, "AConsumeMP"), "AConsumeMP=21（consume 15604）");
+        assertEquals(20.0f, floatValueOf(fallback, "TargetShapePara2"), 0.0001f,
+                "TargetShapePara2=20（targetshape 17）");
         assertEquals(1, byteValueOf(fallback, "Quality"), "Quality=1");
         // WuXing：wuxuebaseinfo 目录值（其他测试可能已把 serverRoot 覆盖到 go-server1 真
         // share——花神七式真实值 2=柔），空目录缺省 5=太极；此处只钉枚举域 1..7。

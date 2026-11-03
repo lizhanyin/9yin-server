@@ -16,7 +16,7 @@ share/creator/mappath/<场景短名>_npc.ini/_mst.ini/...   （GBK）
         ↓
 PatrolRoutes.bind：就近吸附 ≤35m + 按速度属性构建 PatrolSchedule
         ↓
-SceneLifecycle 时间表步进（0x20/0x1F）
+SceneLifecycle 时间表广播（0x21 ServerAllDest）
 ```
 
 场景短名 = creator 目录名去掉首个 `_` 后缀（`city02_suzhou` → `city02`），
@@ -65,11 +65,14 @@ sz051（公振鹏）交叉验证：出生点 (459.139, 0.630, 637.788) ↔ 路�
 - **绑定**（`PatrolRoutes.bind`）：路线 ≥2 点（<0.5m 去重）且出生点到
   最近路点 ≤35m → 就近吸附；速度属性构建时间表（不可用则站立）。
   `attacknpc`/`bossnpc` 不绑定（敌对巡逻与战斗互斥，留待敌对 AI 期）
-- **步进**：行进段发 `0x20 ServerMoving`（复用 `moveNpc`：到点 `0x1F`
-  权威落位）；停留段只排程不发帧；首步 5s + 下标×300ms 错峰（避开
-  物化 0x1F 重放窗口 250..5000ms）
-- **视口重进**：物化后新注册的巡逻 NPC 立即开链；链带代序号，旧链
-  回调自灭不误伤新链
+- **广播**：1s 周期 `0x21 ServerAllDest` 批量帧（`op | u16 count |
+  N×44B`：`id | owner | destXYZ | orient | speed | 0 | 0 | 0 | flags`）。
+  行进中记录 speed=该腿速度、flags=1（驱动客户端走动画），停留中
+  speed=0、flags=0（到达）；每帧 ≤8 条分帧，首拍 5s（避开物化 0x1F
+  重放窗口 250..5000ms）；行进实体的服务端权威坐标每拍同步为时间表
+  插值位置（combat 快照/重进采样同源）
+- **视口重进**：物化后新注册的巡逻 NPC 立即入巡（登记进广播集，
+  ticker 幂等不重启）；时间表绝对时刻采样，重进续走不回起点
 
 ## 真实数据干跑（9yin_server1/resources/modern/share）
 
@@ -88,15 +91,39 @@ sz051（公振鹏）交叉验证：出生点 (459.139, 0.630, 637.788) ↔ 路�
   吸附 + 时间表构建（速度属性/共享 epoch）
 - `world/npc/PatrolSchedule.java` 绝对时间线（行程+停留）、positionAt/
   actionAt 采样、dy 过滤、行程钳制
-- `world/scene/SceneLifecycle.java` 时间表步进（注入时钟）、注册采样
-  （重进续走）、`startPatrol/startPatrolFor/patrolStep`
+- `world/scene/SceneLifecycle.java` 0x21 广播 ticker（注入时钟）、注册
+  采样（重进续走）、`startPatrol/ensurePatrolBroadcastLocked/
+  patrolBroadcastTick`
 - 测试：`world/npc/PatrolRoutesTest.java`（格式回归/停留解析/吸附/速度钳
-  制）、`world/npc/PatrolScheduleTest.java`（时间线数学/回绕/run 腿/过滤）、
-  `game/scene/SceneLifecycleTest.java`（步进/停留/弹回/重进续走）
+  制）、`world/npc/PatrolScheduleTest.java`（时间线数学/回绕/run 腿/过滤/
+  motionAt 官方语义）、`game/scene/SceneLifecycleTest.java`（广播拍/停留/
+  弹回/重进续走）
+
+## 0x20 → 0x21 帧型更替（2026-11-03 真机取证）
+
+- **症状**：04611f4 时间表版部署后服务端 0x20 帧持续下发（22:56 抓包
+  230 帧、53 NPC 目标点正常往返），但真机 NPC 全部站立
+- **取证**：官方真机抓包（`9yin_server/logs/capture-official` 与
+  `capture-fxgame-live`，两服一致）**实体移动全部走 `0x21 movement`
+  （每秒一拍批量），0x20 一帧都没有**；Go 参考服的 45B `0x20
+  ServerMoving` 是未经真机验证的帧型（Go 源码注释自称 proven 但 Go 服
+  日志中无任何巡逻输出）
+- **0x21 布局**（44B/记录，47/91/179/223B 四种实测帧长 = 3+44N 钉死）：
+  `id u32 | owner u32 | destX/Y/Z f32 | orient f32 | speed f32 |
+  0 | 0 | 0 | flags u32`；玩家样本 slot5 出现 -8π..2π（转向类）、
+  slot6=23、slot7=9.8（重力），NPC 样本三槽全 0 —— 未证槽位一律填 0
+- **官方节拍语义**（移动中 NPC 0x000151 三点往返样本）：移动开始帧
+  spd=WalkSpeed(1.25) flags=1；到达帧 spd=0 flags=0；每秒全量重播
+  （含停留中实体）；NPC 移动**不配 0x1F 确认**（0x1F 仅玩家自己 15 帧）
+- **验证**：`tools/smoke/patrol_probe.py` 登录物化后录 20s——city05
+  15 拍 × 4 帧 = 60 帧 0x21、465 记录、31 NPC、速度=各家 WalkSpeed、
+  flags 移动/到达分布正常
 
 ## 已知限制
 
-- 0x20 后 reconcile 立即跟一条目标点 0x1F（承自 Go 复刻 moveNPC 行为，
-  无官服抓包佐证，未改动）
+- `moveNpc`（0x20+到点 0x1F）保留给非巡逻显式移动，但同样是未验证
+  帧型，勿用于巡逻；战斗 AI 若需移动应一并切换 0x21
+- 0x21 未证槽位（slot5/6/7 与 flags 高位）全填 0；玩家抓包出现的
+  slot5 转向值/骑乘值未跟进（巡逻 NPC 无此需求）
 - 服务器重启后 epoch 重置，NPC 在路线上重新"随机"分布（各连接仍一致）
 - 停留中的朝向沿用到达段行进方向（数据无站立朝向列）

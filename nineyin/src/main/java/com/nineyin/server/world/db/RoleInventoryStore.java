@@ -260,6 +260,99 @@ public final class RoleInventoryStore implements AutoCloseable {
     }
 
     /**
+     * 操作模式（role_keybinds.operate_mode，C2S 99 SET_OPERATEMODE：
+     * 0=3D WASD / 1=2.5D 点击）。NULL=从未设置（登录不下发，客户端保持本地默认）。
+     */
+    public Integer operateMode(long roleId) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT operate_mode FROM role_keybinds WHERE role_id = ?")) {
+            statement.setLong(1, roleId);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return null;
+                }
+                int mode = result.getInt(1);
+                return result.wasNull() ? null : mode;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("operateMode: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 键位方案串（C2S 195 引擎上行 `[195, scheme, str]`）：slot 0=当前启用
+     * （bind_value，属性 ShortcutKey=198）/1=方案一（shortcut_key1，199）/
+     * 2=方案二（shortcut_key2，200）。空/无行回 null。
+     */
+    public String keybindScheme(long roleId, int slot) {
+        String column = switch (slot) {
+            case 0 -> "bind_value";
+            case 1 -> "shortcut_key1";
+            case 2 -> "shortcut_key2";
+            default -> throw new IllegalArgumentException("keybind slot " + slot);
+        };
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT " + column + " FROM role_keybinds WHERE role_id = ?")) {
+            statement.setLong(1, roleId);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return null;
+                }
+                String value = result.getString(1);
+                return value == null || value.isEmpty() ? null : value;
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("keybindScheme: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 保存键位方案串（UPSERT；bind_value NOT NULL 无默认值，首插补空串防整行拒绝；
+     * slot 0 目标列即 bind_value，列单写防 specified twice）。
+     */
+    public void saveKeybindScheme(long roleId, int slot, String value) {
+        String column = switch (slot) {
+            case 0 -> "bind_value";
+            case 1 -> "shortcut_key1";
+            case 2 -> "shortcut_key2";
+            default -> throw new IllegalArgumentException("keybind slot " + slot);
+        };
+        String sql = slot == 0
+                ? "INSERT INTO role_keybinds (role_id, bind_value) VALUES (?, ?) "
+                        + "ON DUPLICATE KEY UPDATE bind_value = VALUES(bind_value)"
+                : "INSERT INTO role_keybinds (role_id, bind_value, " + column + ") "
+                        + "VALUES (?, '', ?) "
+                        + "ON DUPLICATE KEY UPDATE " + column + " = VALUES(" + column + ")";
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, roleId);
+            statement.setString(2, value);
+            statement.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("saveKeybindScheme: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 保存操作模式（UPSERT；bind_value NOT NULL 无默认值，首插补空串防整行拒绝）。
+     */
+    public void saveOperateMode(long roleId, int mode) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "INSERT INTO role_keybinds (role_id, bind_value, operate_mode) "
+                             + "VALUES (?, '', ?) "
+                             + "ON DUPLICATE KEY UPDATE operate_mode = VALUES(operate_mode)")) {
+            statement.setLong(1, roleId);
+            statement.setInt(2, mode);
+            statement.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("saveOperateMode: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 快捷栏设置持久化（C2S 200 set_shortcut）：同 shortcut_index 原位更新
      * （主键是 (role_id, seq)，先按 index 定位 seq，无则追加 seq=max+1）。
      */
@@ -417,6 +510,208 @@ public final class RoleInventoryStore implements AutoCloseable {
             statement.executeUpdate();
         } catch (Exception e) {
             throw new IllegalStateException("deleteEquip failed: " + e.getMessage(), e);
+        }
+    }
+
+    // ---- 移动物品（msgId=30 穿/脱装备，bak 同构事务） ----
+
+    /** 卸下：装备栏(身体槽位) → 背包装备页(指定背包格，view_id=2)。 */
+    public boolean moveEquipToBag(long roleId, int equipSlot, int bagSlot) {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                String configId;
+                int itemType;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT config_id, item_type FROM role_equip_items "
+                                + "WHERE role_id = ? AND slot = ? FOR UPDATE")) {
+                    ps.setLong(1, roleId);
+                    ps.setInt(2, equipSlot);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return false;
+                        }
+                        configId = rs.getString(1);
+                        itemType = rs.getInt(2);
+                    }
+                }
+                try (PreparedStatement del = conn.prepareStatement(
+                        "DELETE FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
+                    del.setLong(1, roleId);
+                    del.setInt(2, equipSlot);
+                    del.executeUpdate();
+                }
+                insertBagRow(conn, roleId, bagSlot, configId, itemType, 1, 2);
+                conn.commit();
+                return true;
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            log.warn("moveEquipToBag failed role={} slot={}: {}", roleId, equipSlot, e.getMessage());
+            return false;
+        }
+    }
+
+    /** 穿上：背包页(格位，viewCategory=game_items 分类限定源页) → 装备栏(身体槽位)。 */
+    public boolean moveBagToEquip(long roleId, int bagSlot, int equipSlot, int viewCategory) {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                String configId;
+                int itemType;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT config_id, item_type FROM role_bag_items "
+                                + "WHERE role_id = ? AND slot = ? AND view_id = ? FOR UPDATE")) {
+                    ps.setLong(1, roleId);
+                    ps.setInt(2, bagSlot);
+                    ps.setInt(3, viewCategory);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return false;
+                        }
+                        configId = rs.getString(1);
+                        itemType = rs.getInt(2);
+                    }
+                }
+                try (PreparedStatement del = conn.prepareStatement(
+                        "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ? AND view_id = ?")) {
+                    del.setLong(1, roleId);
+                    del.setInt(2, bagSlot);
+                    del.setInt(3, viewCategory);
+                    del.executeUpdate();
+                }
+                insertEquipRow(conn, roleId, equipSlot, configId, itemType);
+                conn.commit();
+                return true;
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            log.warn("moveBagToEquip failed role={} bagSlot={}: {}", roleId, bagSlot, e.getMessage());
+            return false;
+        }
+    }
+
+    /** 背包页之间移动（同类格位换页/换位；fromCategory 限定源页防跨页误删）。 */
+    public boolean moveBagSlot(long roleId, int fromSlot, int fromCategory,
+                               int toSlot, int toViewCategory) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE role_bag_items SET slot = ?, view_id = ? "
+                             + "WHERE role_id = ? AND slot = ? AND view_id = ?")) {
+            ps.setInt(1, toSlot);
+            ps.setInt(2, toViewCategory);
+            ps.setLong(3, roleId);
+            ps.setInt(4, fromSlot);
+            ps.setInt(5, fromCategory);
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            log.warn("moveBagSlot failed role={} {}->{}: {}", roleId, fromSlot, toSlot, e.getMessage());
+            return false;
+        }
+    }
+
+    /** 交换装备栏两件（换装时旧装备让位入背包装备页）。 */
+    public boolean swapEquipSlot(long roleId, int equipSlot, int bagSlotForOld) {
+        try (Connection conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                String oldConfig;
+                int oldType;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT config_id, item_type FROM role_equip_items "
+                                + "WHERE role_id = ? AND slot = ? FOR UPDATE")) {
+                    ps.setLong(1, roleId);
+                    ps.setInt(2, equipSlot);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            return false;
+                        }
+                        oldConfig = rs.getString(1);
+                        oldType = rs.getInt(2);
+                    }
+                }
+                try (PreparedStatement del = conn.prepareStatement(
+                        "DELETE FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
+                    del.setLong(1, roleId);
+                    del.setInt(2, equipSlot);
+                    del.executeUpdate();
+                }
+                insertBagRow(conn, roleId, bagSlotForOld, oldConfig, oldType, 1, 2);
+                conn.commit();
+                return true;
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            log.warn("swapEquipSlot failed role={} slot={}: {}", roleId, equipSlot, e.getMessage());
+            return false;
+        }
+    }
+
+    private static void insertBagRow(Connection conn, long roleId, int slot, String configId,
+                                     int itemType, int amount, int viewCategory) throws Exception {
+        int seq = nextSeq(conn, roleId, "role_bag_items");
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                        + "view_id, name, script) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, seq);
+            ps.setInt(3, slot);
+            ps.setString(4, configId);
+            ps.setInt(5, itemType);
+            ps.setInt(6, amount);
+            ps.setInt(7, viewCategory);
+            ps.executeUpdate();
+        }
+    }
+
+    /** game_items 联表补 equip_type/hardiness/max_hardiness/art_pack（无命中用背包行类型兜底）。 */
+    private static void insertEquipRow(Connection conn, long roleId, int slot, String configId,
+                                       int itemType) throws Exception {
+        int seq = nextSeq(conn, roleId, "role_equip_items");
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                        + "hardiness, max_hardiness, slot, art_pack) "
+                        + "SELECT ?, ?, g.item_id, g.item_type, g.equip_type, g.hardiness, "
+                        + "g.max_hardiness, ?, g.art_pack FROM game_items g WHERE g.item_id = ?")) {
+            ps.setLong(1, roleId);
+            ps.setInt(2, seq);
+            ps.setInt(3, slot);
+            ps.setString(4, configId);
+            if (ps.executeUpdate() == 0) {
+                try (PreparedStatement fb = conn.prepareStatement(
+                        "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                                + "hardiness, max_hardiness, slot, art_pack) "
+                                + "VALUES (?, ?, ?, ?, '', 0, 0, ?, 0)")) {
+                    fb.setLong(1, roleId);
+                    fb.setInt(2, seq);
+                    fb.setString(3, configId);
+                    fb.setInt(4, itemType);
+                    fb.setInt(5, slot);
+                    fb.executeUpdate();
+                }
+            }
+        }
+    }
+
+    private static int nextSeq(Connection conn, long roleId, String table) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COALESCE(MAX(seq), 0) FROM " + table + " WHERE role_id = ?")) {
+            ps.setLong(1, roleId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) + 1 : 1;
+            }
         }
     }
 

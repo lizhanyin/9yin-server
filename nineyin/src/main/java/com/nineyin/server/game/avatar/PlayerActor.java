@@ -73,12 +73,39 @@ public final class PlayerActor {
     private boolean gliding;
     private int glideBuffSlot;
     private Instant glideEndsAt;
+    /** 持续型轻功点租约（踏波行/上天梯/壁虎游墙等 216 flag=1..0）：无 buff 链，只做秒耗。 */
+    private boolean drifting;
+    private String driftQingGongId;
+    private int driftDrainPerSecond;
+    /** 即时型轻功最近扣费时刻（引擎重报闸）。 */
+    private final java.util.Map<String, Instant> instantQingGongLastCharge = new java.util.HashMap<>();
+    /**
+     * 即时型轻功同 id 重扣最小间隔：对齐官方冲刺链节奏（雁行功 13 点/冲，冲距 6.5m
+     * @ 25m/s + 收势 ≈ 0.5s/次 = 26 点/s 上限）；引擎逐帧重发（10-30/s）全拦。
+     */
+    private static final Duration INSTANT_QINGGONG_REFIRE_GUARD = Duration.ofMillis(500);
+    /** 轻功分档回复累积器（QING_GONG_RECOVERY_INTERVAL_MS 一档）。 */
+    private long qingGongRecoveryElapsedMs;
+    /** 当前格挡值（ParryValue idx475 动态下发；上限=ParryValue 满值 parityParryValue()）。 */
+    private int parryValue;
     private int logicStateOverride = -1;
 
     /** 右键格挡 BuffInParry：buff 槽 11（BufferInfo11@639）、StaticData 4558、24h（老分支+参考 setPlayerBlock）。 */
     public static final int PARRY_BUFF_SLOT = 11;
     public static final long PARRY_BUFF_STATIC_DATA = 4558L;
     public static final long PARRY_BUFF_DURATION_MS = 24L * 60 * 60 * 1000;
+
+    /**
+     * 格挡值回复速度（ParryUpSpeed 面板值，F 抓包 61579 登录面板 idx479 实证=4）：
+     * 按住格挡不回复，松开后每秒 +4 至上限（玩家资料：回复速度受内功/宝物/经脉影响，
+     * 此处为无加成基线）。
+     */
+    public static final int PARRY_UP_SPEED_BASE = 4;
+    /**
+     * 轻功值官方分档回复节拍（玩家资料实测）：每 3 秒一档——101..150 → +10、
+     * 51..100 → +5、0..50 → +3（0→150 全程 96s）。消耗中（缓降/踏波行租约）暂停。
+     */
+    public static final long QING_GONG_RECOVERY_INTERVAL_MS = 3000L;
 
     public static PlayerActor create(String name, int silver, Clock clock) {
         return new PlayerActor(name, silver, clock);
@@ -92,6 +119,7 @@ public final class PlayerActor {
         this.progress = PlayerProgress.create(clock);
         this.meridian = com.nineyin.server.game.avatar.jingmai.PlayerMeridian.create(
                 com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load(), clock);
+        this.parryValue = progress.parityParryValue();
         syncEquippedNeiGongBuff(clock.instant());
         syncEquippedNeiGongResources();
     }
@@ -263,6 +291,11 @@ public final class PlayerActor {
         return actor.snapshot();
     }
 
+    /** 包内直访（战斗/测试对权威 HP·MP·轻功态的窄入口）。 */
+    Actor actor() {
+        return actor;
+    }
+
     // ------------------------------------------------------------------ faculty
 
     public PlayerProgress.Snapshot facultySnapshot() {
@@ -344,7 +377,168 @@ public final class PlayerActor {
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
+    /**
+     * 持续型轻功租约（踏波行 qinggong_2 / 上天梯 qinggong_11 / 壁虎游墙 qinggong_10）：
+     * 216 begin 已扣 Consume，此后每秒按 qgdefine→BufferID→buff_varprop CCQGP 扣点
+     * （玩家资料：踏波行/上天梯 开局 10 点、其后每秒 7 点）；end/耗尽摘除。无 buff 链。
+     *
+     * @return false=同 id 续约（租约已在，不重复扣开局费——客户端按住冲刺时引擎会
+     *         每帧重发 begin，逐条扣费会秒清轻功条，2026-11-03 真机反馈）
+     */
+    public synchronized boolean engageDrift(String qingGongId, int drainPerSecond) {
+        if (drifting && qingGongId != null && qingGongId.equals(driftQingGongId)) {
+            return false; // 续约：不重复扣费不重挂
+        }
+        drifting = true;
+        driftQingGongId = qingGongId;
+        driftDrainPerSecond = Math.max(drainPerSecond, 0);
+        return true;
+    }
+
+    /** 摘持续轻功租约（216 end / 点耗尽）；返回是否确在持有。 */
+    public synchronized boolean releaseDrift() {
+        boolean was = drifting;
+        drifting = false;
+        driftQingGongId = null;
+        driftDrainPerSecond = 0;
+        return was;
+    }
+
+    /** 当前租约的轻功 id（无租约 null）。 */
+    public synchronized String driftQingGongId() {
+        return drifting ? driftQingGongId : null;
+    }
+
+    public synchronized boolean drifting() {
+        return drifting;
+    }
+
+    /**
+     * 即时型轻功（UseType=0，如雁行功 qinggong_7/三段跳 qinggong_5）重复上报闸：
+     * 同 id 在窗口内的重发视为引擎重报不扣费（人手极限 ~4 次/秒，引擎逐帧重发 10-30/s）。
+     */
+    public synchronized boolean instantQingGongRechargeable(String qingGongId, Instant now) {
+        Instant last = instantQingGongLastCharge.get(qingGongId);
+        if (last != null && Duration.between(last, now).compareTo(INSTANT_QINGGONG_REFIRE_GUARD) < 0) {
+            return false;
+        }
+        instantQingGongLastCharge.put(qingGongId, now);
+        return true;
+    }
+
+    /** 持续轻功每秒扣点；付不起返回 false（调用方强摘租约）。 */
+    public synchronized boolean drainDriftPoint() {
+        return actor.drainQingGong(driftDrainPerSecond) >= 0;
+    }
+
+    /** 轻功点一次性扣费（216 begin 的 qgdefine Consume / 技能 AConsumeQGP）；付不起 -1。 */
+    public synchronized int spendQingGong(int cost) {
+        return actor.useQingGong(cost);
+    }
+
+    /**
+     * 1s ticker 的官方分档回复（每 3s 一档，档位按当时余量）：缓降/持续轻功消耗中
+     * 暂停。返回是否恢复（调用方无需单独发帧——心跳帧每秒都推 QingGongPoint）。
+     */
+    public synchronized boolean qingGongRecoveryTick(Instant now) {
+        if (gliding || drifting) {
+            qingGongRecoveryElapsedMs = 0; // 消耗期不累积（档位按余量瞬时判定）
+            return false;
+        }
+        qingGongRecoveryElapsedMs += 1000;
+        if (qingGongRecoveryElapsedMs < QING_GONG_RECOVERY_INTERVAL_MS) {
+            return false;
+        }
+        qingGongRecoveryElapsedMs -= QING_GONG_RECOVERY_INTERVAL_MS;
+        return actor.recoverQingGongTiered();
+    }
+
+    // ------------------------------------------------------------------ sitcross
+
+    /** 当前是否打坐态（LogicState=102）。 */
+    public boolean sitting() {
+        return actor.snapshot().logicState() == Actor.LOGIC_STATE_SITCROSS;
+    }
+
+    /**
+     * msg240 打坐开关落态（Go handleSitcrossCustom 同语义）：1=进入 102，
+     * 0/2=回 NORMAL（2 是客户端本地打断形态，必须当正常停处理）。幂等/死亡由调用方
+     * 闸门。返回是否发生迁移（调用方据此发 0x10 vital）。
+     */
+    public synchronized boolean applySitcross(boolean engage) {
+        int next = engage ? Actor.LOGIC_STATE_SITCROSS : Actor.LOGIC_STATE_NORMAL;
+        if (actor.snapshot().logicState() == next) {
+            return false;
+        }
+        actor.setLogicState(next);
+        if (engage) {
+            logicStateOverride = -1; // 打坐退出演武等覆盖态（覆盖态下本就进不来）
+        }
+        return true;
+    }
+
+    /**
+     * 1s ticker 打坐回复（Go sitcrossTick）：本地规则 10 秒回满 MaxHP/MaxMP
+     * （每秒向上取整）。死亡/非坐姿在 {@link Actor#restoreWhileSit} 内闸掉。
+     * 面板 HPUpSpeed/MPUpSpeed 与每秒回复量同源，客户端按其显示 +N 数字。
+     */
+    public boolean sitcrossTick() {
+        Actor.State state = actor.snapshot();
+        return actor.restoreWhileSit(
+                sitcrossRecoveryPerSecond(state.maxHp()),
+                sitcrossRecoveryPerSecond(state.maxMp()));
+    }
+
+    // ------------------------------------------------------------------ parry value
+
+    /** 当前格挡值（动态）。 */
+    public synchronized int parryValue() {
+        return parryValue;
+    }
+
+    /** 格挡值上限（基础 maxParry + 运功书 MaxParryAdd，满值即面板合计）。 */
+    public int parryValueMax() {
+        return progress.parityParryValue();
+    }
+
+    /** 装备/内功上限重算后的格挡值同步：满则跟满，否则夹住。 */
+    private synchronized void resyncParryValue(int previousMax) {
+        int max = parryValueMax();
+        parryValue = parryValue >= previousMax ? max : Math.min(parryValue, max);
+    }
+
+    /**
+     * 1s ticker 格挡值回复（玩家资料）：按住格挡绝不回复；松开后每秒
+     * +{@link #PARRY_UP_SPEED_BASE} 至上限。返回是否变化（调用方发单属性帧）。
+     */
+    public synchronized boolean parryRecoveryTick() {
+        if (parrying || parryValue >= parryValueMax()) {
+            return false;
+        }
+        parryValue = Math.min(parryValueMax(), parryValue + PARRY_UP_SPEED_BASE);
+        return true;
+    }
+
+    /**
+     * 被格挡命中扣减格挡值（NPC 攻击玩家路径接线用；归零=破防）。返回扣后余量。
+     */
+    public synchronized int consumeParryValue(int amount) {
+        if (amount <= 0) {
+            return parryValue;
+        }
+        parryValue = Math.max(0, parryValue - amount);
+        return parryValue;
+    }
+
+    /** 格挡值单属性帧（0x10 ParryValue idx475）。 */
+    public byte[] parryValueFrame() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "ParryValue", PropertyValues.Value.ofInt32(parryValue()));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
     public void restoreFaculty(PlayerProgress.Snapshot value, Instant now) {
+        int previousParryMax = parryValueMax();
         progress.restore(value, now);
         if (progress.facultyState == PlayerProgress.FACULTY_STATE_CONVERT
                 && progress.facultyStyle == PlayerProgress.FACULTY_STYLE_ACT) {
@@ -354,6 +548,7 @@ public final class PlayerActor {
         }
         syncEquippedNeiGongBuff(now);
         syncEquippedNeiGongResources();
+        resyncParryValue(previousParryMax);
     }
 
     /** Go equipNeiGong（215）：换装内功（未学会抛错=断连），重挂 Buff 槽4 与资源上限。 */
@@ -417,9 +612,11 @@ public final class PlayerActor {
      */
     public void recomputeEquipBonuses(List<String> propBuilts, List<Integer> effectPackIds) {
         EquipAffixCatalog affixes = EquipAffixCatalog.load();
+        int previousParryMax = parryValueMax();
         panel.recomputeEquipBonuses(affixes, propBuilts);
         panel.applyEquipEffects(EquipEffectCatalog.load(), affixes, effectPackIds);
         syncEquippedNeiGongResources();
+        resyncParryValue(previousParryMax);
     }
 
     /** 五系伤害块（exe 追加批）：暗器上下限种子 0；DamageAdd=运功书 varprop 透传，DamageMul=千分÷1000。 */
@@ -513,13 +710,14 @@ public final class PlayerActor {
         return "";
     }
 
-    /** 格挡属性帧（0x10）：InParry/InManualParry 置位 + BufferInfo11（槽串）。 */
+    /** 格挡属性帧（0x10）：InParry/InManualParry 置位 + BufferInfo11（槽串）+ 当前格挡值。 */
     public byte[] parryStateFrame(boolean engage, String buffInfo) {
         int flag = engage ? 1 : 0;
-        List<PropertyValues.Indexed> properties = new ArrayList<>(3);
+        List<PropertyValues.Indexed> properties = new ArrayList<>(4);
         Props.add(properties, "InParry", PropertyValues.Value.ofInt32(flag));
         Props.add(properties, "InManualParry", PropertyValues.Value.ofInt32(flag));
         Props.add(properties, "BufferInfo" + PARRY_BUFF_SLOT, PropertyValues.Value.ofString(buffInfo));
+        Props.add(properties, "ParryValue", PropertyValues.Value.ofInt32(parryValue()));
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
@@ -735,6 +933,17 @@ public final class PlayerActor {
         return -1;
     }
 
+    /** 活跃 buff 的 槽位→StaticData 快照（架招 ReplaceCategory 互斥逐出用）。 */
+    public synchronized java.util.Map<Integer, Long> activeBuffStaticDatas(Instant now) {
+        java.util.Map<Integer, Long> snapshot = new java.util.HashMap<>();
+        for (java.util.Map.Entry<Integer, ActiveBuff> entry : buffs.entrySet()) {
+            if (entry.getValue().expiresUtc().isAfter(now)) {
+                snapshot.put(entry.getKey(), entry.getValue().staticData());
+            }
+        }
+        return snapshot;
+    }
+
     /** 单 buff 槽属性帧（0x10 BufferInfoN）。 */
     public byte[] buffSlotFrame(int slot, String buffInfo) {
         List<PropertyValues.Indexed> properties = new ArrayList<>(1);
@@ -772,8 +981,23 @@ public final class PlayerActor {
 
     // ------------------------------------------------------------------- frames
 
+    /** 键位域归档（登录/切图 0x0D 属性档内嵌，引擎建对象时即读到）。 */
+    public record KeybindArchive(String bindValue, Integer operateMode) {
+        public static final KeybindArchive EMPTY = new KeybindArchive(null, null);
+    }
+
     /** Go addObject：0x3f 首部 + 属性归档，count 回填 @0x3d。 */
     public byte[] addObject(Roles.Position location, RoleVisual visual) {
+        return addObject(location, visual, KeybindArchive.EMPTY);
+    }
+
+    /**
+     * 带键位域的 addObject：0x0D 属性档内嵌 ShortcutKey（198，无尾空格——官服
+     * 抓包归档形态 641 串+NUL=642）与 OperateMode（223，int32）。引擎在玩家对象
+     * 创建时读模式，post-ready 的 0x10 补推太晚不生效（2026-11-04 真机"模式没推"
+     * 根因）；官服两处都发（归档 frame#16 + 单属性帧 frame#26），Java 同款双发。
+     */
+    public byte[] addObject(Roles.Position location, RoleVisual visual, KeybindArchive keybind) {
         Actor.State state = actor.snapshot();
         Motion currentMotion = motionSnapshot();
         Instant now = clock.instant();
@@ -843,6 +1067,12 @@ public final class PlayerActor {
             bump.run();
         }
         prop(writer, "CapitalType1", PropertyValues.Value.ofInt32(silver), bump); // CapitalType1 碎银
+        if (keybind.bindValue() != null && !keybind.bindValue().isEmpty()) {
+            prop(writer, "ShortcutKey", PropertyValues.Value.ofString(keybind.bindValue()), bump);
+        }
+        if (keybind.operateMode() != null) {
+            prop(writer, "OperateMode", PropertyValues.Value.ofInt32(keybind.operateMode()), bump);
+        }
         for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
             prop(writer, NpcSchema.bufferInfoPropertyName(slot), PropertyValues.Value.ofString(bufferInfo(slot, now)), bump);
         }
@@ -1044,11 +1274,15 @@ public final class PlayerActor {
         Props.add(properties, "MoveSpeed", PropertyValues.Value.ofFloat32(motion.moveSpeed));
         Props.add(properties, "RunSpeed", PropertyValues.Value.ofFloat32(motion.runSpeed));
         Props.add(properties, "JumpSpeed", PropertyValues.Value.ofFloat32(8.0f));
-        // 格挡族：InParry=BuffInParry 槽活跃位；ParryValue=格挡上限合计（基础+书加成）。
+        // 格挡族：InParry=BuffInParry 槽活跃位；ParryValue=当前格挡值（动态，满值=上限合计）；
+        // ParryRatio/ParryUpSpeed/ParryUpSpeedAdd 为官方登录面板 idx478-480（61579 实证 100/4/0）。
         ActiveBuff parry = buffs.get(PARRY_BUFF_SLOT);
         boolean inParry = parry != null && parry.expiresUtc().isAfter(now);
         Props.add(properties, "InParry", PropertyValues.Value.ofInt32(inParry ? 1 : 0));
-        Props.add(properties, "ParryValue", PropertyValues.Value.ofInt32(progress.parityParryValue()));
+        Props.add(properties, "ParryValue", PropertyValues.Value.ofInt32(parryValue()));
+        Props.add(properties, "ParryRatio", PropertyValues.Value.ofInt32(100));
+        Props.add(properties, "ParryUpSpeed", PropertyValues.Value.ofInt32(PARRY_UP_SPEED_BASE));
+        Props.add(properties, "ParryUpSpeedAdd", PropertyValues.Value.ofInt32(0));
         Props.add(properties, "PhyParryProb", PropertyValues.Value.ofInt32(50));
         Props.add(properties, "PhyParryProbAdd", PropertyValues.Value.ofInt32(0));
         Props.add(properties, "PhyParryDamRes", PropertyValues.Value.ofFloat32(0));

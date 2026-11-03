@@ -87,19 +87,27 @@ public final class StarterSkills {
     /**
      * bak SkillPackets.skillRow 属性面（真机验证语义值）：内联值 + skill_init 目录行覆盖
      * （staticData/itemType/等级/上限/total/coolDown）+ 属性族固定值——
-     * UseLimit=9/Quality=1/WuXing（wuxuebaseinfo 目录值，缺省 5 太极）/HP·MP HealMul 与
+     * Quality=1/WuXing（wuxuebaseinfo 目录值，缺省 5 太极）/HP·MP HealMul 与
      * 五系 DamageMul=1.0f/Flow=5/LeadTime=10000/LeadSepTime=1500（发 0 会导致面板显示空/零）。
+     * 目录补集（CombatSkillCatalog.skillRowData，bug.txt「怒招的消耗没有下发」）：
+     * VarPropNo=匹配 varprop 行号、UseLimit=skill_new 真实值（回落 9）、消耗族
+     * AConsumeHP/MP/SP/QGP 仅 &gt;0 才发（官方行稀疏风格，怒招由此带出 AConsumeSP →
+     * 客户端显示怒气消耗并在怒气不足时灰图标）、Target/HitShapePara1/2（地面圈指示）。
+     * 官方行的 Type(0) 属名在 0x09 表多处出现（玩家域解析到 idx181 语义不明）跳过。
      */
     static List<SceneMessages.ViewProperty> skillRowProperties(LearnedSkill skill,
                                                                SkillInitTable.Row row) {
-        List<SceneMessages.ViewProperty> properties = new ArrayList<>(25);
+        List<SceneMessages.ViewProperty> properties = new ArrayList<>(32);
+        int level = row != null ? row.level() : skill.level();
+        com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
+                com.nineyin.server.world.fight.CombatSkillCatalog.load().skillRowData(
+                        skill.configId(), level);
         Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(skill.configId()));
         Props.addView(properties, "StaticData", PropertyValues.Value.ofInt32(
                 row != null ? row.staticData() : skill.staticData()));
         Props.addView(properties, "ItemType", PropertyValues.Value.ofInt32(
                 row != null && row.itemType() != 0 ? row.itemType() : skill.itemType()));
-        Props.addView(properties, "Level", PropertyValues.Value.ofByte(
-                row != null ? row.level() : skill.level()));
+        Props.addView(properties, "Level", PropertyValues.Value.ofByte(level));
         Props.addView(properties, "MaxLevel", PropertyValues.Value.ofInt32(
                 row != null && row.maxLevel() > 0 ? row.maxLevel() : skill.maxLevel()));
         Props.addView(properties, "CurFillValue", PropertyValues.Value.ofInt32(skill.fill()));
@@ -107,8 +115,10 @@ public final class StarterSkills {
                 row != null && row.totalFill() > 0 ? row.totalFill() : skill.total()));
         Props.addView(properties, "PauseTime", PropertyValues.Value.ofFloat32(skill.pauseTime()));
         Props.addView(properties, "CanUse", PropertyValues.Value.ofByte(1));
-        Props.addView(properties, "UseLimit", PropertyValues.Value.ofInt32(9));
-        Props.addView(properties, "VarPropNo", PropertyValues.Value.ofInt32(0));
+        Props.addView(properties, "UseLimit", PropertyValues.Value.ofInt32(
+                rowData != null && rowData.useLimit() > 0 ? rowData.useLimit() : 9));
+        Props.addView(properties, "VarPropNo", PropertyValues.Value.ofInt32(
+                rowData != null ? rowData.varPropNo() : 0));
         Props.addView(properties, "Quality", PropertyValues.Value.ofByte(1));
         Props.addView(properties, "WuXing", PropertyValues.Value.ofInt32(skillWuXing(skill.configId())));
         // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
@@ -116,8 +126,30 @@ public final class StarterSkills {
         // 官方 skill_init 的 cooldown 全 0 → 生产恒走 varprop）。
         long cdMs = row != null && row.coolDownMs() > 0 ? row.coolDownMs()
                 : com.nineyin.server.world.fight.CombatSkillCatalog.load().personalCdMs(
-                        skill.configId(), row != null ? row.level() : skill.level());
+                        skill.configId(), level);
         Props.addView(properties, "CoolDownTime", PropertyValues.Value.ofInt32((int) cdMs));
+        if (rowData != null && rowData.aConsumeHP() > 0) {
+            Props.addView(properties, "AConsumeHP", PropertyValues.Value.ofInt32(rowData.aConsumeHP()));
+        }
+        if (rowData != null && rowData.aConsumeMP() > 0) {
+            Props.addView(properties, "AConsumeMP", PropertyValues.Value.ofInt32(rowData.aConsumeMP()));
+        }
+        if (rowData != null && rowData.aConsumeSP() > 0) {
+            Props.addView(properties, "AConsumeSP", PropertyValues.Value.ofInt32(rowData.aConsumeSP()));
+        }
+        if (rowData != null && rowData.aConsumeQGP() > 0) {
+            Props.addView(properties, "AConsumeQGP", PropertyValues.Value.ofInt32(rowData.aConsumeQGP()));
+        }
+        if (rowData != null) {
+            Props.addView(properties, "TargetShapePara1", PropertyValues.Value.ofFloat32(
+                    rowData.targetShapePara1()));
+            Props.addView(properties, "TargetShapePara2", PropertyValues.Value.ofFloat32(
+                    rowData.targetShapePara2()));
+            Props.addView(properties, "HitShapePara1", PropertyValues.Value.ofFloat32(
+                    rowData.hitShapePara1()));
+            Props.addView(properties, "HitShapePara2", PropertyValues.Value.ofFloat32(
+                    rowData.hitShapePara2()));
+        }
         Props.addView(properties, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(properties, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(properties, "PhyDamageMul", PropertyValues.Value.ofFloat32(1.0f));

@@ -82,7 +82,8 @@ final class ParryAndTimeSyncTest {
         PlayerActor actor = PlayerActor.create("测试侠", 0, CLOCK);
         byte[] frame = actor.parryStateFrame(true, "11D6,1,1,1,1,1");
         assertEquals(0x10, frame[0] & 0xFF);
-        assertEquals(3, u16(frame, 10), "InParry/InManualParry/BufferInfo11 三行");
+        // 2026-11-03 起随帧带当前格挡值（HUD 格挡条随格挡开关即刷新）
+        assertEquals(4, u16(frame, 10), "InParry/InManualParry/BufferInfo11/ParryValue 四行");
         int firstIdx = u16(frame, 12);
         assertTrue(firstIdx > 0, "首行索引非零（名字已解析到官方表）");
     }

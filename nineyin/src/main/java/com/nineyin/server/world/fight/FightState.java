@@ -124,7 +124,8 @@ public final class FightState {
             if (skill.areaHeight() > 0 && dy > skill.areaHeight()) {
                 continue;
             }
-            if (skill.targetMode() == CombatSkill.TargetMode.CASTER_RECTANGLE) {
+            if (skill.targetMode() == CombatSkill.TargetMode.CASTER_RECTANGLE
+                    || skill.targetMode() == CombatSkill.TargetMode.GROUND_RECTANGLE) {
                 double facingX = Math.cos(orient);
                 double facingZ = Math.sin(orient);
                 double forward = dx * facingX + dz * facingZ;

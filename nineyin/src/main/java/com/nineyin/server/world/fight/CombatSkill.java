@@ -24,6 +24,8 @@ import java.util.List;
  * @param areaHeight      varprop HeightDiff（高度差过滤）
  * @param sectorAngle     扇形角度（HitShapePara1）
  * @param areaWidth       矩形宽度（HitShapePara1）
+ * @param canRush         skill_static.CanRush（冲锋招：射程闸放宽到 rushRangeM）
+ * @param rushRangeM      skill_static.RushRange（冲锋射程米；0=无值）
  * @param actionName      zhaoshi 时间线首段动作名（当前仅用于总时长；S2C 动作走 msg20）
  * @param actionDurationMs 首段动作时长（endFrame/30fps）
  * @param followups       后续动作段（编译保留；抓包显示 F exe 不下发 followup State 帧）
@@ -38,12 +40,20 @@ public record CombatSkill(
         int mpCost, int spCost, int qgCost,
         int baseDamage, int damageWaves,
         TargetMode targetMode, float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
+        boolean canRush, float rushRangeM,
         String actionName, long actionDurationMs, List<ActionSegment> followups,
         List<Long> hitFrameMs,
         List<Effect> effects) {
 
+    /**
+     * GROUND_AREA/GROUND_RECTANGLE 为玩家点选地面落点形状（attack_hitshape 11/12，
+     * bug.txt「可圈定范围的技能/腾空圈定/冲锋圈定」）：免选中目标，圆心=211 长格式
+     * 落点（目标对象/目标坐标/方向坐标，见 SkillCastHandler.CastPoint）。Go 参考服
+     * 把 11 近似归入 SelectedArea（以选中怪为圆心），此处按需求超越 Go。
+     */
     public enum TargetMode {
-        SELF, SELECTED, CASTER_CIRCLE, CASTER_SECTOR, CASTER_RECTANGLE, SELECTED_AREA
+        SELF, SELECTED, CASTER_CIRCLE, CASTER_SECTOR, CASTER_RECTANGLE, SELECTED_AREA,
+        GROUND_AREA, GROUND_RECTANGLE
     }
 
     /** zhaoshi 时间线段（30fps 帧换算毫秒）。 */
@@ -83,6 +93,11 @@ public record CombatSkill(
 
     public boolean requiresTarget() {
         return targetMode == TargetMode.SELECTED || targetMode == TargetMode.SELECTED_AREA;
+    }
+
+    /** 冲锋射程（米）：CanRush 且 RushRange&gt;0 才有效，缺省 0=非冲锋。 */
+    public float rushRange() {
+        return canRush && rushRangeM > 0 ? rushRangeM : 0;
     }
 
     /** 伤害倍率（formula.lua 的 ratio；<=0 由公式按 1.0 处理）。 */

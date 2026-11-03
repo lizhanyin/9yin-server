@@ -47,8 +47,21 @@ public final class LoginSession {
     Set<Integer> activeNpcs = new java.util.HashSet<>();
     Instant lastPositionSave;
     Roles.Location pendingLocation;
+    /**
+     * GM 切图重入屏障（Go awaitingStableReentryReady）：0x0C 后到目标场景 0x09 之间，
+     * 旧场景残余 0x0A/0x09 一律忽略；目标 0x09 一次性补延迟 0x1F+0x10、行恢复、物化。
+     * reentryFramesSent=750ms 延迟帧任务已发 0x0B+0x0D（此前早到的 0x09 也是残余）。
+     */
+    boolean awaitingReentryReady;
+    boolean reentryFramesSent;
+    Roles.Location reentryLocation;
     /** 三期内修 1s ticker 句柄（断连取消）。 */
     java.util.concurrent.ScheduledFuture<?> facultyTicker;
+    /**
+     * View40 行 CanUse 心跳批句柄（断连取消）：官方 61579 战斗抓包实证进战斗后
+     * 每 ~2s 整批重推全行 CanUse——客户端可用性态会衰减，无批跟上则图标全灰。
+     */
+    java.util.concurrent.ScheduledFuture<?> skillCanUseTicker;
     /** 战斗一期：单连接战斗态（选角时重建）；combatRandom 测试可换种子。 */
     com.nineyin.server.world.fight.FightState fight;
     java.util.Map<String, Integer> learnedSkills = new java.util.HashMap<>();

@@ -1,6 +1,7 @@
 package com.nineyin.server.world.scene;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -55,7 +56,7 @@ public final class SceneLifecycle {
         }
     }
 
-    /** 在巡实体的步进链代（视口重进换新链，旧链回调按代自灭）。 */
+    /** 在巡实体登记（id → 0；0x21 广播 ticker 遍历，unregister/begin 清除）。 */
     private final Map<Integer, Long> patrolChains = new HashMap<>();
 
     private record LocationReplay(int id, byte[] payload) {
@@ -64,12 +65,12 @@ public final class SceneLifecycle {
     /** Go actor2LocationReplayDelays。 */
     private static final long[] LOCATION_REPLAY_DELAYS_MILLIS = {250, 750, 1500, 3000, 5000};
 
-    /** 巡逻首步延迟：避开 0x1F 重放窗口（末批 5000ms）。 */
-    private static final long PATROL_FIRST_STEP_DELAY_MILLIS = 5000;
-    /** 巡逻错峰：同批开链实体按下标 ×300ms 铺开。 */
-    private static final long PATROL_STAGGER_MILLIS = 300;
-    /** 错峰铺开宽度（超过后回绕，避免大场景尾部延迟过长）。 */
-    private static final int PATROL_STAGGER_SPREAD = 16;
+    /** 巡逻广播首拍延迟：避开 0x1F 重放窗口（末批 5000ms）。 */
+    private static final long PATROL_FIRST_BROADCAST_DELAY_MILLIS = 5000;
+    /** 巡逻广播周期：官方真机 ServerAllDest（0x21）每秒一拍全量广播。 */
+    private static final long PATROL_BROADCAST_PERIOD_MILLIS = 1000;
+    /** 单帧 0x21 记录上限（超出分帧；官方抓包单帧最多 5 条，留余量）。 */
+    private static final int PATROL_BROADCAST_BATCH = 8;
 
     private final Connection connection;
     private final ScheduledExecutorService scheduler;
@@ -84,8 +85,8 @@ public final class SceneLifecycle {
     private boolean armed;
     /** 首个活动包已物化：此后视口新进的巡逻 NPC 立即开链。 */
     private boolean materialized;
-    /** 巡逻链代序号：视口重进换新链，旧链回调按代自灭。 */
-    private long patrolChainSeq;
+    /** 巡逻广播 ticker 在跑（begin/close 停表后允许重开）。 */
+    private boolean patrolBroadcasting;
 
     public SceneLifecycle(Connection connection, ScheduledExecutorService scheduler) {
         this(connection, scheduler, System::currentTimeMillis);
@@ -109,6 +110,7 @@ public final class SceneLifecycle {
         patrolChains.clear();
         armed = false;
         materialized = false;
+        patrolBroadcasting = false;
         epoch++;
         stopTimersLocked();
     }
@@ -143,9 +145,10 @@ public final class SceneLifecycle {
         entities.put(id, new SceneEntity(id, "npc:" + npc.resolved.configId, 1, transform,
                 ordered, payload, npc.resolved.configId, npc.resolved.scriptClass,
                 combat, npc.schedule));
-        // 物化后视口新进（重进）的巡逻 NPC 立即开链（从时间表当前处继续）。
+        // 物化后视口新进（重进）的巡逻 NPC 立即入巡（从时间表当前处继续）。
         if (materialized && npc.schedule != null && !combat) {
-            startPatrolFor(id, 0);
+            patrolChains.putIfAbsent(id, 0L);
+            ensurePatrolBroadcastLocked();
         }
     }
 
@@ -283,7 +286,11 @@ public final class SceneLifecycle {
         }
     }
 
-    /** Go moveNPC：替换实体 + Posi* 属性 + 0x20 + 对账 + 到点 0x1F。 */
+    /**
+     * Go moveNPC：替换实体 + Posi* 属性 + 0x20 + 对账 + 到点 0x1F。
+     * 注：0x20 ServerMoving 为 Go 参考服帧型，官方真机抓包从未出现（巡逻
+     * 移动已改走 0x21 广播）；本方法保留给非巡逻显式移动，勿用于巡逻。
+     */
     public void moveNpc(int id, WorldScene.Transform destination, long arrivalMillis) {
         synchronized (this) {
             if (closed) {
@@ -330,74 +337,87 @@ public final class SceneLifecycle {
     }
 
     /**
-     * 启动路线巡逻：全部已注册、带巡逻时间表、非战斗的实体按 ID 序开链。
-     * 首步 5s 后（避开 0x1F 重放窗口 250..5000ms，防重放帧把走动 NPC 拽回出生点）
-     * + 下标×300ms 错峰。步进按时间表绝对时刻推进（跨连接一致，重进续走）。
+     * 启动路线巡逻：登记全部已注册、带巡逻时间表、非战斗的实体，并启动
+     * 1s 周期的 0x21 ServerAllDest 广播 ticker（首拍 5s 后，避开 0x1F 重放窗口
+     * 250..5000ms，防重放帧把走动 NPC 拽回出生点）。步进按时间表绝对时刻
+     * 采样（跨连接一致，重进续走）。0x20 ServerMoving 为 Go 参考服未验证
+     * 帧型（官方真机抓包从未出现），巡逻移动一律走 0x21。
      */
     public synchronized void startPatrol() {
         if (closed) {
             return;
         }
-        List<Integer> ids = new ArrayList<>(entities.size());
         for (SceneEntity meta : entities.values()) {
-            if (!meta.combat && meta.schedule != null && !patrolChains.containsKey(meta.id)) {
-                ids.add(meta.id);
+            if (!meta.combat && meta.schedule != null) {
+                patrolChains.putIfAbsent(meta.id, 0L);
             }
         }
-        ids.sort(Integer::compareTo);
-        for (int index = 0; index < ids.size(); index++) {
-            startPatrolFor(ids.get(index), index);
-        }
+        ensurePatrolBroadcastLocked();
     }
 
-    /** 单实体开链（物化后视口重进复用；stagger 为错峰序号）。 */
-    private void startPatrolFor(int id, int stagger) {
-        SceneEntity meta = entities.get(id);
-        if (meta == null || meta.combat || meta.schedule == null || patrolChains.containsKey(id)) {
+    /** 广播 ticker 不在跑则启动（幂等；begin/close 停表后重开）。 */
+    private void ensurePatrolBroadcastLocked() {
+        if (closed || patrolBroadcasting || patrolChains.isEmpty()) {
             return;
         }
-        long chain = ++patrolChainSeq;
-        patrolChains.put(id, chain);
+        patrolBroadcasting = true;
         long epochSnapshot = epoch;
-        scheduleLocked(PATROL_FIRST_STEP_DELAY_MILLIS
-                        + (long) (stagger % PATROL_STAGGER_SPREAD) * PATROL_STAGGER_MILLIS,
-                () -> patrolStep(id, chain, epochSnapshot));
+        scheduleLocked(PATROL_FIRST_BROADCAST_DELAY_MILLIS,
+                () -> patrolBroadcastTick(epochSnapshot));
     }
 
     /**
-     * 巡逻步进（时间表驱动）：行进段发 0x20 目标路点（剩余时长 = 时间表绝对
-     * 时刻推算，与客户端 0x0D 同值速度一致），到点/停留段只排程不发帧；
-     * 停留时长取 mappath 停留列（0~120s）。
+     * 巡逻广播拍（时间表驱动）：对全部在巡实体按时刻采样目的地/速度/移动
+     * 标志，按 ID 序组成 0x21 批量帧（超出单帧上限分帧）；行进中实体的服务端
+     * 权威坐标同步为时间表插值位置（combat 快照与 0x0D 重进采样同源）。
+     * 0x21 不动场景 revision——视口对账不因巡逻产生 0x1F 更新（与官方一致）。
      */
-    private void patrolStep(int id, long chain, long epochSnapshot) {
-        long delayMillis;
-        WorldScene.Transform destination = null;
-        long travelMillis = 0;
+    private void patrolBroadcastTick(long epochSnapshot) {
+        List<NpcMessages.AllDestEntry> batch = new ArrayList<>(patrolChains.size());
         synchronized (this) {
-            Long live = patrolChains.get(id);
-            SceneEntity meta = entities.get(id);
-            if (live != null && live != chain) {
-                return; // 旧链回调：新链已接管，勿动
+            if (closed || epoch != epochSnapshot) {
+                patrolBroadcasting = false;
+                return; // 换代：旧 ticker 自灭（新世代按需重启）
             }
-            if (closed || epoch != epochSnapshot || live == null || meta == null) {
-                patrolChains.remove(id); // 实体已摘/换代：本链自灭
+            if (patrolChains.isEmpty()) {
+                patrolBroadcasting = false;
                 return;
             }
-            Object action = meta.schedule.actionAt(clock.getAsLong());
-            if (action instanceof PatrolSchedule.Moving moving) {
-                destination = new WorldScene.Transform(moving.destX(), moving.destY(),
-                        moving.destZ(), moving.destOrient());
-                travelMillis = Math.max(50, moving.remainingMs());
-                delayMillis = travelMillis;
-            } else {
-                PatrolSchedule.Dwelling dwelling = (PatrolSchedule.Dwelling) action;
-                delayMillis = Math.max(50, dwelling.waitMs());
+            long now = clock.getAsLong();
+            List<Integer> ids = new ArrayList<>(patrolChains.keySet());
+            Collections.sort(ids);
+            for (Integer id : ids) {
+                SceneEntity meta = entities.get(id);
+                if (meta == null || meta.schedule == null) {
+                    patrolChains.remove(id);
+                    continue;
+                }
+                PatrolSchedule.Motion motion = meta.schedule.motionAt(now);
+                batch.add(new NpcMessages.AllDestEntry(meta.id, meta.ownerId,
+                        motion.destX(), motion.destY(), motion.destZ(),
+                        motion.destOrient(), motion.speed(), motion.moving() ? 1 : 0));
+                PatrolSchedule.Position position = meta.schedule.positionAt(now);
+                entities.put(id, new SceneEntity(meta.id, meta.description, meta.ownerId,
+                        new WorldScene.Transform(position.x(), position.y(),
+                                position.z(), position.orient()),
+                        meta.properties, meta.payload, meta.configId, meta.scriptClass,
+                        meta.combat, meta.schedule));
             }
+            if (patrolChains.isEmpty()) {
+                patrolBroadcasting = false;
+                return;
+            }
+            for (int from = 0; from < batch.size(); from += PATROL_BROADCAST_BATCH) {
+                List<NpcMessages.AllDestEntry> slice = batch.subList(from,
+                        Math.min(batch.size(), from + PATROL_BROADCAST_BATCH));
+                byte[] frame = NpcMessages.serverAllDest(new ArrayList<>(slice));
+                if (frame != null) {
+                    connection.writeFrame(frame);
+                }
+            }
+            scheduleLocked(PATROL_BROADCAST_PERIOD_MILLIS,
+                    () -> patrolBroadcastTick(epochSnapshot));
         }
-        if (destination != null) {
-            moveNpc(id, destination, travelMillis);
-        }
-        scheduleLocked(delayMillis, () -> patrolStep(id, chain, epochSnapshot));
     }
 
     /** Go scheduleLocationReplaysLocked：+250/750/1500ms/3s/5s 重放 0x1F 批次。 */
@@ -440,6 +460,7 @@ public final class SceneLifecycle {
         closed = true;
         epoch++;
         patrolChains.clear();
+        patrolBroadcasting = false;
         stopTimersLocked();
     }
 

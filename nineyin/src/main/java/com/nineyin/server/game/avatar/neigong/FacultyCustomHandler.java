@@ -141,33 +141,44 @@ public final class FacultyCustomHandler {
         connection.writeFrame(player.vitalUpdate());
     }
 
-    /** 1006/1：选书（未知 id 静默零帧）。回 [0x18 书帧, 0x10]。 */
+    // 1006 全家族的 0x10 一律走 186 名面板瘦集（castVitalUpdate）：F 参考 61579 的
+    // 24/21/23 响应帧（#2190/#2194/#2203）逐帧钉死为同一套 186 名集，与出招瘦集
+    // 完全重合；不含 Mount/CurRideMount/ActDay*/TeamFaculty* 等登录帧属性。整推
+    // 218 项登录全集会在帧尾重推 Mount=''/CurRideMount=0 清客户端视觉状态，把刚
+    // 下发的 LogicState=108（LS_FACULTY 演武待机动作）立即打回普通待机——与
+    // 2026-11-03 空中位置重置同类根因（真机 55512 会话实锤：三帧 LS=108 全部
+    // 被 218 项帧吞掉动画）。
+    private static void writePanelUpdate(Connection connection, PlayerActor player) {
+        connection.writeFrame(player.castVitalUpdate());
+    }
+
+    /** 1006/1：选书（未知 id 静默零帧）。回 [0x18 书帧, 0x10 面板帧]。 */
     private static void convertReady(Connection connection, PlayerActor player,
-                                     List<CustomC2S.Value> values, Instant now) {
+                                    List<CustomC2S.Value> values, Instant now) {
         String configId = values.size() > 2 ? values.get(2).textOrNull() : "";
         int slot = player.progress().facultyReady(configId, now);
         if (slot <= 0) {
             return;
         }
         connection.writeFrame(player.progress().bookFrame(slot));
-        connection.writeFrame(player.vitalUpdate());
+        writePanelUpdate(connection, player);
     }
 
     /** 1006/11 普通(LogicState 恒 0)；1006/21 演武(LogicState=108 + 191/22)。 */
     private static void begin(Connection connection, PlayerActor player, Instant now, boolean actStyle) {
         player.progress().facultyBegin(actStyle, now);
         player.setLogicStateOverride(actStyle ? PlayerProgress.LOGIC_STATE_FACULTY : 0);
-        connection.writeFrame(player.vitalUpdate());
+        writePanelUpdate(connection, player);
         if (actStyle) {
             connection.writeFrame(facultyMessage(SUB_ACT_BEGIN, 0));
         }
     }
 
-    /** 1006/22 与 /12：停修。回 [0x10]。 */
+    /** 1006/22 与 /12：停修。回 [0x10 面板帧]。 */
     private static void exit(Connection connection, PlayerActor player, Instant now) {
         player.progress().facultyExit(now);
         player.setLogicStateOverride(0);
-        connection.writeFrame(player.vitalUpdate());
+        writePanelUpdate(connection, player);
     }
 
     /** 1006/23 演武卡：card∈[0,2] pay∈{1,2,4} 否则静默；陈旧请求也吞。
@@ -205,7 +216,7 @@ public final class FacultyCustomHandler {
             // 书帧先行：面板在表单打开期间需重读等级。
             connection.writeFrame(player.progress().bookFrame(award[0]));
         }
-        connection.writeFrame(player.vitalUpdate());
+        writePanelUpdate(connection, player);
         if (award[2] == 1) {
             connection.writeFrame(facultyMessage(SUB_LEVEL_UP, award[3]));
         }
@@ -225,6 +236,6 @@ public final class FacultyCustomHandler {
             connection.writeFrame(SceneMessages.objectProperties(
                     SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties));
         }
-        connection.writeFrame(player.vitalUpdate());
+        writePanelUpdate(connection, player);
     }
 }

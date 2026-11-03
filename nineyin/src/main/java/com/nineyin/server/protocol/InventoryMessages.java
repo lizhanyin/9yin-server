@@ -67,6 +67,31 @@ public final class InventoryMessages {
         return mirror != null ? mirror : view;
     }
 
+    /**
+     * 背包页视图 → game_items view_id 分类（{@link #bagViewOf} 互逆，扩展页归
+     * 所属主页分类：3→1、122→2、124→3、126→4）；非背包页（View1 纸娃娃/镜像页/
+     * 未知）返回 0。msg30 移动物品按源页分类限定 DB 行。
+     */
+    public static int bagCategoryOf(int view) {
+        return switch (view) {
+            case VIEW_TOOL_PAGE, 3 -> 1;
+            case VIEW_EQUIP_BAG, 122 -> 2;
+            case VIEW_MATERIAL_PAGE, 124 -> 3;
+            case VIEW_TASK_PAGE, 126 -> 4;
+            default -> 0;
+        };
+    }
+
+    /** 扩展页视图（3/122/124/126）→ 页号 1-4；非扩展页返回 0。 */
+    public static int pageOfExtView(int view) {
+        for (Map.Entry<Integer, Integer> entry : PAGE_EXT_VIEW.entrySet()) {
+            if (entry.getValue() == view) {
+                return entry.getKey();
+            }
+        }
+        return 0;
+    }
+
     public static List<byte[]> bagViewCreateFrames() {
         List<byte[]> frames = new ArrayList<>(17);
         // 8 主页：cap=90 + BaseCap=18（真实客户端实测布局）。

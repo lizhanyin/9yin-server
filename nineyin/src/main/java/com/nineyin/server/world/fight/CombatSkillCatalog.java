@@ -86,7 +86,7 @@ public final class CombatSkillCatalog {
         }
     }
 
-    /** 11 份源表（Go skillResourceTables）。 */
+    /** 11 份源表（Go skillResourceTables）+ attack_targetshape（View40 行 TargetShapePara 用）。 */
     private static final class Tables {
         Map<String, Section> skillNew = new HashMap<>();
         Map<String, Section> skillStatic = new HashMap<>();
@@ -95,6 +95,7 @@ public final class CombatSkillCatalog {
         Map<String, Section> consume = new HashMap<>();
         Map<String, Section> damage = new HashMap<>();
         Map<String, Section> hitShape = new HashMap<>();
+        Map<String, Section> targetShape = new HashMap<>();
         Map<String, Section> actions = new HashMap<>();
         Map<String, Section> buffNew = new HashMap<>();
         Map<String, Section> buffStatic = new HashMap<>();
@@ -169,12 +170,96 @@ public final class CombatSkillCatalog {
         return varProp == null ? 0 : varProp.int32("CoolDownTime");
     }
 
+    /**
+     * View40 技能行的官方补集数据（bug.txt「怒招的消耗没有下发」：官方行携带而
+     * StarterSkills 未发的 VarPropNo/UseLimit/消耗族/形状参数）。不走完整 compile——
+     * 缺动作/伤害表的技术也能取值；查不到链路返回 null 由调用方回落现值。
+     * AConsume* 全量取自 skill_consume（下发侧仅 &gt;0 才发，对齐官方稀疏风格）。
+     */
+    public SkillRowData skillRowData(String id, int level) {
+        if (id == null || level < 1) {
+            return null;
+        }
+        Section newFields = tables.skillNew.get(id);
+        if (newFields == null) {
+            return null;
+        }
+        Section staticFields = tables.skillStatic.get(Integer.toString(newFields.int32("StaticData")));
+        if (staticFields == null) {
+            return null;
+        }
+        VarPropRow varProp = findVarProp(staticFields, newFields.last("script"), level);
+        if (varProp == null) {
+            return null;
+        }
+        Section consume = tables.consume.get(Integer.toString(varProp.fields().int32("Consume")));
+        Section targetShape = tables.targetShape.get(
+                Integer.toString(varProp.fields().int32("TargetShapePkg")));
+        Section hitShape = tables.hitShape.get(
+                Integer.toString(varProp.fields().int32("HitShapePkg")));
+        return new SkillRowData(varProp.id(), newFields.int32("UseLimit"),
+                consume == null ? 0 : consume.int32("AConsumeHP"),
+                consume == null ? 0 : consume.int32("AConsumeMP"),
+                consume == null ? 0 : consume.int32("AConsumeSP"),
+                consume == null ? 0 : consume.int32("AConsumeQGP"),
+                targetShape == null ? 0 : targetShape.f32("TargetShapePara1"),
+                targetShape == null ? 0 : targetShape.f32("TargetShapePara2"),
+                hitShape == null ? 0 : hitShape.f32("HitShapePara1"),
+                hitShape == null ? 0 : hitShape.f32("HitShapePara2"));
+    }
+
+    /** View40 行补集（skillRowData 产物）：varPropNo=匹配 varprop 行号（客户端 varpkg 同值）。 */
+    public record SkillRowData(
+            int varPropNo, int useLimit,
+            int aConsumeHP, int aConsumeMP, int aConsumeSP, int aConsumeQGP,
+            float targetShapePara1, float targetShapePara2,
+            float hitShapePara1, float hitShapePara2) {
+    }
+
     public int levelOneCount() {
         return levelOne.size();
     }
 
     public Map<String, Integer> skipReasons() {
         return skipReasons;
+    }
+
+    /**
+     * buff_static 的 ReplaceCategory（官方互斥组）：同组新 buff 逐出旧 buff——
+     * 架招族 Category=9/ReplaceCategory=220214（310 个架招 buff 共组，如太极 6013/6055
+     * 与花神 15101 同组），官方语义「架招 buff 只能有一个」。缺省/无组返回 0。
+     */
+    public long buffReplaceCategory(long staticData) {
+        Section fields = tables.buffStatic.get(Long.toString(staticData));
+        return fields == null ? 0 : fields.int32("ReplaceCategory");
+    }
+
+    /**
+     * 持续型轻功秒耗：qgdefine BufferID → buff_new StaticData → buff_varprop L1 的
+     * CCQGP 绝对值（EffectTimer=1000ms 即每秒）。实证：buf_qg_drift/-7（踏波行，
+     * 玩家资料「开局 10 点其后每秒 7 点」）、buf_qg_light/-10（缓降）、buf_qg_climb/-7。
+     */
+    public int qingGongDrainPerSecond(String buffConfigId) {
+        if (buffConfigId == null || buffConfigId.isEmpty()) {
+            return 0;
+        }
+        Section buffNew = tables.buffNew.get(buffConfigId);
+        if (buffNew == null) {
+            return 0;
+        }
+        Section staticFields = tables.buffStatic.get(Integer.toString(buffNew.int32("StaticData")));
+        if (staticFields == null) {
+            return 0;
+        }
+        for (int id = Math.max(staticFields.int32("MinVarPropNo"), 1);
+                id <= staticFields.int32("MaxVarPropNo"); id++) {
+            Section fields = tables.buffVar.get(Integer.toString(id));
+            if (fields == null || fields.int32("Level") != 1) {
+                continue;
+            }
+            return Math.abs(fields.int32("CCQGP"));
+        }
+        return 0;
     }
 
     // ---------------------------------------------------------------- compile
@@ -217,6 +302,7 @@ public final class CombatSkillCatalog {
         readIni(tables.consume, skillRoot.resolve("skill_consume.ini"));
         readIni(tables.damage, skillRoot.resolve("damage_calculate.ini"));
         readIni(tables.hitShape, skillRoot.resolve("attack_hitshape.ini"));
+        readIni(tables.targetShape, skillRoot.resolve("attack_targetshape.ini"));
         readIni(tables.buffNew, skillRoot.resolve("buff_new.ini"));
         readIni(tables.buffStatic, skillRoot.resolve("buff_static.ini"));
         readIni(tables.buffVar, skillRoot.resolve("buff_varprop.ini"));
@@ -334,6 +420,7 @@ public final class CombatSkillCatalog {
                 damage[0], damage[1],
                 shape.mode(), shape.radius(), varProp.f32("HeightDiff"),
                 shape.angle(), shape.width(),
+                staticFields.int32("CanRush") != 0, staticFields.f32("RushRange"),
                 actions.actionName(), actions.durationMs(), actions.followups(), actions.hitFrameMs(),
                 effects);
     }
@@ -344,6 +431,15 @@ public final class CombatSkillCatalog {
 
     /** Go levelVarProp：static 的 [Min,Max]VarPropNo 区间内找 Level 匹配节。 */
     private Section levelVarProp(Section staticFields, String script, int level) {
+        VarPropRow row = findVarProp(staticFields, script, level);
+        return row == null ? null : row.fields();
+    }
+
+    private record VarPropRow(int id, Section fields) {
+    }
+
+    /** levelVarProp 带行号版（View40 行 VarPropNo 用）。 */
+    private VarPropRow findVarProp(Section staticFields, String script, int level) {
         Map<String, Section> varTable = "skilllock".equalsIgnoreCase(script)
                 ? tables.lockVar : tables.normalVar;
         int minimum = staticFields.int32("MinVarPropNo");
@@ -351,7 +447,7 @@ public final class CombatSkillCatalog {
         for (int id = Math.max(minimum, 1); id <= maximum; id++) {
             Section fields = varTable.get(Integer.toString(id));
             if (fields != null && fields.int32("Level") == level) {
-                return fields;
+                return new VarPropRow(id, fields);
             }
         }
         return null;
@@ -389,7 +485,11 @@ public final class CombatSkillCatalog {
         }
     }
 
-    /** Go compileTargetMode：HitShape → 目标模式（P2 半径/长度，P1 角度/宽度）。 */
+    /**
+     * Go compileTargetMode：HitShape → 目标模式（P2 半径/长度，P1 角度/宽度）。
+     * 11（玩家点选地面圆）/12（地面矩形）超出 Go 近似（Go 把 11 归 SelectedArea
+     * 以选中怪为圆心）——映射到 GROUND_*，免选中目标、圆心取 211 长格式落点。
+     */
     private static TargetShape compileTargetMode(Section fields, boolean isDamage) {
         if (!isDamage || fields == null) {
             return TargetShape.of(CombatSkill.TargetMode.SELF);
@@ -397,13 +497,18 @@ public final class CombatSkillCatalog {
         switch (fields.int32("HitShape")) {
             case 1:
                 return new TargetShape(CombatSkill.TargetMode.CASTER_CIRCLE, fields.f32("HitShapePara2"), 0, 0);
-            case 2, 11:
+            case 2:
                 return new TargetShape(CombatSkill.TargetMode.SELECTED_AREA, fields.f32("HitShapePara2"), 0, 0);
+            case 11:
+                return new TargetShape(CombatSkill.TargetMode.GROUND_AREA, fields.f32("HitShapePara2"), 0, 0);
             case 3, 9, 10:
                 return new TargetShape(CombatSkill.TargetMode.CASTER_SECTOR,
                         fields.f32("HitShapePara2"), fields.f32("HitShapePara1"), 0);
-            case 4, 12:
+            case 4:
                 return new TargetShape(CombatSkill.TargetMode.CASTER_RECTANGLE,
+                        fields.f32("HitShapePara2"), 0, fields.f32("HitShapePara1"));
+            case 12:
+                return new TargetShape(CombatSkill.TargetMode.GROUND_RECTANGLE,
                         fields.f32("HitShapePara2"), 0, fields.f32("HitShapePara1"));
             default:
                 return TargetShape.of(CombatSkill.TargetMode.SELECTED);

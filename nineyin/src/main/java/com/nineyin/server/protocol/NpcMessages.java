@@ -34,6 +34,42 @@ public final class NpcMessages {
                 .toBytes();
     }
 
+    /**
+     * 官方 ServerAllDest（0x21，0x2C 同义）：移动实体的批量广播——
+     * `op | u16 count | count×44B`，每条记录 `id u32 | owner u32 | 目的地 x/y/z |
+     * orient | 当前速度 | 0 | 0 | 0 | 移动标志 u32`。速度与移动标志驱动客户端
+     * 走/停动画（行进 spd=WalkSpeed/RunSpeed 且 flags=1；到达停留 spd=0 且
+     * flags=0），官方真机每秒一拍全量广播。0x20 ServerMoving 为 Go 参考服
+     * 未验证帧型（官方抓包从未出现），巡逻移动一律走本帧。
+     */
+    public record AllDestEntry(int objectId, int ownerId,
+                               float destX, float destY, float destZ, float destOrient,
+                               float speed, int moveFlags) {
+    }
+
+    /** 编码一条 0x21 记录（44 字节）。 */
+    public static void appendAllDestEntry(PacketWriter writer, AllDestEntry entry) {
+        writer.writeU32(entry.objectId()).writeU32(entry.ownerId())
+                .writeF32(entry.destX()).writeF32(entry.destY())
+                .writeF32(entry.destZ()).writeF32(entry.destOrient())
+                .writeF32(entry.speed())
+                .writeF32(0f).writeF32(0f).writeF32(0f)
+                .writeU32(entry.moveFlags());
+    }
+
+    /** ServerAllDest 批量帧（entries 为空返回 null）。 */
+    public static byte[] serverAllDest(List<AllDestEntry> entries) {
+        if (entries.isEmpty()) {
+            return null;
+        }
+        PacketWriter writer = PacketWriter.ofCapacity(3 + entries.size() * 44);
+        writer.writeU8(0x21).writeU16(entries.size());
+        for (AllDestEntry entry : entries) {
+            appendAllDestEntry(writer, entry);
+        }
+        return writer.toBytes();
+    }
+
     /** Go npcAddObject：0x3f 头（ID/owner/坐标）+ 保留零 + 属性归档，count 回填 @0x3d。 */
     public static byte[] npcAddObject(int objectId, NpcSpawn npc) {
         PacketWriter writer = PacketWriter.ofCapacity(0x120);

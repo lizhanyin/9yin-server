@@ -83,6 +83,26 @@ class InventoryMessagesTest {
         assertEquals(2, InventoryMessages.bagViewOf(99));
     }
 
+    /** bagCategoryOf 与 bagViewOf 互逆；扩展页归所属主页分类；非背包页返回 0。 */
+    @Test
+    void bagCategoryInvertsBagViewAndFoldsExtPages() {
+        for (int category = 1; category <= 4; category++) {
+            assertEquals(category, InventoryMessages.bagCategoryOf(InventoryMessages.bagViewOf(category)),
+                    "category " + category + " round-trip");
+        }
+        // 扩展页（3/122/124/126）归所属主页分类（msg30 源页限定用）。
+        assertEquals(1, InventoryMessages.bagCategoryOf(3));
+        assertEquals(2, InventoryMessages.bagCategoryOf(122));
+        assertEquals(3, InventoryMessages.bagCategoryOf(124));
+        assertEquals(4, InventoryMessages.bagCategoryOf(126));
+        assertEquals(2, InventoryMessages.pageOfExtView(122));
+        assertEquals(0, InventoryMessages.pageOfExtView(121));
+        // 纸娃娃/镜像页/未知视图不是背包页。
+        assertEquals(0, InventoryMessages.bagCategoryOf(1));
+        assertEquals(0, InventoryMessages.bagCategoryOf(176));
+        assertEquals(0, InventoryMessages.bagCategoryOf(999));
+    }
+
     @Test
     void bagViewCreatesSeventeenContainersWithBaseCap() {
         List<byte[]> frames = InventoryMessages.bagViewCreateFrames();

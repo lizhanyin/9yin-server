@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 
 import com.nineyin.server.game.avatar.neigong.FacultyStore;
 import com.nineyin.server.game.avatar.neigong.PlayerProgress;
+import com.nineyin.server.game.avatar.Actor;
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.game.avatar.RoleVisual;
 import com.nineyin.server.game.avatar.neigong.FacultyCustomHandler;
@@ -67,6 +68,10 @@ public final class LoginFlow {
     static final int ROLE_LIST_POWER_LEVEL = 151;
     /** Go -npc-radius 默认 120（巡逻已换 mappath 官方路线，无数量上限）。 */
     static final float NPC_RADIUS = 120.0f;
+    /** GM 切图 0x0C → 0x0B 的间隔（Go scene_transition.go 实测 12ms 内必丢新玩家，取 750ms）。 */
+    static final long REENTRY_FRAME_DELAY_MS = 750;
+    /** 测试可注入的延迟覆盖（生产恒 {@link #REENTRY_FRAME_DELAY_MS}）。 */
+    long reentryFrameDelayMillis = REENTRY_FRAME_DELAY_MS;
     /** Go 位置保存节流（≥2s）。 */
     static final Duration POSITION_SAVE_INTERVAL = Duration.ofSeconds(2);
 
@@ -413,7 +418,8 @@ public final class LoginFlow {
                 session.visual, session.visual.sex(), equips, EquipmentResolver.loadDefault());
         applyEquipBonuses(session, equips);
         loadPanelData(session);
-        connection.writeFrame(session.player.addObject(location.position(), session.visual));
+        connection.writeFrame(session.player.addObject(location.position(), session.visual,
+                new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session))));
         connection.writeFrame(SceneMessages.serverLocation(
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, location.position()));
         connection.writeFrame(session.player.vitalUpdate());
@@ -520,6 +526,19 @@ public final class LoginFlow {
         }
     }
 
+    /** 操作模式（role_keybinds.operate_mode，0=3D WASD/1=2.5D 点击）；未设置回 null。 */
+    private Integer loadOperateMode(LoginSession session) {
+        if (inventoryStore == null || session.selected == null) {
+            return null;
+        }
+        try {
+            return inventoryStore.operateMode(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load operate mode: {}", session.machine.id(), e.getMessage());
+            return null;
+        }
+    }
+
     private List<RoleInventoryStore.Equip> loadEquips(LoginSession session) {
         if (inventoryStore == null || session.selected == null
                 || !inventoryStore.hasRoleData(session.selected.id())) {
@@ -601,11 +620,27 @@ public final class LoginFlow {
             try {
                 drainGmCommands(connection, session);
                 connection.writeFrame(timeSyncFrame(clock.instant()));
+                // 官方分档轻功回复先结算再推帧（101-150 每3s+10 / 51-100 +5 / 0-50 +3）；
+                // 缓降/持续轻功租约消耗中暂停。
+                session.player.qingGongRecoveryTick(clock.instant());
                 // F 抓包同拍：294 后随轻功点四元组（QingGongPoint/GJ 三项，61579 #2192）。
                 connection.writeFrame(session.player.qingGongHeartbeatFrame());
                 facultyTickOnce(connection, session);
                 meridianTickOnce(connection, session);
                 com.nineyin.server.world.fight.QingGongHandler.glideTick(connection, session.player);
+                com.nineyin.server.world.fight.QingGongHandler.driftTick(connection, session.player);
+                // 打坐回复（Go sitcrossTick：10s 回满 HP/MP，HPUpSpeed/MPHeartSpeed 同源展示）。
+                if (session.player.sitcrossTick()) {
+                    connection.writeFrame(session.player.vitalUpdate());
+                    log.info("session={} settled sitcross HP={}/{} MP={}/{}",
+                            session.machine.id(),
+                            session.player.actorState().hp(), session.player.actorState().maxHp(),
+                            session.player.actorState().mp(), session.player.actorState().maxMp());
+                }
+                // 格挡值回复（松开格挡后每秒 +ParryUpSpeed；按住不回复）。
+                if (session.player.parryRecoveryTick()) {
+                    connection.writeFrame(session.player.parryValueFrame());
+                }
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
@@ -698,11 +733,199 @@ public final class LoginFlow {
             case "grant_all_fashion" -> applyGrantAllFashion(connection, session, command);
             case "set_showequip_type" -> applySetShowEquipType(connection, session, command);
             case "grant_identity_suits" -> applyGrantIdentitySuits(connection, session, command);
+            // 传送三动作（Go sceneRuntime）：预设切图=常用传送按钮，自定义切图=免费格式目的地，
+            // teleport=场景内瞬移（仅 0x1F，不读图）。切图走 0x0C 重入链，行恢复在目标场景 0x09。
+            case "switch_scene_preset" -> applySwitchScenePreset(connection, session, command);
+            case "switch_scene" -> applySwitchScene(connection, session, command);
+            case "teleport" -> applyTeleportWithinScene(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
             }
         }
+    }
+
+    /**
+     * GM 常用传送（switch_scene_preset）：预设键 → 目的地，表见
+     * {@link com.nineyin.server.world.scene.GmScenePresets}（Go 38 + menu2 exe 105 并集）。
+     */
+    private void applySwitchScenePreset(Connection connection, LoginSession session, GmCommand command) {
+        String key = command.strParam("preset");
+        com.nineyin.server.world.scene.GmScenePresets.Destination preset =
+                com.nineyin.server.world.scene.GmScenePresets.preset(key);
+        if (preset == null) {
+            command.fail("未知传送预设: " + key);
+            return;
+        }
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        Roles.Location destination = new Roles.Location(preset.scene(), preset.position(),
+                session.selected.location().version());
+        applySceneSwitch(connection, session, command, destination, preset.label());
+    }
+
+    /** GM 自定义切图（switch_scene）：config,resource,x,y,z,orient 免费格式。 */
+    private void applySwitchScene(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        Roles.Location destination;
+        try {
+            destination = com.nineyin.server.world.scene.GmScenePresets.parseDestination(
+                    command.strParam("destination"));
+        } catch (IllegalArgumentException e) {
+            command.fail("目的地格式错误（应为 config,resource,x,y,z,orient）: " + e.getMessage());
+            return;
+        }
+        destination = new Roles.Location(destination.scene(), destination.position(),
+                session.selected.location().version());
+        applySceneSwitch(connection, session, command, destination, destination.scene().resource());
+    }
+
+    /**
+     * Go sceneRuntime.SwitchScene 的在线切图链：0x0C 退场 → 世界世代重置 →（750ms，
+     * 等旧场景 on_exit_scene 的 ClearAll 收尾）→ 0x0B 进场 + 0x0D 玩家归档；NPC
+     * 目录/视口按目标场景重建（注册不上线）。0x1F 与 NPC 物化延迟到目标场景 0x09
+     * （{@link #completeSceneReentry}），期间旧场景残余 0x0A 全部忽略。
+     *
+     * <p>Go 在会话 goroutine 里睡 750ms 保帧序；Java 的 GM 消费跑在 faculty ticker
+     * 上不能睡，改调度延迟任务（awaitingReentryReady 先立、帧任务置 reentryFramesSent，
+     * 早到的 0x09 在屏障前一并忽略——等价于 Go 阻塞读循环的排队语义）。
+     */
+    private void applySceneSwitch(Connection connection, LoginSession session, GmCommand command,
+                                  Roles.Location destination, String label) {
+        if (session.world == null || session.selected == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        if (scheduler == null) {
+            command.fail("服务调度器未初始化，无法切图");
+            return;
+        }
+        SessionException phaseError = session.machine.reenterScene();
+        if (phaseError != null) {
+            command.fail("切图失败：" + phaseError.getMessage());
+            return;
+        }
+        destination = new Roles.Location(normalizeClientScene(destination.scene()),
+                destination.position(), destination.version());
+        if (npcRegistry != null) {
+            try {
+                session.sceneNpcs = npcRegistry.catalogFor(destination.scene()).spawns();
+            } catch (Exception e) {
+                log.warn("session={} load target-scene NPC catalog for {}: {}",
+                        session.machine.id(), destination.scene().resource(), e.getMessage());
+                session.sceneNpcs = List.of();
+            }
+        } else {
+            session.sceneNpcs = List.of();
+        }
+        connection.writeFrame(SceneMessages.exitScene());
+        session.world.begin(destination.scene().config(), destination.scene().resource());
+        // 战斗一期：战斗态随场景世代重建（选角进世界同款）。
+        session.fight = new com.nineyin.server.world.fight.FightState();
+        session.activeNpcs.clear();
+        try {
+            NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
+                    session.activeNpcs, destination.position(), NPC_RADIUS);
+        } catch (RuntimeException e) {
+            log.warn("session={} register target-scene NPC viewport: {}",
+                    session.machine.id(), e.getMessage());
+        }
+        session.awaitingReentryReady = true;
+        session.reentryFramesSent = false;
+        session.reentryLocation = destination;
+        final Roles.Location target = destination;
+        scheduler.schedule(() -> {
+            try {
+                connection.writeFrame(SceneMessages.entryScene(target.scene()));
+                connection.writeFrame(session.player.addObject(target.position(), session.visual,
+                        new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session))));
+                session.reentryFramesSent = true;
+            } catch (RuntimeException e) {
+                log.warn("session={} write scene re-entry frames: {}",
+                        session.machine.id(), e.getMessage());
+            }
+        }, reentryFrameDelayMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        // 落库：沿用当前乐观版本（Go parseSceneDestination 无版本信息，同款保留 previous.Version）。
+        if (roleStore != null) {
+            try {
+                session.selected = roleStore.saveLocation(session.selected, target);
+                session.pendingLocation = null;
+            } catch (RuntimeException e) {
+                session.pendingLocation = target;
+                log.warn("persist GM scene switch: {}", e.getMessage());
+            }
+        } else {
+            session.pendingLocation = target;
+        }
+        gmHub.update(session.machine.id(), s -> {
+            s.sceneConfig = target.scene().config();
+            s.sceneResource = target.scene().resource();
+            s.x = target.position().x();
+            s.y = target.position().y();
+            s.z = target.position().z();
+            s.orient = target.position().orient();
+            s.lastAction = "已传送到 " + label;
+        });
+        command.succeed("已发送切图到 " + label + "，等待目标场景加载");
+        log.info("session={} GM switch scene config={} resource={} pos=({},{},{},{})",
+                session.machine.id(), target.scene().config(), target.scene().resource(),
+                target.position().x(), target.position().y(), target.position().z(),
+                target.position().orient());
+    }
+
+    /**
+     * GM 场景内瞬移（teleport）：仅 0x1F ServerLocation（Go TeleportWithinScene），
+     * 不退场不读图；重入加载中拒绝。NPC 视口按新坐标对账。
+     */
+    private void applyTeleportWithinScene(Connection connection, LoginSession session, GmCommand command) {
+        if (session.world == null || session.selected == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        if (session.awaitingReentryReady) {
+            command.fail("目标场景仍在加载，等 Ready 后再瞬移");
+            return;
+        }
+        Roles.Position position;
+        try {
+            position = com.nineyin.server.world.scene.GmScenePresets.parsePosition(
+                    command.strParam("position"));
+        } catch (IllegalArgumentException e) {
+            command.fail("坐标格式错误（应为 x,y,z,orient）: " + e.getMessage());
+            return;
+        }
+        Roles.Location location = new Roles.Location(session.selected.location().scene(),
+                position, session.selected.location().version());
+        connection.writeFrame(SceneMessages.serverLocation(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, position));
+        try {
+            boolean changed = NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
+                    session.activeNpcs, position, NPC_RADIUS);
+            if (changed) {
+                session.world.reconcileViewport();
+            }
+        } catch (RuntimeException e) {
+            log.warn("session={} synchronize teleported NPC viewport: {}",
+                    session.machine.id(), e.getMessage());
+        }
+        savePosition(session, location, clock.instant());
+        gmHub.update(session.machine.id(), s -> {
+            s.x = position.x();
+            s.y = position.y();
+            s.z = position.z();
+            s.orient = position.orient();
+            s.lastAction = String.format(java.util.Locale.ROOT,
+                    "已场景内瞬移到 (%.2f, %.2f, %.2f)", position.x(), position.y(), position.z());
+        });
+        command.succeed(String.format(java.util.Locale.ROOT,
+                "已瞬移到 (%.2f, %.2f, %.2f)", position.x(), position.y(), position.z()));
+        log.info("session={} GM teleport within scene to ({},{},{},{})", session.machine.id(),
+                position.x(), position.y(), position.z(), position.orient());
     }
 
     /**
@@ -1383,53 +1606,356 @@ public final class LoginFlow {
         }
     }
 
-    // ---------------- V3 风物志：客户端上行（卡片使用 → 收录 → 衣橱换装） ----------------
+    // ---------------- 装备穿/脱（msg30 移动物品）+ msg31 使用物品 + msg886-889 一键穿 ----------------
 
     /**
-     * C2S 30 穿脱/使用（引擎原生信封，载荷布局无抓包钉死——整型参数全量记录供
-     * 真机校准）。可判定语义：载荷中相邻整型对按 (view,slot)/(slot,view) 双向
-     * 尝试命中 script=CardItem 的背包卡片时走「使用收录」链——消耗卡片 →
-     * 收录风物志（CardRec 位图 + on_card_msg），衣橱内即可换装（custom 180）。
+     * C2S 30 移动物品（menu2.exe `MOVEITEM (%d,%d)->(%d,%d)` 钉死）：
+     * `[30, fromView, fromSlot, toView, toSlot]`。脱下=[1,槽,121,0]（toSlot=0 自动
+     * 选格）；穿上=[121,格,1,身体槽]；背包页间移动同构。帧：源/目标 0x19 清格
+     * （页与镜像成对）+ 0x18 落位；触及纸娃娃时刷外观/词缀/vital。扩展页目标 =
+     * 扩容包 addtoolbox 链路（后续任务）拒绝。
      */
-    void handleBagItemUse(Connection connection, LoginSession session, CustomC2S.Message custom) {
+    void handleMoveItem(Connection connection, LoginSession session, CustomC2S.Message custom) {
         if (session.player == null || session.selected == null) {
             return;
         }
         List<Integer> args = customIntArgs(custom);
-        log.info("session={} custom 30 use/wear args={} (布局待真机校准)", session.machine.id(), args);
-        if (inventoryStore == null || args.size() < 2) {
+        if (inventoryStore == null || args.size() < 4) {
+            log.info("session={} move 30 malformed args={} (need fromView,fromSlot,toView,toSlot)",
+                    session.machine.id(), args);
+            return;
+        }
+        int fromView = args.get(0);
+        int fromSlot = args.get(1);
+        int toView = args.get(2);
+        int toSlot = args.get(3);
+        if (fromView == InventoryMessages.VIEW_DOLL) {
+            unequipFromDoll(connection, session, fromSlot, toView, toSlot);
+        } else if (toView == InventoryMessages.VIEW_DOLL) {
+            wearFromBag(connection, session, fromView, fromSlot, toSlot);
+        } else if (InventoryMessages.pageOfExtView(toView) != 0
+                || InventoryMessages.pageOfExtView(fromView) != 0) {
+            log.info("session={} move 30 ext view ({},{})->({},{}) rejected "
+                            + "(bagpack addtoolbox not implemented)",
+                    session.machine.id(), fromView, fromSlot, toView, toSlot);
+        } else {
+            moveBagRow(connection, session, fromView, fromSlot, toView, toSlot);
+        }
+    }
+
+    /**
+     * 脱下：装备栏(身体槽位) → 背包页（toView 须是背包页否则归装备页 121，
+     * toSlot<=0 自动选该页首空格）。
+     */
+    private void unequipFromDoll(Connection connection, LoginSession session,
+                                 int equipSlot, int toView, int toSlot) {
+        long roleId = session.selected.id();
+        RoleInventoryStore.Equip item = equipAt(loadEquips(session), equipSlot);
+        if (item == null) {
+            log.info("session={} move 30 equip[{}] empty", session.machine.id(), equipSlot);
+            return;
+        }
+        int category = InventoryMessages.bagCategoryOf(toView);
+        int view = category != 0 ? toView : InventoryMessages.VIEW_EQUIP_BAG;
+        if (category == 0) {
+            category = 2;
+        }
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null) {
+            return;
+        }
+        int slot = toSlot > 0 ? toSlot : freeBagSlot(bagItems, category);
+        if (slot <= 0) {
+            log.info("session={} move 30 unequip reject: bag page {} full",
+                    session.machine.id(), view);
+            return;
+        }
+        if (!inventoryStore.moveEquipToBag(roleId, equipSlot, slot)) {
+            log.warn("session={} move 30 equip[{}]->bag[{}] persist failed",
+                    session.machine.id(), equipSlot, slot);
+            return;
+        }
+        // 帧组：纸娃娃清格（时装/身份装含镜像 40-43）→ 入包成对帧 → 外观/词缀/vital 刷新。
+        connection.writeFrame(SceneMessages.viewRemove(InventoryMessages.VIEW_DOLL, equipSlot));
+        int mirror = AppearanceSync.mirrorSlot(equipSlot);
+        if (mirror != equipSlot) {
+            connection.writeFrame(SceneMessages.viewRemove(InventoryMessages.VIEW_DOLL, mirror));
+        }
+        RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
+                slot, item.configId(), item.itemType(), 1, category, "",
+                item.equipType(), 0, "", null, null, item.artPack(),
+                item.hardiness(), item.maxHardiness());
+        pushBagItemFrames(connection, session, landed);
+        refreshAfterEquipChange(connection, session);
+        log.info("session={} move 30 equip[{}]->bag[{}:{}] config={}",
+                session.machine.id(), equipSlot, view, slot, item.configId());
+    }
+
+    /**
+     * 共享穿装核心（msg30 穿上 / msg31 右键穿 / msg886 一键穿，bak wearBagItem
+     * 同构）：校验可穿（EquipType → 槽位，toSlot<=0 自动槽=双槽类型首个空槽）→
+     * 目标槽被占时旧装备让位到装备页首空格（swapEquipSlot）→ moveBagToEquip →
+     * 源格清帧（页+镜像）+ 旧装备入包帧 → pushWearFrames（纸娃娃行+外观+词缀+vital）。
+     *
+     * @return 穿戴成功（拒绝/落库失败为 false，均已打日志）
+     */
+    private boolean wearFromBag(Connection connection, LoginSession session,
+                                int fromView, int fromSlot, int toSlot) {
+        if (inventoryStore == null) {
+            return false;
+        }
+        long roleId = session.selected.id();
+        int category = InventoryMessages.bagCategoryOf(fromView);
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null || category == 0) {
+            log.info("session={} wear reject: source view {} not a bag page",
+                    session.machine.id(), fromView);
+            return false;
+        }
+        RoleInventoryStore.BagItem item = bagItemAt(bagItems, fromView, fromSlot);
+        if (item == null) {
+            log.info("session={} wear reject: bag[{}:{}] empty", session.machine.id(), fromView, fromSlot);
+            return false;
+        }
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(item.configId());
+        String equipType = info != null && !info.equipType().isEmpty()
+                ? info.equipType()
+                : (item.equipType() == null ? "" : item.equipType());
+        List<RoleInventoryStore.Equip> equips = loadEquips(session);
+        int slot = toSlot > 0 ? toSlot : AppearanceSync.equipSlotFor(equipType, equips);
+        if (equipType.isEmpty() || slot <= 0) {
+            log.info("session={} wear now requires one wearable equipment item (config={} type={})",
+                    session.machine.id(), item.configId(), equipType);
+            return false;
+        }
+        RoleInventoryStore.Equip old = equipAt(equips, slot);
+        int oldSlot = 0;
+        if (old != null) {
+            oldSlot = freeBagSlot(bagItems, 2);
+            if (oldSlot <= 0) {
+                log.info("session={} wear reject: bag full, cannot swap out {}",
+                        session.machine.id(), old.configId());
+                return false;
+            }
+            if (!inventoryStore.swapEquipSlot(roleId, slot, oldSlot)) {
+                log.warn("session={} wear swap equip[{}]->bag[{}] persist failed",
+                        session.machine.id(), slot, oldSlot);
+                return false;
+            }
+        }
+        if (!inventoryStore.moveBagToEquip(roleId, fromSlot, slot, category)) {
+            log.warn("session={} wear bag[{}]->equip[{}] persist failed",
+                    session.machine.id(), fromSlot, slot);
+            return false;
+        }
+        connection.writeFrame(SceneMessages.viewRemove(fromView, fromSlot));
+        int fromMirror = InventoryMessages.bagMirrorOf(fromView);
+        if (fromMirror != fromView) {
+            connection.writeFrame(SceneMessages.viewRemove(fromMirror, fromSlot));
+        }
+        if (old != null) {
+            RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
+                    oldSlot, old.configId(), old.itemType(), 1, 2, "",
+                    old.equipType(), 0, "", null, null, old.artPack(),
+                    old.hardiness(), old.maxHardiness());
+            pushBagItemFrames(connection, session, landed);
+        }
+        RoleInventoryStore.Equip worn = equipAt(loadEquips(session), slot);
+        if (worn == null) {
+            worn = new RoleInventoryStore.Equip(item.configId(), item.itemType(), equipType, slot,
+                    item.hardiness() > 0 ? item.hardiness() : 100,
+                    item.maxHardiness() > 0 ? item.maxHardiness() : 100,
+                    item.artPack(), "");
+        }
+        pushWearFrames(connection, session, worn);
+        log.info("session={} wear config={} -> slot={}{}", session.machine.id(), item.configId(), slot,
+                old != null ? " (swapped out " + old.configId() + ")" : "");
+        return true;
+    }
+
+    /** 背包页间/页内移动（非背包页拒绝；toSlot<=0 自动选目标页首空格）。 */
+    private void moveBagRow(Connection connection, LoginSession session,
+                            int fromView, int fromSlot, int toView, int toSlot) {
+        long roleId = session.selected.id();
+        int fromCategory = InventoryMessages.bagCategoryOf(fromView);
+        int toCategory = InventoryMessages.bagCategoryOf(toView);
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null || fromCategory == 0 || toCategory == 0) {
+            log.info("session={} move 30 reject: view ({})/({}) not a bag page",
+                    session.machine.id(), fromView, toView);
+            return;
+        }
+        RoleInventoryStore.BagItem item = bagItemAt(bagItems, fromView, fromSlot);
+        if (item == null) {
+            log.info("session={} move 30 bag[{}:{}] empty", session.machine.id(), fromView, fromSlot);
+            return;
+        }
+        int slot = toSlot > 0 ? toSlot : freeBagSlot(bagItems, toCategory);
+        if (slot <= 0) {
+            log.info("session={} move 30 reject: bag page {} full", session.machine.id(), toView);
+            return;
+        }
+        if (!inventoryStore.moveBagSlot(roleId, fromSlot, fromCategory, slot, toCategory)) {
+            log.warn("session={} move 30 bag[{}]->bag[{}] persist failed",
+                    session.machine.id(), fromSlot, slot);
+            return;
+        }
+        connection.writeFrame(SceneMessages.viewRemove(fromView, fromSlot));
+        int fromMirror = InventoryMessages.bagMirrorOf(fromView);
+        if (fromMirror != fromView) {
+            connection.writeFrame(SceneMessages.viewRemove(fromMirror, fromSlot));
+        }
+        RoleInventoryStore.BagItem moved = new RoleInventoryStore.BagItem(
+                slot, item.configId(), item.itemType(), item.amount(), toCategory,
+                item.name(), item.equipType(), item.colorLevel(), item.script(),
+                item.anchorSlot(), item.expiresAt(), item.artPack(),
+                item.hardiness(), item.maxHardiness());
+        pushBagItemFrames(connection, session, moved);
+        log.info("session={} move 30 bag[{}:{}]{}->bag[{}:{}] config={}",
+                session.machine.id(), fromView, fromSlot, fromCategory, toView, slot,
+                item.configId());
+    }
+
+    /**
+     * C2S 31 使用物品（menu2.exe `reject malformed native item use values=` +
+     * `USEITEM fwz card` 钉死）：恰好 4 值 `[31, view(int), slot(int), count(int≥1)]`，
+     * 值数不符/count=0 拒绝。按物品类型分流：装备 → 右键穿（自动槽）；风物志卡片
+     * （CardItem）→ 使用收录链；其余（食物/秘籍/坐骑等子链）记日志钩子。
+     */
+    void handleBodyItemUse(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        if (custom.values.size() != 4) {
+            log.info("session={} reject malformed native item use values={} (need exactly 4)",
+                    session.machine.id(), custom.values.size());
+            return;
+        }
+        List<Integer> args = customIntArgs(custom);
+        if (args.size() < 3) {
+            log.info("session={} reject malformed native item use: non-int arg",
+                    session.machine.id());
+            return;
+        }
+        int view = args.get(0);
+        int slot = args.get(1);
+        int count = args.get(2);
+        if (count < 1) {
+            log.info("session={} reject native item use: count={}", session.machine.id(), count);
             return;
         }
         List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
         if (bagItems == null) {
             return;
         }
-        for (int i = 0; i + 1 < args.size(); i++) {
-            RoleInventoryStore.BagItem hit = skinCardAt(bagItems, args.get(i), args.get(i + 1));
-            if (hit == null) {
-                hit = skinCardAt(bagItems, args.get(i + 1), args.get(i));
-            }
-            if (hit != null) {
-                collectSkin(connection, session, hit, true);
+        RoleInventoryStore.BagItem item = bagItemAt(bagItems, view, slot);
+        if (item == null) {
+            log.info("session={} native item use reject: bag[{}:{}] empty",
+                    session.machine.id(), view, slot);
+            return;
+        }
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(item.configId());
+        boolean wearable = info != null && !info.equipType().isEmpty();
+        if (wearable) {
+            wearFromBag(connection, session, view, slot, 0);
+            return;
+        }
+        if (info != null && info.isSkinCard()) {
+            collectSkin(connection, session, item, true);
+            return;
+        }
+        log.info("session={} use item {} (view={} pos={}) use-chain not implemented",
+                session.machine.id(), item.configId(), view, slot);
+    }
+
+    /**
+     * C2S 886~889 一键穿（menu2.exe `onestep equip uid=%s` / `not found in bags`）：
+     * 按背包 uid（ViewAdd 下发的 MD5(roleId:bag:slot) 前 8 字节 hex）认领物品，
+     * 穿装走 {@link #wearFromBag} 自动槽。
+     */
+    void handleOnestepEquip(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null || inventoryStore == null) {
+            return;
+        }
+        String uid = custom.values.size() > 1 ? custom.values.get(1).textOrNull() : null;
+        if (uid == null || uid.isEmpty()) {
+            log.info("session={} wear now requires one wearable equipment item (no uid vals={})",
+                    session.machine.id(), custom.values.size());
+            return;
+        }
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null) {
+            return;
+        }
+        long roleId = session.selected.id();
+        for (RoleInventoryStore.BagItem item : bagItems) {
+            if (InventoryMessages.uniqueId(roleId, "bag", item.slot()).equals(uid)) {
+                log.info("session={} onestep equip uid={} config={}",
+                        session.machine.id(), uid, item.configId());
+                wearFromBag(connection, session, InventoryMessages.bagViewOf(item.viewId()),
+                        item.slot(), 0);
                 return;
             }
         }
+        log.info("session={} onestep equip uid={} not found in bags", session.machine.id(), uid);
     }
 
-    /** 背包 (view,slot) → 风物志卡片行（非 CardItem 返回 null）。 */
-    private RoleInventoryStore.BagItem skinCardAt(List<RoleInventoryStore.BagItem> bagItems,
-                                                  int view, int slot) {
-        for (RoleInventoryStore.BagItem item : bagItems) {
-            if (item.slot() != slot || InventoryMessages.bagViewOf(item.viewId()) != view) {
-                continue;
+    /** 装备栏按身体槽位查行。 */
+    private static RoleInventoryStore.Equip equipAt(List<RoleInventoryStore.Equip> equips, int slot) {
+        for (RoleInventoryStore.Equip equip : equips) {
+            if (equip.slot() == slot) {
+                return equip;
             }
-            ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(item.configId());
-            if (info != null && info.isSkinCard()) {
+        }
+        return null;
+    }
+
+    /** 背包 (wire view,slot) → 行（未命中返回 null）。 */
+    private static RoleInventoryStore.BagItem bagItemAt(List<RoleInventoryStore.BagItem> bagItems,
+                                                        int view, int slot) {
+        for (RoleInventoryStore.BagItem item : bagItems) {
+            if (item.slot() == slot && InventoryMessages.bagViewOf(item.viewId()) == view) {
                 return item;
             }
         }
         return null;
     }
+
+    /** 分类页第一个空格（1..90，同 insertBagItem 口径；无空位返回 0）。 */
+    private static int freeBagSlot(List<RoleInventoryStore.BagItem> bagItems, int category) {
+        boolean[] used = new boolean[InventoryMessages.BAG_SLOT_MAX + 1];
+        for (RoleInventoryStore.BagItem item : bagItems) {
+            if (item.viewId() == category && item.slot() > 0
+                    && item.slot() <= InventoryMessages.BAG_SLOT_MAX) {
+                used[item.slot()] = true;
+            }
+        }
+        for (int slot = 1; slot <= InventoryMessages.BAG_SLOT_MAX; slot++) {
+            if (!used[slot]) {
+                return slot;
+            }
+        }
+        return 0;
+    }
+
+    /** 脱下后的外观合并/词缀重算/vital 刷新（穿上侧 pushWearFrames 已含同序）。 */
+    private void refreshAfterEquipChange(Connection connection, LoginSession session) {
+        if (session.visual == null) {
+            return;
+        }
+        List<RoleInventoryStore.Equip> equips = loadEquips(session);
+        EquipmentResolver resolver = EquipmentResolver.loadDefault();
+        session.visual = AppearanceSync.mergeVisual(session.visual, session.visual.sex(), equips, resolver);
+        connection.writeFrame(AppearanceSync.appearanceFrame(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                effectiveShowEquipType(session), session.visual.sex(), equips, resolver));
+        applyEquipBonuses(session, equips);
+        if (session.player != null) {
+            connection.writeFrame(session.player.vitalUpdate());
+        }
+    }
+
+    // ---------------- V3 风物志：卡片收录（msg31 使用链）+ 衣橱换装 ----------------
 
     /** 使用卡片收录：消耗 1 张（consume=true 且库可用）→ 收录皮肤（不自动挂载，衣橱内自行换装）。 */
     private void collectSkin(Connection connection, LoginSession session,
@@ -2130,6 +2656,9 @@ public final class LoginFlow {
         if (session.facultyTicker != null) {
             session.facultyTicker.cancel(false);
         }
+        if (session.skillCanUseTicker != null) {
+            session.skillCanUseTicker.cancel(false);
+        }
         if (session.world != null) {
             session.world.close();
         }
@@ -2191,6 +2720,80 @@ public final class LoginFlow {
      * → Ready 相位 → 终帧 vital 同步。注意 grants 在 machine.ready() 之前。
      */
     private boolean onClientReady(Connection connection, LoginSession session) {
+        // GM 切图重入：目标场景 0x09 一次性收尾（延迟 0x1F+0x10、行恢复、物化）。
+        if (session.awaitingReentryReady) {
+            if (!session.reentryFramesSent) {
+                log.info("session={} ignored stale 0x09 before re-entry frames", session.machine.id());
+                return true;
+            }
+            return completeSceneReentry(connection, session);
+        }
+        grantOncePerConnectionRows(connection, session);
+        if (session.machine.phase() == SessionMachine.Phase.IN_WORLD) {
+            log.info("session={} ignored duplicate ClientReady in active scene", session.machine.id());
+            return true;
+        }
+        // Go world.clientReady()：armed 置位（RegisterCallBack 之前的窗口不发对象）。
+        if (session.world != null) {
+            session.world.clientReady();
+        }
+        SessionException transition = session.machine.ready();
+        if (transition != null) {
+            log.info("complete client-ready transition: {}", transition.getMessage());
+            return false;
+        }
+        if (session.player != null) {
+            connection.writeFrame(session.player.vitalUpdate());
+        }
+        return true;
+    }
+
+    /**
+     * View40 行 CanUse 心跳批（官方 61579 战斗抓包实证：进战斗 LogicState 帧+首批
+     * 命中后紧跟全行批，此后每 ~2s 重推；61114 登录批一次、纯闲时无批——客户端可用
+     * 性态会衰减，真机表现为"进战斗图标全灰但能放"，由周期批自愈）。值=资源可用性：
+     * 怒招行按 SP≥AConsumeSP，其余恒 1；CD 灰由客户端 cooldown_rec 扫描独立承担
+     * （官方批对 CD 中的行也恒推 1）。消耗按授予时点快照固化，断连取消。
+     */
+    private void startSkillCanUseTicker(Connection connection, LoginSession session) {
+        if (session.skillCanUseTicker != null) {
+            session.skillCanUseTicker.cancel(false);
+        }
+        java.util.Map<String, Integer> costs = new java.util.HashMap<>();
+        com.nineyin.server.world.fight.CombatSkillCatalog catalog =
+                com.nineyin.server.world.fight.CombatSkillCatalog.load();
+        for (java.util.Map.Entry<String, Integer> learned : session.learnedSkills.entrySet()) {
+            com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
+                    catalog.skillRowData(learned.getKey(), learned.getValue());
+            if (rowData != null && rowData.aConsumeSP() > 0) {
+                costs.put(learned.getKey(), rowData.aConsumeSP());
+            }
+        }
+        session.skillCanUseTicker = scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                PlayerActor player = session.player;
+                if (player == null) {
+                    return;
+                }
+                int sp = player.sp();
+                for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+                    Integer cost = costs.get(row.getKey());
+                    connection.writeFrame(FightMessages.skillRowCanUse(
+                            SkillCastHandler.SKILL_VIEW_ID, row.getValue(),
+                            cost == null || sp >= cost));
+                }
+            } catch (RuntimeException e) {
+                log.warn("skill CanUse ticker session={}: {}", session.machine.id(), e.getMessage());
+            }
+        }, 2, 2, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    /**
+     * 每连接一次的行授予链（原 onClientReady 主体抽出，登录与 GM 切图重入共用）：
+     * 轻功 View46/打坐快捷栏/内功 View43+技能 View40/经脉 View45/个性配置/
+     * 键位/风物志/时装/技能开关。标志复位即可整链重放（0x0C 清玩家对象挂接行）。
+     */
+    private void grantOncePerConnectionRows(Connection connection, LoginSession session) {
         if (session.player != null && !session.qingGongGranted) {
             StarterGrants.grantStarterQingGong(connection);
             session.qingGongGranted = true;
@@ -2218,6 +2821,7 @@ public final class LoginFlow {
                 connection.writeFrame(FightMessages.skillRowCanUse(
                         SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
             }
+            startSkillCanUseTicker(connection, session);
             log.info("session={} granted View=43 inner-power and View=40 starter skills after explicit ClientReady (learned={})",
                     session.machine.id(), session.learnedSkills.size());
         }
@@ -2253,6 +2857,14 @@ public final class LoginFlow {
             // 以玩家属性 ShortcutKey（0x09 表索引 198，type7 string）下发——不发则
             // 客户端恒为默认 QWES 映射，切 WASD 重登即丢（参考端 641B 同款帧）。
             pushSavedKeybind(connection, session);
+            // 两套已存方案（ShortcutKey1=199/ShortcutKey2=200）：保存面板据此显示
+            // "方案一/二 已保存"，客户端启用方案 N 时引擎以 scheme 0 上传该集，
+            // bind_value 自动跟随 → 198 恒为当前启用集（重登回推即用户所启用的那套）。
+            pushSavedKeybindSchemes(connection, session);
+            // 操作模式（role_keybinds.operate_mode，C2S 99）：OperateMode（索引 223，
+            // type3 int32）下发。键位串与会话模式两域——模式不恢复则方案错配，
+            // 表现为快捷键"保存了但异常"（真机 2026-11-04 反馈）。
+            pushSavedOperateMode(connection, session);
         }
         if (session.player != null && !session.skinsPushed) {
             // V3 风物志：CardRec 收集位图 + UseCardRec 挂载行 + ShowEquipType 显示
@@ -2270,22 +2882,58 @@ public final class LoginFlow {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
             StarterGrants.enableSkillActionSwitch(connection);
         }
-        if (session.machine.phase() == SessionMachine.Phase.IN_WORLD) {
-            log.info("session={} ignored duplicate ClientReady in active scene", session.machine.id());
-            return true;
-        }
-        // Go world.clientReady()：armed 置位（RegisterCallBack 之前的窗口不发对象）。
+    }
+
+    /**
+     * GM 切图重入的目标场景 0x09 收尾（Go main.go awaitingStableReentryReady 分支）：
+     * 延迟 0x1F ServerLocation（读图前发会把目的地投影到旧场景上）+ 0x10 全量 →
+     * Ready/Activity 相位推进 + NPC 物化（clientActivity 内含巡逻启动）→ 0x0C 清掉的
+     * 玩家挂接行整链重放（轻功/快捷栏/内功/经脉/皮肤/时装）→ 撤屏障。
+     */
+    private boolean completeSceneReentry(Connection connection, LoginSession session) {
+        Roles.Location destination = session.reentryLocation;
         if (session.world != null) {
             session.world.clientReady();
         }
-        SessionException transition = session.machine.ready();
-        if (transition != null) {
-            log.info("complete client-ready transition: {}", transition.getMessage());
+        connection.writeFrame(SceneMessages.serverLocation(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                destination.position()));
+        connection.writeFrame(session.player.vitalUpdate());
+        SessionException ready = session.machine.ready();
+        if (ready != null) {
+            log.info("complete stable re-entry ready: {}", ready.getMessage());
             return false;
         }
-        if (session.player != null) {
-            connection.writeFrame(session.player.vitalUpdate());
+        if (session.world != null) {
+            try {
+                session.world.clientActivity();
+            } catch (RuntimeException e) {
+                log.warn("session={} activate stable re-entry objects: {}",
+                        session.machine.id(), e.getMessage());
+                return false;
+            }
         }
+        SessionException activity = session.machine.activity();
+        if (activity != null) {
+            log.info("complete stable re-entry activity: {}", activity.getMessage());
+            return false;
+        }
+        // ServerExitScene 清掉玩家对象及其挂接行（View 46/43/40/45 与风物志/时装行）；
+        // 一次性标志复位后整链重放。个性配置（705→lua 配置对象）确是连接级不重发；
+        // 键位四属性（198/199/200/223）挂在玩家对象属性视图上，0x0C 后随 addObject
+        // 重建而丢——2026-11-04 真机跨场景丢数据实证，必须复位重推。
+        session.qingGongGranted = false;
+        session.neigongGranted = false;
+        session.meridianGranted = false;
+        session.skinsPushed = false;
+        session.fashionPushed = false;
+        session.keybindPushed = false;
+        grantOncePerConnectionRows(connection, session);
+        session.awaitingReentryReady = false;
+        session.reentryFramesSent = false;
+        session.reentryLocation = null;
+        log.info("session={} target scene confirmed by 0x09; restored rows and activated NPCs",
+                session.machine.id());
         return true;
     }
 
@@ -2295,6 +2943,12 @@ public final class LoginFlow {
      * （armed 一次）+ 启动巡逻，进 Activity 相位，再处理 67 字节位置更新包。
      */
     private boolean onClientActivity(Connection connection, LoginSession session, byte[] plain) {
+        // GM 切图重入窗口：0x0C/0x0B 之后、目标地形就绪之前，旧舞台残余的 0x0A
+        // 不得打开新场景物化屏障（Go 同款忽略；目标 0x09 在 onClientReady 收尾）。
+        if (session.awaitingReentryReady) {
+            log.info("session={} ignored early 0x0A while target scene is loading", session.machine.id());
+            return true;
+        }
         if (session.machine.phase() == SessionMachine.Phase.ENTERING_WORLD) {
             if (session.world != null) {
                 session.world.clientReady();
@@ -2392,18 +3046,31 @@ public final class LoginFlow {
             case 107 -> handleCustomizingUpload(connection, session, custom);
             case 200 -> handleSetShortcut(connection, session, custom);
             case 201 -> handleRemoveShortcut(connection, session, custom);
-            // V3 风物志：30=引擎原生穿脱/使用（卡片使用收录入口），180=custom_card
-            // 衣橱卡牌 UI（换装切换入口）。
-            case 30 -> handleBagItemUse(connection, session, custom);
+            // 装备穿/脱：30=MOVEITEM 移动物品（menu2 `MOVEITEM (%d,%d)->(%d,%d)`），
+            // 31=USEITEM 使用物品（右键穿/风物志卡片收录，恰好 4 值），
+            // 886-889=一键穿 OnestepEquip（uid 认领）。
+            case 30 -> handleMoveItem(connection, session, custom);
+            case 31 -> handleBodyItemUse(connection, session, custom);
+            case 886, 887, 888, 889 -> handleOnestepEquip(connection, session, custom);
+            // V3 风物志：180=custom_card 衣橱卡牌 UI（换装切换入口）。
             case 180 -> handleWardrobeCard(connection, session, custom);
             // V4 三套外观：61=显示类型切换（江湖装/身份装/时装），19=时装套装
             // 穿/脱/买（form_new_rp_arm.lua custom_send_fashion_suit）。
             case 61 -> handleShowEquipType(connection, session, custom);
             case 19 -> handleFashionSuit(connection, session, custom);
-            case 240, 217, 218 ->
+            case 240 -> handleSitcross(connection, session, custom);
+            case 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
             case 54 -> handleManualParry(connection, session, custom);
+            // 操作模式（form_system_interface_setting.switch_mode → custom_set_operate_mode）：
+            // [99, mode]（0=3D WASD / 1=2.5D 点击）。不存则模式重登即丢，键位方案
+            // 与模式错配表现为"保存了但快捷键异常"。
+            case 99 -> handleSetOperateMode(connection, session, custom);
+            // 键位方案串（引擎 ShortcutKey:EndEdit 上行，非 lua 层消息）：[195, scheme, str]，
+            // scheme 0=当前启用/1=方案一/2=方案二（bak 抓包 12173/1578 双帧钉死，658B 样本）。
+            // 官服收到不回包，但客户端保存面板读服务端属性视图——不回推则界面恒"未保存"。
+            case 195 -> handleKeybindUpload(connection, session, custom);
             default -> log.info("session={} unrecognized custom msgId={} via {}",
                     session.machine.id(), messageId, route);
         }
@@ -2649,6 +3316,50 @@ public final class LoginFlow {
         connection.writeFrame(actor.parryStateFrame(engage, buffInfo));
     }
 
+    /**
+     * C2S 240 打坐开关（Go handleSitcrossCustom 同语义，2026-11-03）：`(int 1 开始 /
+     * 0 停止 / 2 被打断)`。2 必须当正常停处理（客户端本地打断形态，含受击/移动/出招，
+     * 拒掉会在战斗打断瞬间断链）。重复 1=按住不是切换（幂等零帧）；死亡拒绝。
+     * 回普通 0x10 vital（LogicState=102/0），回复由 1s ticker 的 sitcrossTick 结算
+     * （10s 回满 HP/MP，HPUpSpeed/MPUpSpeed 面板值同源=客户端显示的每秒 +N 数字）。
+     */
+    private void handleSitcross(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null) {
+            log.info("session={} sitcross before scene player exists", session.machine.id());
+            return;
+        }
+        if (custom.values.size() < 2) {
+            log.info("session={} sitcross without start_or_stop", session.machine.id());
+            return;
+        }
+        int startOrStop = custom.values.get(1).exactInt32();
+        boolean engage;
+        if (startOrStop == 1) {
+            engage = true;
+        } else if (startOrStop == 0 || startOrStop == 2) {
+            engage = false;
+        } else {
+            log.info("session={} ignore unknown sitcross start_or_stop={}",
+                    session.machine.id(), startOrStop);
+            return;
+        }
+        PlayerActor player = session.player;
+        if (player.actorState().logicState() == Actor.LOGIC_STATE_DIED) {
+            log.info("session={} reject sitcross while dead", session.machine.id());
+            return;
+        }
+        boolean wasSitting = player.sitting();
+        if (wasSitting == engage) {
+            log.info("session={} sitcross state already {}; duplicate ignored",
+                    session.machine.id(), engage ? 102 : 0);
+            return;
+        }
+        player.applySitcross(engage);
+        connection.writeFrame(player.vitalUpdate());
+        log.info("session={} sitcross state {} -> {} via normal 0x10", session.machine.id(),
+                wasSitting ? 102 : 0, engage ? 102 : 0);
+    }
+
     /** Go 1s ticker：整分钟结算变化时 [0x18 书帧, 0x10 vital] + 持久化；静默秒零帧。 */
     void facultyTickOnce(Connection connection, LoginSession session) {
         if (session.player == null || session.selected == null) {
@@ -2760,6 +3471,142 @@ public final class LoginFlow {
         connection.writeFrame(keybindFrame(bind));
         log.info("session={} pushed saved keybind {} bytes (ShortcutKey idx=198)",
                 session.machine.id(), bind.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+    }
+
+    /**
+     * post-spawn 推送两套已存方案（ShortcutKey1=199 / ShortcutKey2=200，无档零帧）：
+     * 保存面板 check_saved 读这两个属性判定"方案一/二 已保存"，不下发则恒显示未保存。
+     * 当前启用集 = bind_value（198）由 {@link #pushSavedKeybind} 同闸下发——客户端
+     * 启用方案 N 时引擎以 scheme 0 上传该集，bind_value 自动跟随，重登即回推启用集。
+     */
+    void pushSavedKeybindSchemes(Connection connection, LoginSession session) {
+        if (session.selected == null || inventoryStore == null) {
+            return;
+        }
+        for (int slot = 1; slot <= 2; slot++) {
+            String scheme;
+            try {
+                scheme = inventoryStore.keybindScheme(session.selected.id(), slot);
+            } catch (RuntimeException e) {
+                log.warn("session={} load keybind scheme {}: {}",
+                        session.machine.id(), slot, e.getMessage());
+                continue;
+            }
+            if (scheme == null || scheme.isEmpty()) {
+                continue;
+            }
+            connection.writeFrame(keybindSchemeFrame(slot, scheme));
+            log.info("session={} pushed saved keybind scheme {} ({} bytes, idx={})",
+                    session.machine.id(), slot,
+                    scheme.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                    slot == 1 ? 199 : 200);
+        }
+    }
+
+    /**
+     * C2S 195 键位方案上传（引擎 ShortcutKey:EndEdit(commit, scheme) 触发）：
+     * `[195, scheme, str]`，scheme 0=当前启用/1=方案一/2=方案二，串形
+     * "项,键码;…"（官服 641-658B 样本）。存 role_keybinds 对应列并回推
+     * 0x10 属性帧（198/199/200）——客户端属性视图以服务端下发为准，不回推
+     * 则保存面板恒"未保存"。非法 scheme/串静默拒（零帧）。
+     */
+    void handleKeybindUpload(Connection connection, LoginSession session,
+                             CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            log.info("session={} keybind upload before scene player exists", session.machine.id());
+            return;
+        }
+        if (custom.values.size() < 3) {
+            log.info("session={} keybind upload without scheme+string", session.machine.id());
+            return;
+        }
+        int scheme = tolerantInt(custom, 1);
+        String bind = custom.values.get(2).textOrNull();
+        if (scheme < 0 || scheme > 2 || bind == null || bind.isEmpty()
+                || bind.length() > 4096 || !bind.chars().allMatch(c -> c >= 0x20 && c <= 0x7E)) {
+            log.info("session={} ignore invalid keybind upload scheme={} len={} printable={}",
+                    session.machine.id(), scheme, bind == null ? -1 : bind.length(),
+                    bind != null && bind.chars().allMatch(c -> c >= 0x20 && c <= 0x7E));
+            return;
+        }
+        connection.writeFrame(keybindSchemeFrame(scheme, bind));
+        if (inventoryStore != null) {
+            try {
+                inventoryStore.saveKeybindScheme(session.selected.id(), scheme, bind);
+            } catch (RuntimeException e) {
+                log.warn("session={} persist keybind scheme {}: {}",
+                        session.machine.id(), scheme, e.getMessage());
+            }
+        }
+        log.info("session={} keybind scheme {} uploaded ({} bytes)",
+                session.machine.id(), scheme,
+                bind.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+    }
+
+    /** 键位方案单属性帧：slot 0/1/2 → ShortcutKey/1/2（索引 198/199/200，type7）。 */
+    static byte[] keybindSchemeFrame(int slot, String value) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, slot == 0 ? "ShortcutKey" : "ShortcutKey" + slot,
+                PropertyValues.Value.ofString(value + " "));
+        return SceneMessages.objectProperties(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /**
+     * C2S 99 设置操作模式（CLIENT_CUSTOMMSG_SET_OPERATEMODE，
+     * form_system_interface_setting.switch_mode → custom_set_operate_mode）：
+     * `[99, mode]`，mode 0=3D（WASD）/1=2.5D（点击）。存 role_keybinds.operate_mode
+     * 并立即回推 0x10 OperateMode（idx 223 INT32）同步客户端属性缓存；
+     * 登录 post-spawn 由 {@link #pushSavedOperateMode} 回放。非法值静默拒（零帧）。
+     */
+    void handleSetOperateMode(Connection connection, LoginSession session,
+                              CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            log.info("session={} operate mode before scene player exists", session.machine.id());
+            return;
+        }
+        if (custom.values.size() < 2) {
+            log.info("session={} operate mode without mode arg", session.machine.id());
+            return;
+        }
+        int mode = tolerantInt(custom, 1);
+        if (mode != 0 && mode != 1) {
+            log.info("session={} ignore unknown operate mode {}", session.machine.id(), mode);
+            return;
+        }
+        connection.writeFrame(operateModeFrame(mode));
+        if (inventoryStore != null) {
+            try {
+                inventoryStore.saveOperateMode(session.selected.id(), mode);
+            } catch (RuntimeException e) {
+                log.warn("session={} persist operate mode: {}", session.machine.id(), e.getMessage());
+            }
+        }
+        log.info("session={} operate mode set {} ({})", session.machine.id(), mode,
+                mode == 0 ? "3D WASD" : "2.5D click");
+    }
+
+    /** OperateMode 单属性帧（0x10，官服 0x09 表索引 223，type3 int32）。 */
+    static byte[] operateModeFrame(int mode) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "OperateMode", PropertyValues.Value.ofInt32(mode));
+        return SceneMessages.objectProperties(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /**
+     * post-spawn 推送存档操作模式（键位域同表恢复）：有存档 → 0x10 OperateMode；
+     * 未设置零帧（客户端保持本地默认 2.5D）。先于键位串无顺序依赖——引擎按属性
+     * 缓存整体应用，mode 决定 WASD/点击操作方式，bind 决定键位映射。
+     */
+    void pushSavedOperateMode(Connection connection, LoginSession session) {
+        Integer mode = loadOperateMode(session);
+        if (mode == null) {
+            return;
+        }
+        connection.writeFrame(operateModeFrame(mode));
+        log.info("session={} pushed saved operate mode {} ({})", session.machine.id(), mode,
+                mode == 0 ? "3D WASD" : "2.5D click");
     }
 
     /** ClientReady 推送存档的风物志皮肤状态（无存档零帧；收集位图 + 挂载行 + 显示开关）。 */

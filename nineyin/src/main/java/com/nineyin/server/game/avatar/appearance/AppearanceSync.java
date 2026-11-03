@@ -25,8 +25,8 @@ import com.nineyin.server.world.db.RoleInventoryStore;
  *
  * <p>槽位口径：1 帽/3 衣/4 裤/6 腕/7 腿/8 鞋/22 武器（role_equip_items 实测，
  * {@link RoleInventoryStore.Equip} 注释钉死）；身份装/时装 16-19、新面板镜像
- * 40-43（GM 面板「时装/身份装发放」口径）。饰品（项链/耳环/戒指）槽位未证，
- * v1 不穿戴只入背包。
+ * 40-43（GM 面板「时装/身份装发放」口径）；饰品 11-15（官方 equip.json 存档
+ * 33 件实测：Earring=11,12 双槽/Necklace=13/Fingerring=14,15 双槽，bak 同）。
  */
 public final class AppearanceSync {
 
@@ -36,6 +36,12 @@ public final class AppearanceSync {
     public static final int SLOT_WRIST = 6;
     public static final int SLOT_LEG = 7;
     public static final int SLOT_SHOES = 8;
+    /** 饰品（官方 equip.json 存档实测；耳环/戒指双槽）。 */
+    public static final int SLOT_EARRING_L = 11;
+    public static final int SLOT_EARRING_R = 12;
+    public static final int SLOT_NECKLACE = 13;
+    public static final int SLOT_FINGERRING_L = 14;
+    public static final int SLOT_FINGERRING_R = 15;
     public static final int SLOT_SUIT = 16;
     public static final int SLOT_FASHION_COAT = 17;
     public static final int SLOT_FASHION_HAT = 18;
@@ -55,32 +61,68 @@ public final class AppearanceSync {
     public static final String PART_SHOES = "Shoes";
     public static final String PART_HAT = "Hat";
 
-    private static final Map<String, Integer> SLOTS = Map.ofEntries(
-            Map.entry("Hat", SLOT_HAT),
-            Map.entry("Cloth", SLOT_CLOTH),
-            Map.entry("Pants", SLOT_PANTS),
-            Map.entry("Wrist", SLOT_WRIST),
-            Map.entry("Leg", SLOT_LEG),
-            Map.entry("Shoes", SLOT_SHOES),
-            Map.entry("Suit", SLOT_SUIT),
-            Map.entry("NewSuit", SLOT_SUIT),
-            Map.entry("FashionCoat", SLOT_FASHION_COAT),
-            Map.entry("NewFashionCoat", SLOT_FASHION_COAT),
-            Map.entry("FashionHat", SLOT_FASHION_HAT),
-            Map.entry("FashionShoes", SLOT_FASHION_SHOES),
-            Map.entry("Weapon", SLOT_WEAPON),
-            Map.entry("ShotWeapon", SLOT_WEAPON),
-            Map.entry("InnerWeapon", SLOT_WEAPON));
+    /** EquipType（小写）→ 候选槽位数组（双槽类型给两个；穿戴时选首个空槽）。 */
+    private static final Map<String, int[]> EQUIP_SLOTS = Map.ofEntries(
+            Map.entry("hat", new int[]{SLOT_HAT}),
+            Map.entry("cloth", new int[]{SLOT_CLOTH}),
+            Map.entry("pants", new int[]{SLOT_PANTS}),
+            Map.entry("wrist", new int[]{SLOT_WRIST}),
+            Map.entry("leg", new int[]{SLOT_LEG}),
+            Map.entry("shoes", new int[]{SLOT_SHOES}),
+            Map.entry("earring", new int[]{SLOT_EARRING_L, SLOT_EARRING_R}),
+            Map.entry("necklace", new int[]{SLOT_NECKLACE}),
+            Map.entry("fingerring", new int[]{SLOT_FINGERRING_L, SLOT_FINGERRING_R}),
+            Map.entry("suit", new int[]{SLOT_SUIT}),
+            Map.entry("newsuit", new int[]{SLOT_SUIT}),
+            Map.entry("fashioncoat", new int[]{SLOT_FASHION_COAT}),
+            Map.entry("newfashioncoat", new int[]{SLOT_FASHION_COAT}),
+            Map.entry("fashionhat", new int[]{SLOT_FASHION_HAT}),
+            Map.entry("fashionshoes", new int[]{SLOT_FASHION_SHOES}),
+            Map.entry("weapon", new int[]{SLOT_WEAPON}),
+            Map.entry("shotweapon", new int[]{SLOT_WEAPON}),
+            Map.entry("innerweapon", new int[]{SLOT_WEAPON}));
+
+    private static final int[] NO_SLOTS = new int[0];
 
     private AppearanceSync() {
     }
 
-    /** EquipType → 纸娃娃槽位；未知/饰品返回 0（调用方按不可穿戴处理）。 */
+    /** EquipType → 纸娃娃槽位（候选首槽，大小写不敏感）；未知返回 0（调用方按不可穿戴处理）。 */
     public static int slotOfEquipType(String equipType) {
+        int[] slots = slotsForEquipType(equipType);
+        return slots.length == 0 ? 0 : slots[0];
+    }
+
+    /** EquipType → 候选槽位（大小写不敏感；双槽类型两个候选，未知返回空数组）。 */
+    public static int[] slotsForEquipType(String equipType) {
         if (equipType == null || equipType.isEmpty()) {
+            return NO_SLOTS;
+        }
+        return EQUIP_SLOTS.getOrDefault(equipType.toLowerCase(java.util.Locale.ROOT), NO_SLOTS);
+    }
+
+    /**
+     * 类型对应的穿戴槽（bak equipSlotFor 同构）：双槽类型优先空槽，全占用替换
+     * 第一槽；类型未收录返回 0（按不可穿戴拒绝）。
+     */
+    public static int equipSlotFor(String equipType, List<RoleInventoryStore.Equip> equipped) {
+        int[] slots = slotsForEquipType(equipType);
+        if (slots.length == 0) {
             return 0;
         }
-        return SLOTS.getOrDefault(equipType, 0);
+        for (int slot : slots) {
+            boolean taken = false;
+            for (RoleInventoryStore.Equip worn : equipped) {
+                if (worn.slot() == slot) {
+                    taken = true;
+                    break;
+                }
+            }
+            if (!taken) {
+                return slot;
+            }
+        }
+        return slots[0];
     }
 
     /** 时装/身份装槽（16-19）→ 新面板镜像槽（40-43）；非时装槽原样返回。 */

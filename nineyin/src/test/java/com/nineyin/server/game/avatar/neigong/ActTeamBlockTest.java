@@ -183,6 +183,9 @@ class ActTeamBlockTest {
     private static final int IDX_PHY_FINAL_ADD = 523;
     private static final int IDX_PHY_VA = 565;
     private static final int IDX_CAPITAL0 = 416;
+    private static final int IDX_MOUNT = 77;
+    private static final int IDX_CUR_RIDE_MOUNT = 361;
+    private static final int IDX_NOR_FACULTY_ADD = 774;
     private static final int IDX_FACULTY_STYLE = 759;
     private static final int IDX_TEAM_VALUE = 777;
     private static final int IDX_TEAM_LAST = 778;
@@ -255,13 +258,13 @@ class ActTeamBlockTest {
         assertEquals(0x1E, frames.get(3)[0] & 0xFF);
         assertEquals(24, frames.get(3)[9] & 0xFF);
         Map<Integer, Long> vital = decodeProps(frames.get(2));
-        assertEquals(500L, vital.get(IDX_ACT_COST_SUIYIN));
-        assertEquals(500L, vital.get(IDX_ACT_USED));
-        assertEquals(0L, vital.get(IDX_ACT_MAX), "默认不限制（Max=0）");
-        assertEquals(PlayerProgress.UNLIMITED_ACT_DAY_VALUE,
-                vital.get(IDX_ACT_DAY_VALUE));
-        assertEquals(0L, vital.get(IDX_TEAM_VALUE), "团练疲劳块随帧（默认 0）");
-        assertEquals(0L, vital.get(IDX_TEAM_LAST));
+        // 记账值随登录帧/服务端状态，不随面板帧（参考 61579 打卡响应 #2203 = 186
+        // 名瘦集，全会话 ActDay* 仅出现在登录帧 #18）。
+        assertFalse(vital.containsKey(IDX_ACT_COST_SUIYIN), "面板帧不含 ActCostSuiYin");
+        assertFalse(vital.containsKey(IDX_ACT_USED), "面板帧不含 ActDayValueUsed");
+        assertFalse(vital.containsKey(IDX_TEAM_VALUE), "面板帧不含 TeamFacultyValue");
+        assertFalse(vital.containsKey(IDX_MOUNT), "面板帧不重推 Mount");
+        assertEquals(108L, vital.get(IDX_LOGIC_STATE), "打卡帧保持 LogicState=108");
     }
 
     @Test
@@ -353,7 +356,13 @@ class ActTeamBlockTest {
         assertTrue(beginVital.containsKey(IDX_CAPITAL0), "CapitalType0(黄金) 补齐");
         assertEquals(2, beginVital.get(IDX_FACULTY_STYLE));
         assertEquals(0, beginVital.get(773), "演武中 FillSpeed=0（面板显示停止）");
-        assertEquals(200, beginVital.get(774), "NorFacultyAdd 恒 200（F 抓包 #2194 diff 钉死）");
+        // 面板瘦集（参考 #2194 = 186 名集，与出招瘦集全等）：登录帧专属属性绝不
+        // 重推——Mount/CurRideMount 重推会清客户端视觉状态吞掉 LS_FACULTY 待机
+        // 动作（真机 55512 实锤），ActDay*/NorFacultyAdd 参考也只在登录帧下发。
+        assertFalse(beginVital.containsKey(IDX_MOUNT), "面板帧不重推 Mount");
+        assertFalse(beginVital.containsKey(IDX_CUR_RIDE_MOUNT), "面板帧不重推 CurRideMount");
+        assertFalse(beginVital.containsKey(IDX_NOR_FACULTY_ADD), "面板帧不含 NorFacultyAdd");
+        assertFalse(beginVital.containsKey(IDX_ACT_DAY_VALUE), "面板帧不含 ActDayValue（登录帧专属）");
         // 191/22 = [191, 22, 0]
         byte[] msg = beginFrames.get(1);
         assertEquals(0x1E, msg[0] & 0xFF);

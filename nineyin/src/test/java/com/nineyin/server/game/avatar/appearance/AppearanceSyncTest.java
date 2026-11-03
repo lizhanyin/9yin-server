@@ -1,5 +1,6 @@
 package com.nineyin.server.game.avatar.appearance;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -75,11 +76,33 @@ class AppearanceSyncTest {
         assertEquals(AppearanceSync.SLOT_WEAPON, AppearanceSync.slotOfEquipType("Weapon"));
         assertEquals(AppearanceSync.SLOT_WEAPON, AppearanceSync.slotOfEquipType("ShotWeapon"));
         assertEquals(AppearanceSync.SLOT_WEAPON, AppearanceSync.slotOfEquipType("InnerWeapon"));
-        // 饰品/道具/空串不可穿戴（v1 只入背包）
-        assertEquals(0, AppearanceSync.slotOfEquipType("Necklace"));
-        assertEquals(0, AppearanceSync.slotOfEquipType("Earring"));
+        // 饰品可穿戴（官方 equip.json 存档实测 11-15），大小写不敏感
+        assertEquals(AppearanceSync.SLOT_NECKLACE, AppearanceSync.slotOfEquipType("Necklace"));
+        assertEquals(AppearanceSync.SLOT_EARRING_L, AppearanceSync.slotOfEquipType("Earring"));
+        assertEquals(AppearanceSync.SLOT_FINGERRING_L, AppearanceSync.slotOfEquipType("Fingerring"));
+        assertEquals(AppearanceSync.SLOT_EARRING_L, AppearanceSync.slotOfEquipType("earring"));
+        // 道具/空串不可穿戴
         assertEquals(0, AppearanceSync.slotOfEquipType(""));
         assertEquals(0, AppearanceSync.slotOfEquipType(null));
+        assertEquals(0, AppearanceSync.slotOfEquipType("FacultyBook"));
+    }
+
+    /** 双槽类型（耳环 11,12/戒指 14,15）候选与自动选槽：优先空槽，全占用替换首槽。 */
+    @Test
+    void dualSlotTypesPreferFirstFreeSlot() {
+        assertArrayEquals(new int[]{11, 12}, AppearanceSync.slotsForEquipType("Earring"));
+        assertArrayEquals(new int[]{14, 15}, AppearanceSync.slotsForEquipType("Fingerring"));
+        assertArrayEquals(new int[]{22}, AppearanceSync.slotsForEquipType("Weapon"));
+        assertEquals(0, AppearanceSync.slotsForEquipType("Treasure").length);
+        // 空槽优先
+        assertEquals(11, AppearanceSync.equipSlotFor("Earring", List.of()));
+        assertEquals(12, AppearanceSync.equipSlotFor("Earring",
+                List.of(equip("Earring", AppearanceSync.SLOT_EARRING_L))));
+        // 全占用替换首槽（bak equipSlotFor 同构）
+        assertEquals(11, AppearanceSync.equipSlotFor("Earring", List.of(
+                equip("Earring", AppearanceSync.SLOT_EARRING_L),
+                equip("Earring2", AppearanceSync.SLOT_EARRING_R))));
+        assertEquals(0, AppearanceSync.equipSlotFor("Mask", List.of()));
     }
 
     @Test

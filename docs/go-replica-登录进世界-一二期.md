@@ -409,6 +409,6 @@ Delete_rows BEFORE 镜像恢复）。
 
 ### 四期遗留
 
-msg30 穿脱/使用（0x19/0x18 双向同步+WeaponMode 重推+词缀层重算）、0x07 对象选择/菜单/商店、
+~~msg30 穿脱/使用~~（**已完成 2026-11-03**：msg30=MOVEITEM 纯移动穿/脱/页间移动、msg31=USEITEM 右键使用（装备→穿/风物志卡片→收录）、msg886-889=一键穿 uid 认领，共享 `wearFromBag` 核心——帧组 0x19 成对清位+0x18 落位+外观/词缀/vital 刷新，DB 四事务 `moveEquipToBag/moveBagToEquip/swapEquipSlot/moveBagSlot`；饰品槽 11-15（双槽耳环/戒指）一并接入。语义证据链=menu2.exe 字符串+bak 反汇编，见 `docs/go-source-protocol-notes.md` §7.3；冒烟 `tools/smoke/verify_move_item.py` 17/17）、0x07 对象选择/菜单/商店、
 战斗（211/cooldown/combat tick——equipPhyVa 累积器已备）、0x0C 切图重入恢复链、传送门、
 200/201/240/216-218 信封、243/266 骑乘（CurRideMount 真值）、943 兵录修改。

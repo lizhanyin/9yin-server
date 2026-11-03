@@ -25,6 +25,7 @@
         <module>gm-web</module>
         <module>nineyin</module>
         <module>tools/data-import</module>
+        <module>tools/mpq</module>
     </modules>
 
     <properties>

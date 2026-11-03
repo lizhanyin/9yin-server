@@ -1612,6 +1612,23 @@
         <button onclick="command({ action: 'grant_all_fashion' })">
           一键激活全部服装
         </button>
+        <p class="muted" style="margin-top: 10px">
+          身份装：按当前角色门派激活门派身份套装（登录时也会自动补齐）；
+          显示类型：三套外观切换（0=江湖装 / 1=身份装 / 2=时装，游戏内属性
+          面板 radio 同款开关）。
+        </p>
+        <button onclick="command({ action: 'grant_identity_suits' })">
+          激活本门派身份装
+        </button>
+        <label>显示类型
+          <select id="showequip-type" style="width: 110px">
+            <option value="0">0 江湖装</option>
+            <option value="1">1 身份装</option>
+            <option value="2">2 时装</option>
+          </select></label>
+        <button onclick="command({ action: 'set_showequip_type', type: Number(document.getElementById('showequip-type').value) })">
+          切换显示类型
+        </button>
       </section>
     </main>
   </div>

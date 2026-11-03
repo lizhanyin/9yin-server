@@ -455,8 +455,16 @@ public final class PlayerActor {
         int level = Math.max(buff.level(), 1);
         return String.format(Locale.ROOT, "%X,%X,%X,%X,%X,%X",
                 buff.staticData(), PLAYER_OBJECT_ID, PLAYER_OWNER_ID, level,
-                buff.expiresUtc().toEpochMilli(), 1);
+                buff.expiresUtc().toEpochMilli() + EPOCH_1601_OFFSET_MS, 1);
     }
+
+    /**
+     * FILETIME 纪元偏移（1601-01-01→1970-01-01 的毫秒差）：BufferInfo/BufferListStr 的
+     * 到期字段客户端按 1601 纪元解析。参考服 exe 实证（127-0-0-1-50768 三招）：
+     * 第 5 字段恒 = expiryUnixMs + 11644473600000（严格恒等）；此前 Java 直写 Unix 毫秒，
+     * 客户端解出"公元 1657 年已过期"的 buff。
+     */
+    private static final long EPOCH_1601_OFFSET_MS = 11_644_736_000_000L;
 
     /** Go bufferListStringLocked：ConfigID,UniqueID,Level,OwnerIdent-OwnerSerial,EndTime,EffectType,OverlayRows|。 */
     public String bufferListString(Instant now) {
@@ -469,7 +477,7 @@ public final class PlayerActor {
             int level = Math.max(buff.level(), 1);
             list.append(String.format(Locale.ROOT, "%s,local-%d,%d,%d-%d,%d,1,0|",
                     buff.configId(), slot, level, PLAYER_OBJECT_ID, PLAYER_OWNER_ID,
-                    buff.expiresUtc().toEpochMilli()));
+                    buff.expiresUtc().toEpochMilli() + EPOCH_1601_OFFSET_MS));
         }
         return list.toString();
     }
@@ -696,13 +704,32 @@ public final class PlayerActor {
         return buffs.remove(slot) != null;
     }
 
-    /** 找空闲 buff 槽（未占用或已过期），无则 -1。 */
+    /**
+     * 找空闲 buff 槽（未占用或已过期），无则 -1。常规技能/缓降 buff 只从
+     * {@code PARRY_BUFF_SLOT+1}(12) 起分配：客户端 1..11 是系统租约区（Go 源码
+     * activateSkillBuff 注释 "System leases keep slots 1..10；routine Buffs ...
+     * allocate from 11..24"，格挡租约占 11），参考服 exe 实测 CS_jh_jysg01 的
+     * buff 落槽 12（127-0-0-1-50768）。此前从 1 扫会把出招 buff 写进系统槽，
+     * 空中出招时打断客户端本地状态（人物被拉回地面）。
+     */
     public synchronized int freeBuffSlot() {
         Instant now = clock.instant();
-        for (int slot = 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
+        for (int slot = PARRY_BUFF_SLOT + 1; slot <= NpcSchema.BUFFER_INFO_SLOT_COUNT; slot++) {
             ActiveBuff buff = buffs.get(slot);
             if (buff == null || !buff.expiresUtc().isAfter(now)) {
                 return slot;
+            }
+        }
+        return -1;
+    }
+
+    /** Go activateSkillBuff：同 ConfigID 的现存租约复用其槽位；无活跃租约返回 -1。 */
+    public synchronized int reuseBuffSlot(String configId, Instant now) {
+        for (java.util.Map.Entry<Integer, ActiveBuff> entry : buffs.entrySet()) {
+            ActiveBuff buff = entry.getValue();
+            if (configId != null && configId.equals(buff.configId())
+                    && buff.expiresUtc().isAfter(now)) {
+                return entry.getKey();
             }
         }
         return -1;
@@ -805,7 +832,7 @@ public final class PlayerActor {
         prop(writer, "CurSkillEffectID", PropertyValues.Value.ofString(currentSkillEffectId), bump);
         prop(writer, "CurSkillLevel", PropertyValues.Value.ofInt32(currentSkillLevel), bump);
         prop(writer, "CurSkillTarget", PropertyValues.Value.ofObject(currentSkillTarget), bump);
-        prop(writer, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000), bump);
+        prop(writer, "ModifySkillLockTime", PropertyValues.Value.ofInt32(200), bump);
         prop(writer, "BufferListStr", PropertyValues.Value.ofString(bufferListString(now)), bump);
         for (PropertyValues.Indexed property : baseMotionProperties(currentMotion)) {
             writer.appendIndexed(property);
@@ -862,6 +889,82 @@ public final class PlayerActor {
         return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, stateProperties());
     }
 
+    /**
+     * 参考服出招面板白名单（抓包 127-0-0-1-50768 #2007 的 186 名瘦集）：出招时的
+     * 全量 0x10 只重发这批。登录面板里的移动模式/外观/身份属性（Mount、CurRiderType、
+     * NewRideID、Mount*Speed、WalkSpeed、CantMove、State、ActionSet 等 78 项）官方
+     * 出招不重发——腾空出招瞬间重推 Mount=''/CurRideMount=空 会让客户端清骑行/移动
+     * 态，把空中人物强制放回地面（2026-11-03 空中位置重置三轮根因）。
+     */
+    private static final java.util.Set<String> CAST_PANEL_NAMES = java.util.Set.of(
+            "LogicState", "HPRatio", "MPRatio", "MaxHP", "MaxMP", "HP", "MP", "SpeedRatio",
+            "MoveSpeed", "RunSpeed", "HitHP", "HitHPRatio", "QingGongPoint", "MaxQingGongPoint",
+            "MaxQingGongPointAdd", "NeigongPKStatus", "Dead", "InParry", "CurSkillID",
+            "CurSkillTarget", "ModifySkillLockTime", "HPHeartSpeed", "HPHeartSpeedAdd",
+            "MPHeartSpeed", "MPHeartSpeedAdd", "HPUpSpeed", "HPUpSpeedAdd", "MPUpSpeed",
+            "MPUpSpeedAdd", "Name", "CapitalType1", "CapitalType0", "CapitalType2",
+            "CapitalType4", "School", "Force", "NewSchool", "SelectSchool",
+            "BufferInfo1", "BufferInfo2", "BufferInfo3", "BufferInfo4", "BufferInfo5",
+            "BufferInfo6", "BufferInfo7", "BufferInfo8", "BufferInfo9", "BufferInfo10",
+            "BufferInfo11", "BufferInfo12", "BufferInfo13", "BufferInfo14", "BufferInfo15",
+            "BufferInfo16", "BufferInfo17", "BufferInfo18", "BufferInfo19", "BufferInfo20",
+            "BufferInfo21", "BufferInfo22", "BufferInfo23", "BufferInfo24", "Gravity",
+            "GravityAdd", "DropHeightPub", "JumpSpeed", "RunSpeedAdd", "JumpSpeedAdd",
+            "DriftSpeed", "DriftSpeedAdd", "DriftJumpSpeed", "DriftJumpSpeedAdd",
+            "SndJumpSpeed", "SndJumpSpeedAdd", "ThdJumpSpeed", "ThdJumpSpeedAdd",
+            "AirRushSpeed", "AirRushSpeedAdd", "AirRushDist", "AirRushDistAdd",
+            "LandRushSpeed", "LandRushSpeedAdd", "LandRushDist", "LandRushDistAdd",
+            "ClimbSpeed", "ClimbSpeedAdd", "GRushRange", "GRushRangeAdd", "ARushRange",
+            "ARushRangeAdd", "WRushRange", "WRushRangeAdd", "CurJingMai", "LastJingMai",
+            "jmActCount", "ZhenQiDayValue", "ZQPLValue", "ZQActlValue", "ZQUnUsedValue",
+            "CurNeiGong", "Faculty", "FacultyState", "FacultyStyle", "FacultyName",
+            "CurFillValue", "TotalFillValue", "CurLevel", "FillSpeed", "PowerValue",
+            "MaxPowerValue", "SP", "Str", "Sta", "Dex", "Ing", "Spi", "MeleePower",
+            "MagicPower", "PhyHit", "MagicHit", "Dodge", "MaxParry", "PhyDef", "StiDef",
+            "NegDef", "MasDef", "JujDef", "MinMeleeDamage", "MaxMeleeDamage",
+            "MaxShotDamage", "MinShotDamage", "PhyDamageAdd", "StiDamageAdd", "JujDamageAdd",
+            "NegDamageAdd", "MasDamageAdd", "PhyDamageMul", "StiDamageMul", "JujDamageMul",
+            "NegDamageMul", "MasDamageMul", "MaxHPAdd", "MaxMPAdd", "MaxParryAdd",
+            "MinMagicDefAdd", "MaxLevel", "ParryValue", "MeleePowerAdd", "MagicPowerAdd",
+            "ShotPower", "ShotPowerAdd", "PhyVa", "PhyVaAdd", "MagicVa", "MagicVaAdd",
+            "PhyHitAdd", "MagicHitAdd", "DodgeAdd", "PhyParryDamRes", "PhyParryDamResAdd",
+            "MagicParryDamRes", "MagicParryDamResAdd", "PhyParryProb", "PhyParryProbAdd",
+            "PhyFinalDamageAdd", "StiFinalDamageAdd", "JujFinalDamageAdd",
+            "NegFinalDamageAdd", "MasFinalDamageAdd", "PhyFinalDamageReduce",
+            "StiFinalDamageReduce", "JujFinalDamageReduce", "NegFinalDamageReduce",
+            "MasFinalDamageReduce", "PowerLevel", "LevelTitle", "SkillUseValue",
+            "JingMaiTotalLevel", "FamousNeiGongName", "NeigongUseValue", "CharacterFlag",
+            "CharacterValue", "Justice", "Evil", "FreeBase", "TitleID");
+
+    /** 出招面板（参考服形态）：stateProperties 过滤到官方出招瘦集。 */
+    public byte[] castVitalUpdate() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(CAST_PANEL_NAMES.size());
+        for (PropertyValues.Indexed property : stateProperties()) {
+            if (CAST_PANEL_NAMES.contains(property.name())) {
+                properties.add(property);
+            }
+        }
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /**
+     * 收招技能状态清除帧（参考服 exe 127-0-0-1-50768 #2014 六项形态）：
+     * LogicState(回显当前，62433 战斗态跨招持续实证非硬编 0) + CurSkillID/Target 清空
+     * + CurSkillCanNoLimit/CantBeSkillLocked/CantBeSkillMustLocked 归零。
+     * 旧 Go 源码五项版无后三项；缺此帧客户端技能状态机滞留（CurSkill* 残留到下一招）。
+     */
+    public byte[] skillStateClearUpdate() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(6);
+        Actor.State state = actor.snapshot();
+        Props.add(properties, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)));
+        Props.add(properties, "CurSkillID", PropertyValues.Value.ofString(""));
+        Props.add(properties, "CurSkillTarget", PropertyValues.Value.ofObject(0));
+        Props.add(properties, "CurSkillCanNoLimit", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "CantBeSkillLocked", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "CantBeSkillMustLocked", PropertyValues.Value.ofInt32(0));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
     /** Go stateProperties：LogicState/资源/恢复速率/名字/碎银/Buff/运动/内功全表。 */
     public List<PropertyValues.Indexed> stateProperties() {
         Actor.State state = actor.snapshot();
@@ -889,7 +992,11 @@ public final class PlayerActor {
         Props.add(properties, "CurSkillEffectID", PropertyValues.Value.ofString(currentSkillEffectId));
         Props.add(properties, "CurSkillLevel", PropertyValues.Value.ofInt32(currentSkillLevel));
         Props.add(properties, "CurSkillTarget", PropertyValues.Value.ofObject(currentSkillTarget));
-        Props.add(properties, "ModifySkillLockTime", PropertyValues.Value.ofInt32(5000));
+        // ModifySkillLockTime：FxGameLogic 自目标技能动作门的毫秒容差（Go 源码注释实证）。
+        // 旧 Go 源码 5000，参考服 exe 实发 200（127-0-0-1-50768 n=188 面板）——
+        // 5000 会让客户端出招后维持 5s 技能硬直锁，轻功空中出招被锁判定打断、
+        // 人物被拉回地面（2026-11-03 空中位置重置根因）。
+        Props.add(properties, "ModifySkillLockTime", PropertyValues.Value.ofInt32(200));
         Props.add(properties, "HPHeartSpeed", PropertyValues.Value.ofInt32(1000));
         Props.add(properties, "HPHeartSpeedAdd", PropertyValues.Value.ofInt32(0));
         Props.add(properties, "MPHeartSpeed", PropertyValues.Value.ofInt32(1000));

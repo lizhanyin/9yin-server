@@ -39,6 +39,8 @@ public final class LoginSession {
     /** 时装页签：已激活套装（role_fashion_suits；选角时装载，ClientReady 推 FashionSuitRec 行）。 */
     java.util.List<String> fashionSuits = java.util.List.of();
     boolean fashionPushed;
+    /** V4 外观偏好：ShowEquipType 存档（0=江湖装 1=身份装 2=时装；null=无存档，保持默认）。 */
+    Integer showEquipTypePref;
     /** 二期 NPC：场景目录/活跃下标集/生命周期；lastPositionSave 是 2s 节流基准。 */
     SceneLifecycle world;
     List<NpcSpawn> sceneNpcs = List.of();

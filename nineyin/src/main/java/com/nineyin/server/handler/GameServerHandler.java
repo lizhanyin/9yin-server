@@ -34,6 +34,8 @@ public final class GameServerHandler extends SimpleChannelInboundHandler<byte[]>
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
+        com.nineyin.server.transport.CaptureSink.close(
+                String.valueOf(ctx.channel().remoteAddress()));
         flow.onDisconnect(session);
     }
 

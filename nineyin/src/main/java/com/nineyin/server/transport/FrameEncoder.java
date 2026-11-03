@@ -15,6 +15,8 @@ public final class FrameEncoder extends MessageToByteEncoder<byte[]> {
 
     @Override
     protected void encode(ChannelHandlerContext ctx, byte[] msg, ByteBuf out) {
-        out.writeBytes(FrameCodec.encode(msg, connection.writeKey()));
+        byte[] wire = FrameCodec.encode(msg, connection.writeKey());
+        out.writeBytes(wire);
+        CaptureSink.append(ctx.channel().remoteAddress().toString(), true, wire, wire.length);
     }
 }

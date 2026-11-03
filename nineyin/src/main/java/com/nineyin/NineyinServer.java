@@ -108,11 +108,12 @@ public final class NineyinServer implements SummerApp {
                 System.getProperty("minor.gm.port", "19081"), npcRegistry != null);
     }
 
-    /** 经脉/个性配置/风物志皮肤存档 DB 双源（role_meridians/role_customizing/role_skins）；失败仅告警，JSON 仍为主档。 */
+    /** 经脉/个性配置/风物志皮肤/外观偏好存档 DB 双源（role_meridians/role_customizing/role_skins/role_appearance）；失败仅告警，JSON 仍为主档。 */
     private static LoginFlow attachMeridianStore(LoginFlow flow, java.util.Optional<String> dsn) {
         dsn.ifPresent(d -> flow.attachMeridianDatabase(d));
         dsn.ifPresent(d -> flow.attachCustomizingDatabase(d));
         dsn.ifPresent(d -> flow.attachSkinDatabase(d));
+        dsn.ifPresent(d -> flow.attachAppearanceDatabase(d));
         return flow;
     }
 

@@ -31,7 +31,9 @@ public final class Actor {
     private int qingGong;
     private int maxQingGong;
     private int maxQingGongAdd;
-    private int speedRatio = 100;
+    // SpeedRatio 参考服 exe 出招面板实发 0（127-0-0-1-50768）；旧 Go 源码 newPlayer 的
+    // 100 已过时，出招重推 100 会干扰客户端移动态。
+    private int speedRatio = 0;
     private int logicState;
 
     public Actor(int objectId, int ownerId, String name, int maxHp, int maxMp) {

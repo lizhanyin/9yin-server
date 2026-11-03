@@ -160,6 +160,9 @@ public class GmRemote {
             // V3 风物志：卡牌挂载/卸下/全量收录（GM 网页直接驱动）。
             case "equip_card" -> intRange(params, "cardId", 1, Integer.MAX_VALUE);
             case "unequip_card", "grant_all_cards", "grant_all_fashion" -> null;
+            // V4 三套外观：显示类型切换（0=江湖装 1=身份装 2=时装）+ 身份装按门派激活。
+            case "set_showequip_type" -> intRange(params, "type", 0, 2);
+            case "grant_identity_suits" -> null;
             // 配套：模板生成武器（101-108/122 + cook/smith）与防具（部位名白名单）。
             case "gm_generate_weapon" -> {
                 String typeBad = intRange(params, "weaponType", 101, 122);

@@ -117,8 +117,15 @@ public final class SkillCastHandler {
             }
         }
         Instant now = Instant.ofEpochMilli(context.clock().instant().toEpochMilli());
-        long targetKey = selected == null ? 0
-                : (selected.objectId() & 0xFFFFFFFFL) | ((long) selected.ownerId() << 32);
+        // Go skill_combat.go：无目标技能的 CurSkillTarget 恒为自己（targetID 默认
+        // playerObjectID，requiresTarget 才覆盖）；参考服 exe n=188 面板实证
+        // CurSkillTarget=obj(玩家)。空对象会让客户端自目标动作门（读 CurSkill*
+        // 元组 + ModifySkillLockTime）误判，轻功空中出招被打断拉回地面。
+        long targetKey = (PlayerActor.PLAYER_OBJECT_ID & 0xFFFFFFFFL)
+                | ((long) PlayerActor.PLAYER_OWNER_ID << 32);
+        if (selected != null) {
+            targetKey = (selected.objectId() & 0xFFFFFFFFL) | ((long) selected.ownerId() << 32);
+        }
         PlayerActor.SkillGate gate = context.player().beginSkillUse(skill, targetKey, now);
         if (!gate.allowed()) {
             LOG.info("reject skill id=" + skillId + ": " + gate.reason());
@@ -128,6 +135,11 @@ public final class SkillCastHandler {
         Connection connection = context.connection();
         PlayerActor player = context.player();
         String playerName = player.snapshotName();
+
+        // buff 先入租约再写全量面板（参考服 exe 形态：出招 buff 只随 0x10 面板的
+        // BufferInfoN 下发，无独立 msg169/槽帧——127-0-0-1-50768 三招 customs 无 169、
+        // 无独立槽帧实证；Go stagePlayerSkillEffects 亦在 vitalUpdate 之前）。
+        List<StagedBuff> staged = stageSkillBuffs(context, skill, now);
 
         // CD 双行 + active_skill_rec（顺序按抓包）
         long start = now.toEpochMilli();
@@ -153,15 +165,15 @@ public final class SkillCastHandler {
                         FightMessages.skillRowCanUse(SKILL_VIEW_ID, row, true));
             }, Math.max(canUseAt, 1), TimeUnit.MILLISECONDS);
         }
-        // 玩家全量属性面（抓包 188 项 = stateProperties）
-        connection.writeFrame(player.vitalUpdate());
+        // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
+        // 外观属性官方不随出招重发，重推 Mount='' 等会把空中人物打回地面）。
+        connection.writeFrame(player.castVitalUpdate());
         // msg337 施法者位置/朝向回显（值取 211 请求，官方每招恒发 62433）。
         connection.writeFrame(FightMessages.casterTransformSync(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
         connection.writeFrame(FightMessages.skillAction(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
 
-        List<StagedBuff> staged = stageSkillBuffs(context, skill, now);
         List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient);
         if (skill.hitFrameMs().isEmpty()) {
             // 单段技能：原路径（即时结算，帧序对齐 62433 抓包）。
@@ -170,14 +182,14 @@ public final class SkillCastHandler {
             if (hits.stream().anyMatch(hit -> hit.damage() > 0) && player.enterCombat(now)) {
                 connection.writeFrame(player.logicStateFrame());
             }
-            emitPerTargetSequence(context, skill, hits, playerName, staged);
+            emitPerTargetSequence(context, skill, hits, playerName);
             applyTargetControl(context, skill, hits, now);
             feedMeridianZhenQi(context, hits);
         } else {
             // 多段技能（zhaoshi trigger_effect 帧位）：每段一次全套命中帧
             // （52795 抓包实证：每段恒 [NPC 0x10, 0x13, msg24, 0x2D, msg18, msg205]，
             // 同招各段伤害值相同=每招掷一次、段间重复；死亡目标后续段跳过）。
-            scheduleMultiHits(context, skill, targets, staged, hitTimes(skill), playerName);
+            scheduleMultiHits(context, skill, targets, hitTimes(skill), playerName);
         }
         scheduleEndOfAction(context, skill, staged);
         scheduleCombatIdleExit(context);
@@ -350,23 +362,18 @@ public final class SkillCastHandler {
     /**
      * 多段结算（52795 抓包实证形态）：出招时解析目标+掷一次伤害值（同招各段各目标同值），
      * 按 trigger_effect 帧位逐段调度——每段对仍存活目标发全套命中帧；首段命中进战斗+
-     * 插 buff 帧+目标控制并刷新战斗活跃时刻；末段后按整招累计伤害喂经脉真气。
+     * 目标控制并刷新战斗活跃时刻；末段后按整招累计伤害喂经脉真气。
+     * （buff 已随出招面板下发，段间无 buff 帧——参考服 exe 形态。）
      */
     private static void scheduleMultiHits(CastContext context, CombatSkill skill,
                                           List<FightState.HitTarget> targets,
-                                          List<StagedBuff> staged, List<Long> times,
-                                          String playerName) {
+                                          List<Long> times, String playerName) {
         int damage = rollDamage(context, skill);
         if (targets.isEmpty() || damage <= 0) {
-            // 无目标/未掷中：buff 帧照发（单段路径同款兜底），零命中零帧。
-            if (!staged.isEmpty()) {
-                emitBuffFrames(context, staged, playerName);
-            }
-            return;
+            return; // 无目标/未掷中：零命中零帧
         }
         long[] landedTotal = {0};
         boolean[] firstTick = {true};
-        List<StagedBuff> pendingBuffs = new ArrayList<>(staged);
         long lastAt = times.get(times.size() - 1);
         for (int tick = 0; tick < times.size(); tick++) {
             long at = times.get(tick);
@@ -401,8 +408,7 @@ public final class SkillCastHandler {
                 } else {
                     context.player().touchCombat(now); // 后续段刷新活跃时刻，防段间闲退
                 }
-                emitPerTargetSequence(context, skill, hits, playerName, pendingBuffs);
-                pendingBuffs.clear();
+                emitPerTargetSequence(context, skill, hits, playerName);
                 landedTotal[0] += (long) damage * hits.size();
                 if (lastTick) {
                     feedZhenQiAmount(context, (int) Math.min(landedTotal[0], Integer.MAX_VALUE));
@@ -430,16 +436,12 @@ public final class SkillCastHandler {
     }
 
     private static void emitPerTargetSequence(CastContext context, CombatSkill skill,
-                                              List<Hit> hits, String playerName,
-                                              List<StagedBuff> staged) {
+                                              List<Hit> hits, String playerName) {
         Connection connection = context.connection();
-        boolean buffFramesSent = staged.isEmpty();
-        boolean anyHit = false;
         for (Hit hit : hits) {
             if (hit.damage() <= 0) {
                 continue; // 未命中目标：整段不发（HP 无变化）
             }
-            anyHit = true;
             FightState.HitTarget target = hit.target();
             Actor.State state = target.combat().state();
             SceneLifecycle.CombatNpcInfo info = target.info();
@@ -454,27 +456,8 @@ public final class SkillCastHandler {
                     state.maxHp() <= 0 ? 0 : state.hp() * 100 / state.maxHp()));
             connection.writeFrame(FightMessages.hurtAction(info.id(), info.ownerId(),
                     PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
-            if (!buffFramesSent) {
-                emitBuffFrames(context, staged, playerName);
-                buffFramesSent = true;
-            }
             connection.writeFrame(FightMessages.hitConfirm(PlayerActor.PLAYER_OBJECT_ID,
                     PlayerActor.PLAYER_OWNER_ID, skill.id(), info.id(), info.ownerId()));
-        }
-        if (!anyHit && !buffFramesSent) {
-            emitBuffFrames(context, staged, playerName);
-        }
-    }
-
-    /** formula.lua（Lua 权威/Java 兜底）：attack=装备+内功掷值，守方侧当前取缺省。 */
-    private static void emitBuffFrames(CastContext context, List<StagedBuff> staged, String playerName) {
-        for (StagedBuff buff : staged) {
-            context.connection().writeFrame(FightMessages.skillBuff(
-                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
-                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
-                    buff.configId(), playerName));
-            context.connection().writeFrame(context.player().buffSlotFrame(buff.slot(),
-                    context.player().bufferInfo(buff.slot(), context.clock().instant())));
         }
     }
 
@@ -511,7 +494,12 @@ public final class SkillCastHandler {
             return null;
         }
         PlayerActor player = context.player();
+        // Go activateSkillBuff 槽位序：preferredSlot → 同 ConfigID 现存租约复用 →
+        // 空闲扫描(12..24，系统租约区 1..11 不可写)。
         int slot = buff.preferredSlot();
+        if (slot <= 0) {
+            slot = player.reuseBuffSlot(buff.configId(), now);
+        }
         if (slot <= 0) {
             slot = player.freeBuffSlot();
             if (slot <= 0) {
@@ -532,6 +520,9 @@ public final class SkillCastHandler {
             if (context.player().clearCurrentSkill(skill.id())) {
                 context.connection().writeFrame(FightMessages.activeSkillRowRemove(
                         PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
+                // 技能状态清除帧（参考服 exe 收招恒发 #2014；此前缺失致客户端技能
+                // 状态机滞留，配合 5000ms 硬直锁为空中位置重置根因之一）。
+                context.connection().writeFrame(context.player().skillStateClearUpdate());
                 // State=stand 复位帧停发（2026-11-02 真机反馈）：空中出招时客户端收到
                 // State=stand 会终止空中状态并把模型贴地（人被瞬移到地面）。官方抓包
                 // 每招收尾都发（12/12，但那次全程地面战斗暴露不了）；动作时间线由客户

@@ -24,6 +24,7 @@ public final class FrameDecoder extends ByteToMessageDecoder {
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
         byte[] chunk = new byte[in.readableBytes()];
         in.readBytes(chunk);
+        CaptureSink.append(ctx.channel().remoteAddress().toString(), false, chunk, chunk.length);
         for (byte[] frame : accumulator.feed(chunk, 0, chunk.length)) {
             XorKey key = connection.readKey();
             key.apply(frame, 0, frame.length);

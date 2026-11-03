@@ -148,3 +148,51 @@ cooldown_rec 的 start/end 是绝对 Unix 毫秒，客户端靠它对钟；msg41
 "reset"=单类 CD 重置、"sync"+203 个小号 id（0..2925，物品/道具 CD 类别，不含技能
 CD 类别 16933/8837/50000）。
 
+
+## 9. 空中出招位置重置根因（2026-11-03，抓包 127-0-0-1-50768 全解）
+
+真机症状：轻功空中出招人物被拉回地面；参考服（Go exe）同操作不受影响。
+对参考服整段抓包逐帧解码 + Java 端 `tools/smoke/position_reset_probe.py` 探针对拍，
+出招回帧序列两服一致（零 0x1F/0x20/位置属性帧，337 原样回显空中坐标），差异锁定在
+**技能状态元组语义**（FxGameLogic 自目标技能动作门读 CurSkill* + ModifySkillLockTime，
+Go 源码 player_actor.go 注释实证）：
+
+| 偏差 | Java(旧) | 参考服 exe | 修复 |
+|---|---|---|---|
+| ModifySkillLockTime[221] | 5000（抄旧 Go 源码） | **200** | PlayerActor 两处 5000→200；5s 硬直锁会打断空中动作 |
+| 无目标技能 CurSkillTarget | obj(0,0) | **obj(自己)**（Go targetID 默认 playerObjectID） | SkillCastHandler targetKey 默认自身 |
+| 收招技能状态清除帧 | 只发 0x12 删行 | **0x12 → n=6 清除帧 → State=stand** | 补发 skillStateClearUpdate()（exe #2014 六项形态：LogicState 回显当前 + CurSkillID/Target 清空 + CanNoLimit/CantBe(,)Locked 归零；62433 战斗抓包 LogicState 跨招=1 实证非硬编 0） |
+
+收尾 State=stand 维持停发（2026-11-02 真机反馈贴地；参考服发它但当时伴随上述三偏差，
+锁 200 后理论上可恢复，待真机验证再做）。
+
+**探针**：`position_reset_probe.py`（复刻真机空中三连招 + msg15 字节模板打坐标补丁；
+官方 msg15 = `[i32 15, i32 0xA0005000, i32 state, f32×4, text(33B 会话哈希)]` count=9）。
+
+### 二轮修复（同日真机复测仍拉回地面后）
+
+上表三修复上线后真机复测仍重置——根因另有其处，全部在**出招 buff 的下发形态**
+（对参考服 exe 抓包算术取证，无需 IDA：exe 自身日志同时打印 value 串与 uid/expiry，
+三招 value−expiry ≡ **11,644,736,000,000ms** 恒等差，即 FILETIME 纪元）：
+
+| 偏差 | Java(旧) | 参考服 exe | 修复 |
+|---|---|---|---|
+| buff 槽位 | freeBuffSlot 从 1 扫 → 出招 buff 落**系统槽 1/2/3** | **槽 12**（Go 注释"System leases keep slots 1..10；routine Buffs allocate from 11..24"，格挡租约占 11） | freeBuffSlot 改扫 12..24；activate 加同 ConfigID 槽复用（Go activateSkillBuff 三级槽位序） |
+| BufferInfo 第 5 字段 | Unix 毫秒（1A1A…） | **Unix毫秒+11644473600000**（1601 纪元，C38D…）——Java 旧值客户端解出"公元 1657 年已过期" | PlayerActor EPOCH_1601_OFFSET_MS（bufferInfo+bufferListString 两处） |
+| buff 帧形态 | 出招后独立发 msg169+BufferInfo 槽帧 | **只随 0x10 全量面板内嵌**（三招 customs 无 169、无独立槽帧；Go 亦在 vitalUpdate 前 stage） | stageSkillBuffs 提前到 CD 行之前；删出招路径 emitBuffFrames（到期清槽帧保留=Go schedulePlayerBuffExpiry） |
+
+注：QingGongHandler 缓降(216)与格挡(54)的 169 流程不动（各自已真机验证/槽位 11+）。
+62433 官方抓包中花神四式有 msg169——与本 exe 形态分歧，若真机反馈花神 buff 显示回归再取证。
+
+### 三轮修复：出招面板瘦身（抓包阀实证）
+
+给 Java 加了 wire 级抓包阀（`transport/CaptureSink`，`<serverRoot>/captures/local/`，
+格式同参考服可直接 capture_deep 解码）后对拍发现：**参考服每招面板 = 登录面板减 78 项**
+（#2007 的 186 名瘦集），Mount/CurRiderType/NewRideID/Mount*Speed/WalkSpeed/CantMove/
+State/ActionSet 等移动模式与外观属性官方**不随出招重发**；Java 每招全量 218 项硬推——
+腾空出招瞬间重推 `Mount=''`/`CurRideMount=obj(0,0)` 会让客户端清骑行/移动态、把空中
+人物强制放回地面（特效留在空中=客户端知道 337 坐标，仅模型被搬走）。
+
+**修复**：`PlayerActor.castVitalUpdate()` = stateProperties 过滤到 `CAST_PANEL_NAMES`
+白名单（186 名，逐名取自 #2007）；SkillCastHandler 出招改用之；SpeedRatio 默认 100→0
+（exe 出招面板实发 0；旧 Go newPlayer 的 100 过时）。登录面板不动。

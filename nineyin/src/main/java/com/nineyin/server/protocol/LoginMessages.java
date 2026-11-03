@@ -44,13 +44,23 @@ public final class LoginMessages {
                                              List<String> appearance, String faction,
                                              String hair, String cloth, String pants, String shoes) {
         return oneRoleLoginSuccess(now, name, appearance, faction, hair, cloth, pants, shoes,
-                "title001", "scene_name_017", null);
+                "title001", "scene_name_017", null, null);
     }
 
     public static byte[] oneRoleLoginSuccess(LocalDateTime now, String name,
                                              List<String> appearance, String faction,
                                              String hair, String cloth, String pants, String shoes,
                                              String title, String sceneName, String bookIntro) {
+        return oneRoleLoginSuccess(now, name, appearance, faction, hair, cloth, pants, shoes,
+                title, sceneName, bookIntro, null);
+    }
+
+    /** showEquipType：显示类型存档（null=无存档，f7 保持原值 "1"，golden 字节兼容）。 */
+    public static byte[] oneRoleLoginSuccess(LocalDateTime now, String name,
+                                             List<String> appearance, String faction,
+                                             String hair, String cloth, String pants, String shoes,
+                                             String title, String sceneName, String bookIntro,
+                                             Integer showEquipType) {
         PacketWriter writer = PacketWriter.ofCapacity(0x29 + 160 + name.length() * 2);
         writer.writeU8(0x04);
         appendLoginHeader(writer, now);
@@ -62,7 +72,8 @@ public final class LoginMessages {
         writer.writeU8(7);
         appendUcs2(writer, name);
         writer.writeU8(7);
-        appendUcs2(writer, rolePara(appearance, faction, hair, cloth, pants, shoes, title, sceneName, bookIntro));
+        appendUcs2(writer, rolePara(appearance, faction, hair, cloth, pants, shoes,
+                title, sceneName, bookIntro, showEquipType));
         writer.writeU8(2).writeU32(0);
         writer.writeU8(5).writeF64(0);
         return writer.toBytes();
@@ -75,10 +86,15 @@ public final class LoginMessages {
         writer.writeU16(0);
     }
 
-    /** Go oneRoleLoginSuccess 的 36 字段 rolePara（逗号拼接，未赋值位为空串；7/9/10/11 为解析后外观）。 */
+    /**
+     * Go oneRoleLoginSuccess 的 36 字段 rolePara（逗号拼接，未赋值位为空串；7/9/10/11
+     * 为解析后外观）。showEquipType=null 保持 f7 原值 "1"（golden 字节兼容）——
+     * 客户端 form_roles.lua 解析 [7]=show_equip_type（face 变长 off=0 时）。
+     */
     public static String rolePara(List<String> appearance, String faction,
                                    String hair, String cloth, String pants, String shoes,
-                                   String title, String sceneName, String bookIntro) {
+                                   String title, String sceneName, String bookIntro,
+                                   Integer showEquipType) {
         String resolvedTitle = title == null || title.isEmpty() ? "title001" : title;
         String resolvedScene = sceneName == null || sceneName.isEmpty() ? "scene_name_017" : sceneName;
         String resolvedBookIntro = bookIntro == null ? get(appearance, 0, "book1") : bookIntro;
@@ -90,7 +106,7 @@ public final class LoginMessages {
         fields[3] = "0";
         fields[4] = "1";
         fields[5] = get(appearance, 2, "");
-        fields[6] = "1";
+        fields[6] = showEquipType == null ? "1" : String.valueOf(showEquipType);
         fields[7] = hair;
         fields[9] = cloth;
         fields[10] = pants;

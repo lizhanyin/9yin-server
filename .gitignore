@@ -14,6 +14,7 @@ tmp-analysis
 /resources
 tools/__pycache__
 -----
+*.bin
 *.bak
 *.ctxt
 *.hex

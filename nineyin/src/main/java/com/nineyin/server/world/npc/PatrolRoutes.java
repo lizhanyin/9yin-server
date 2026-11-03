@@ -37,11 +37,20 @@ public final class PatrolRoutes {
     /** 出生点离路线最近路点的吸附上限（米）。 */
     static final float SNAP_MAX_METERS = 35f;
 
+    /** 速度缺省（m/s）：与 npcconfig 城市表典型值一致。 */
+    static final float WALK_SPEED_FALLBACK = 1.25f;
+    static final float RUN_SPEED_FALLBACK = 4.0f;
+
     /** 相邻路点去重阈值（米）。 */
     private static final float DEDUPE_METERS = 0.5f;
 
     /** bind 统计（日志/测试读取）。 */
     public record BindStats(int walkers, int stand, int missingPath, int farOrShort) {
+    }
+
+    /** bind 共同时钟（生产取当前时间；测试可注入固定值）。 */
+    static long scheduleEpoch() {
+        return System.currentTimeMillis();
     }
 
     private PatrolRoutes() {
@@ -123,6 +132,9 @@ public final class PatrolRoutes {
         }
     }
 
+    /** 停留列上限（毫秒）：数据实测 0~60000，留余量防脏值拖死路线。 */
+    static final long DWELL_CAP_MILLIS = 120_000;
+
     /** 解析 r= 载荷；格式见类注释，不可解析返回 null。 */
     static PatrolRoute.Waypoint parseWaypoint(String payload) {
         String[] parts = payload.split(",", -1);
@@ -138,9 +150,15 @@ public final class PatrolRoutes {
             if (parts.length > base + 3 && !parts[base + 3].isBlank()) {
                 orient = Float.parseFloat(parts[base + 3].trim());
             }
+            // 停留列：朝向后第一个数值列（A/B 格式 field5、无 id 格式 field4）。
+            long dwellMs = 0;
+            if (parts.length > base + 4 && !parts[base + 4].isBlank()) {
+                dwellMs = (long) Float.parseFloat(parts[base + 4].trim());
+            }
+            dwellMs = Math.max(0, Math.min(DWELL_CAP_MILLIS, dwellMs));
             // walk/run 标记在尾部固定列（stand,nil,walk/run,nil,…）。
             boolean run = parts.length > 8 && "run".equalsIgnoreCase(parts[8].trim());
-            return new PatrolRoute.Waypoint(x, y, z, orient, run);
+            return new PatrolRoute.Waypoint(x, y, z, orient, run, dwellMs);
         } catch (NumberFormatException e) {
             return null;
         }
@@ -199,17 +217,20 @@ public final class PatrolRoutes {
     }
 
     /**
-     * 把路线表绑到场景 spawns 上（就地吸附改写坐标）：PathId → 路线 → 最近路点吸附。
-     * 不满足条件（无 PathId/无路线/过远/敌对脚本）→ route 置空站立。
+     * 把路线表绑到场景 spawns 上（就地吸附改写坐标）：PathId → 路线 → 最近路点吸附
+     * → 按该 NPC 速度属性构建巡逻时间表（跨连接共享的绝对时间线）。
+     * 不满足条件（无 PathId/无路线/过远/时间表不可用/敌对脚本）→ 站立。
      */
     public static BindStats bind(List<NpcSpawn> spawns, Map<String, PatrolRoute> table) {
         int walkers = 0;
         int stand = 0;
         int missingPath = 0;
         int farOrShort = 0;
+        long epochMs = scheduleEpoch();
         for (NpcSpawn spawn : spawns) {
             spawn.route = null;
             spawn.routeStartIdx = 0;
+            spawn.schedule = null;
             if (combatScriptClass(spawn.resolved.scriptClass)) {
                 stand++;
                 continue;
@@ -250,13 +271,34 @@ public final class PatrolRoutes {
             if (snap.hasFacing()) {
                 spawn.orient = snap.orient();
             }
+            // 时间表：速度与 0x0D 下发属性同值（客户端动画同步的关键）。
+            float walk = clampedSpeed(spawn, "WalkSpeed", WALK_SPEED_FALLBACK);
+            float run = clampedSpeed(spawn, "RunSpeed", RUN_SPEED_FALLBACK);
+            PatrolSchedule schedule = PatrolSchedule.build(route, walk, run, epochMs);
+            if (schedule == null) {
+                farOrShort++;
+                stand++;
+                continue;
+            }
             spawn.route = route;
             spawn.routeStartIdx = best;
+            spawn.schedule = schedule;
             walkers++;
         }
         log.info("patrol bind: walkers={} stand={} missingPath={} farOrShort={} named_paths={}",
                 walkers, stand, missingPath, farOrShort, table.size());
         return new BindStats(walkers, stand, missingPath, farOrShort);
+    }
+
+    /** NPC 速度属性（缺失/非法回退缺省），钳 0.5..15 m/s。 */
+    static float clampedSpeed(NpcSpawn spawn, String property, float fallback) {
+        com.nineyin.server.protocol.PropertyValues.Value value =
+                spawn.resolved.properties.get(property);
+        float speed = value == null ? 0f : value.f32();
+        if (speed <= 0f || !Float.isFinite(speed)) {
+            speed = fallback;
+        }
+        return Math.max(0.5f, Math.min(15f, speed));
     }
 
     /** creator PathId 优先（PathId/PathID 两种拼法），模板 PathID 缺省。 */

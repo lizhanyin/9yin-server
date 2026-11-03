@@ -17,6 +17,7 @@ import com.nineyin.server.world.npc.NpcCreator;
 import com.nineyin.server.world.npc.NpcResolver;
 import com.nineyin.server.world.npc.NpcSpawn;
 import com.nineyin.server.world.npc.PatrolRoute;
+import com.nineyin.server.world.npc.PatrolSchedule;
 import com.nineyin.server.protocol.PropertyValues.Value;
 import com.nineyin.server.transport.Connection;
 import com.nineyin.server.transport.FrameCodec;
@@ -185,7 +186,8 @@ class SceneLifecycleTest {
         return NpcSpawn.fromInstance(resolved, transform);
     }
 
-    private record ChannelWorld(EmbeddedChannel channel, ManualScheduler scheduler, SceneLifecycle world) {
+    private record ChannelWorld(EmbeddedChannel channel, ManualScheduler scheduler,
+                                SceneLifecycle world, long[] clock) {
         List<byte[]> drain() {
             List<byte[]> frames = new ArrayList<>();
             ByteBuf buffer;
@@ -203,9 +205,11 @@ class SceneLifecycleTest {
         EmbeddedChannel channel = new EmbeddedChannel();
         channel.pipeline().addLast(new FrameEncoder(new Connection(null)));
         ManualScheduler scheduler = new ManualScheduler();
-        SceneLifecycle world = new SceneLifecycle(new Connection(channel), scheduler);
+        long[] clock = {0L};
+        SceneLifecycle world = new SceneLifecycle(new Connection(channel), scheduler,
+                () -> clock[0]);
         world.begin("ini\\scene\\test", "test");
-        return new ChannelWorld(channel, scheduler, world);
+        return new ChannelWorld(channel, scheduler, world, clock);
     }
 
     @Test
@@ -293,93 +297,111 @@ class SceneLifecycleTest {
     }
 
     @Test
-    void patrolWalksRouteBouncesAndUsesWaypointFacing() {
+    void patrolFollowsScheduleWithFacingAndBounce() {
         ChannelWorld env = newWorld();
-        // 路线 (20,0,20) → (23,0,20) → (26,0,20)，吸附首点；WalkSpeed=1.5 → 每腿 3m/1.5m/s=2000ms。
+        // 路线 (20,0,20) → (23,0,20) → (26,0,20)；walk=0.75 → 每腿 4000ms，
+        // 停留全 0，周期 16000ms（去程 2 腿 + 回程 2 腿）。
         PatrolRoute route = new PatrolRoute("test_route", List.of(
-                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false),
-                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false),
-                new PatrolRoute.Waypoint(26f, 0f, 20f, 1.5f, false)));
+                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false, 0),
+                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false, 0),
+                new PatrolRoute.Waypoint(26f, 0f, 20f, 1.5f, false, 0)));
+        long epoch = 1_000_000L;
         NpcSpawn npc = syntheticNpc("npc_b", 20, 0, 20, 0);
-        npc.resolved.properties.put("WalkSpeed", Value.ofFloat32(1.5f));
-        npc.route = route;
-        npc.routeStartIdx = 0;
+        npc.schedule = PatrolSchedule.build(route, 0.75f, 4f, epoch);
+        // 注册即按共同时钟采样当前位置：offset=5500 → 第二段 w1→w2 的 3/8 处。
+        env.clock()[0] = epoch + 5500;
         env.world().registerNpc(2, npc);
+        float sampledX = env.world().combatNpcInfo(2).x();
+        assertTrue(sampledX > 23f && sampledX < 26f, "当前位置在 w1→w2 段上 " + sampledX);
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
         int replayTasks = env.scheduler().tasks.size(); // 物化重放批次（5）+ 巡逻首步（1）
-        // 首步（5s 后）：0x20 去往 idx1 (23,0,20)，朝向=行进方向 atan2(3,0)=π/2。
+        // 首步：第二段行进中 → 0x20 目标 w2（路点朝向 1.5 生效）。
         env.scheduler().tasks.get(replayTasks - 1).run();
         List<byte[]> frames = env.drain();
         assertEquals(2, frames.size()); // 0x20 + 0x1F 更新
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "idx1 X");
-        assertEquals((float) Math.PI / 2,
-                Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-3f, "行进朝向");
-        // 到点 0x1F（2000ms）与下一步（2000+200ms）依次登记。
-        assertEquals(replayTasks + 2, env.scheduler().tasks.size());
+        assertEquals(26f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "目标 w2");
+        assertEquals(1.5f, Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-4f, "路点朝向");
+        assertEquals(replayTasks + 2, env.scheduler().tasks.size()); // 到点 0x1F + 下一步
         env.scheduler().tasks.get(replayTasks).run(); // 到点 0x1F
         assertEquals(0x1F, env.drain().get(0)[0] & 0xFF);
-        env.scheduler().tasks.get(replayTasks + 1).run(); // 第二步 → idx2 (26,0,20)
+        // 推进时钟至回程段 w2→w1（offset 9500）。
+        env.clock()[0] = epoch + 9500;
+        env.scheduler().tasks.get(replayTasks + 1).run();
         frames = env.drain();
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(26f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "idx2 X");
-        assertEquals(1.5f, Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-4f, "路点朝向");
-        // 第三步：idx3 越界 → 弹回 idx1。
+        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "回程 w1");
+        assertEquals((float) -Math.PI / 2,
+                Float.intBitsToFloat((int) u32(frames.get(0), 21)), 1e-3f, "行进朝向");
         env.scheduler().tasks.get(env.scheduler().tasks.size() - 2).run(); // 到点 0x1F
         env.drain();
-        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run(); // 弹回步
+        // 端点弹回：回程 w1→w0（offset 13500）。
+        env.clock()[0] = epoch + 13500;
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
         frames = env.drain();
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "端点弹回");
+        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "端点弹回");
     }
 
     @Test
-    void patrolSkipsUnreachableWaypoints() {
+    void patrolDwellsAtWaypointPerSchedule() {
         ChannelWorld env = newWorld();
-        // idx1 距 idx0 XZ 40m（>28m 上限）→ 跳过，直达 idx2。
-        PatrolRoute route = new PatrolRoute("test_gap", List.of(
-                new PatrolRoute.Waypoint(0f, 0f, 0f, 0f, false),
-                new PatrolRoute.Waypoint(40f, 0f, 0f, 0f, false),
-                new PatrolRoute.Waypoint(5f, 0f, 0f, 0f, false)));
-        NpcSpawn npc = syntheticNpc("npc_b", 0, 0, 0, 0);
-        npc.route = route;
-        npc.routeStartIdx = 0;
+        // w0→w1 行程 4000ms，w1 停留 3000ms，回程 4000ms；周期 11000ms。
+        PatrolRoute route = new PatrolRoute("test_dwell", List.of(
+                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false, 0),
+                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false, 3000)));
+        long epoch = 1_000_000L;
+        NpcSpawn npc = syntheticNpc("npc_b", 20, 0, 20, 0);
+        npc.schedule = PatrolSchedule.build(route, 0.75f, 4f, epoch);
+        env.clock()[0] = epoch + 5500;
         env.world().registerNpc(2, npc);
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
-        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run(); // 首步
+        // 首步落在 w1 停留窗（4000..7000）：只排程不发帧。
+        env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
+        assertTrue(env.drain().isEmpty(), "停留中不发移动帧");
+        assertEquals(7, env.scheduler().tasks.size()); // 5 重放 + 首步 + 停留等待
+        env.clock()[0] = epoch + 7500; // 停留结束：回程开腿
+        env.scheduler().tasks.get(6).run();
         List<byte[]> frames = env.drain();
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(5f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "跳过 40m 脏点");
+        assertEquals(20f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "停留后回程");
     }
 
     @Test
     void patrolRestartsAfterViewportReentry() {
         ChannelWorld env = newWorld();
         PatrolRoute route = new PatrolRoute("test_reentry", List.of(
-                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false),
-                new PatrolRoute.Waypoint(23f, 0f, 20f, 0f, false)));
+                new PatrolRoute.Waypoint(20f, 0f, 20f, 0f, false, 0),
+                new PatrolRoute.Waypoint(30f, 0f, 20f, 0f, false, 0)));
+        long epoch = 1_000_000L;
         NpcSpawn npc = syntheticNpc("npc_b", 20, 0, 20, 0);
-        npc.route = route;
-        npc.routeStartIdx = 0;
+        npc.schedule = PatrolSchedule.build(route, 1f, 4f, epoch); // 每腿 10000ms
+        env.clock()[0] = epoch + 500;
         env.world().registerNpc(2, npc);
         env.world().clientReady();
         env.world().clientActivity();
         env.drain();
+        float xBefore = env.world().combatNpcInfo(2).x();
         int tasksBeforeLeave = env.scheduler().tasks.size();
         env.world().unregister(2);
         env.world().reconcileViewport();
         env.drain();
-        // 物化后重进：registerNpc 立即重新开链（首步任务重新登记）。
+        // 物化后重进：registerNpc 立即重新开链，且位置按时间表继续（不回起点）。
+        env.clock()[0] = epoch + 3000;
         env.world().registerNpc(2, npc);
         assertEquals(tasksBeforeLeave + 1, env.scheduler().tasks.size());
+        float xAfter = env.world().combatNpcInfo(2).x();
+        assertTrue(xAfter > xBefore, "重进位置沿路线继续 " + xBefore + " → " + xAfter);
+        assertTrue(xAfter > 20f && xAfter < 30f, "在首段上");
+        env.clock()[0] = epoch + 8000;
         env.scheduler().tasks.get(env.scheduler().tasks.size() - 1).run();
         List<byte[]> frames = env.drain();
         assertEquals(0x20, frames.get(0)[0] & 0xFF);
-        assertEquals(23f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "重进后开链");
+        assertEquals(30f, Float.intBitsToFloat((int) u32(frames.get(0), 9)), 1e-4f, "重进后开链");
     }
 
     private static long u32(byte[] frame, int off) {

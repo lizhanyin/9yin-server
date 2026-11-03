@@ -17,6 +17,8 @@ public final class NpcSpawn {
     public PatrolRoute route;
     /** 吸附起始路点下标。 */
     public int routeStartIdx;
+    /** 巡逻时间表（绑定时刻构建，epoch 为跨连接共同时钟）。 */
+    public PatrolSchedule schedule;
 
     public NpcSpawn(NpcResolver.ResolvedNpc resolved, float x, float y, float z, float orient) {
         this.resolved = resolved;
@@ -40,6 +42,7 @@ public final class NpcSpawn {
         NpcSpawn cloned = new NpcSpawn(copy, x, y, z, orient);
         cloned.route = route;
         cloned.routeStartIdx = routeStartIdx;
+        cloned.schedule = schedule;
         return cloned;
     }
 

@@ -8,8 +8,11 @@ import java.util.List;
  */
 public record PatrolRoute(String pathId, List<Waypoint> waypoints) {
 
-    /** 单个路点；run=false 走 WalkSpeed，true 跑 RunSpeed。 */
-    public record Waypoint(float x, float y, float z, float orient, boolean run) {
+    /**
+     * 单个路点；run=false 走 WalkSpeed，true 跑 RunSpeed；
+     * dwellMs = 到达本点后的停留（mappath 停留列，0~120s 钳制）。
+     */
+    public record Waypoint(float x, float y, float z, float orient, boolean run, long dwellMs) {
 
         /** 数据朝向哨兵（0=未设、-10=按行进方向）：非零且 |o|≤2π 才有效。 */
         public boolean hasFacing() {

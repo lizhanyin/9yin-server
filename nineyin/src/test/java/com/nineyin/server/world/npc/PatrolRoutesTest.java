@@ -2,6 +2,7 @@ package com.nineyin.server.world.npc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,29 +28,35 @@ class PatrolRoutesTest {
 
     @Test
     void parseWaypointHandlesThreeRowFormats() {
-        // 格式1：前导空列（主流）。
+        // 格式1：前导空列（主流）；停留列在朝向后（field5）。
         Waypoint a = PatrolRoutes.parseWaypoint(
-                ",458.7,0.629,637.8,-10,0,stand,nil,walk,nil,1,");
+                ",458.7,0.629,637.8,-10,5000,stand,nil,walk,nil,1,");
         assertEquals(458.7f, a.x(), 1e-4f);
         assertEquals(0.629f, a.y(), 1e-4f);
         assertEquals(637.8f, a.z(), 1e-4f);
         assertEquals(-10f, a.orient(), 1e-4f);
+        assertEquals(5000L, a.dwellMs());
         assertFalse(a.hasFacing(), "-10 是哨兵朝向，按行进方向计算");
         assertFalse(a.run());
-        // 格式2：整数导航点 id 前缀 —— id 必须跳过（旧服误读成 x）。
+        // 格式2：整数导航点 id 前缀 —— id 必须跳过（旧服误读成 x），停留列同位。
         Waypoint b = PatrolRoutes.parseWaypoint(
-                "59,458.7,0.629,637.8,-10,0,stand,nil,walk,nil,1,");
+                "59,458.7,0.629,637.8,-10,60000,stand,nil,walk,nil,1,");
         assertEquals(a.x(), b.x(), 1e-6f);
         assertEquals(a.y(), b.y(), 1e-6f);
         assertEquals(a.z(), b.z(), 1e-6f);
-        // 格式3：无 id 列，x 直接开头（浮点首列）。
+        assertEquals(60000L, b.dwellMs());
+        // 格式3：无 id 列，x 直接开头（浮点首列），停留列在朝向后首位（field4）。
         Waypoint c = PatrolRoutes.parseWaypoint(
-                "318.196625,3.794954,632.016357,0.494,0,0,stand,nil,walk,nil,1,");
+                "318.196625,3.794954,632.016357,0.494,4000,0,stand,nil,walk,nil,1,");
         assertEquals(318.196625f, c.x(), 1e-5f);
         assertEquals(3.794954f, c.y(), 1e-5f);
         assertEquals(632.016357f, c.z(), 1e-5f);
         assertEquals(0.494f, c.orient(), 1e-5f);
+        assertEquals(4000L, c.dwellMs());
         assertTrue(c.hasFacing());
+        // 停留上限钳制（数据实测最大 60s）。
+        assertEquals(PatrolRoutes.DWELL_CAP_MILLIS,
+                PatrolRoutes.parseWaypoint(",1,0,1,0,999999999,stand,nil,walk,nil,1,").dwellMs());
         // run 标记在尾部固定列。
         Waypoint run = PatrolRoutes.parseWaypoint(
                 ",1,0,1,0,0,stand,nil,run,nil,1,");
@@ -98,18 +105,21 @@ class PatrolRoutesTest {
     @Test
     void bindSnapsCreatorPathIdToNearestWaypoint() {
         Map<String, PatrolRoute> table = Map.of("AI_sz_001", new PatrolRoute("AI_sz_001", List.of(
-                new Waypoint(458.7f, 0.629f, 637.8f, 0f, false),
-                new Waypoint(433.9f, 0.618f, 637.7f, 1.2f, false),
-                new Waypoint(410.0f, 0.6f, 630.0f, 0f, false))));
+                new Waypoint(458.7f, 0.629f, 637.8f, 0f, false, 0),
+                new Waypoint(433.9f, 0.618f, 637.7f, 1.2f, false, 2000),
+                new Waypoint(410.0f, 0.6f, 630.0f, 0f, false, 0))));
         NpcSpawn near = spawn("sz051", "CommonNpc", 459.139f, 0.630f, 637.788f);
         near.resolved.extensions.put("creator.PathId", "AI_sz_001");
+        near.resolved.properties.put("WalkSpeed", com.nineyin.server.protocol.PropertyValues.Value.ofFloat32(1.5f));
         PatrolRoutes.BindStats stats = PatrolRoutes.bind(List.of(near), table);
         assertSame(table.get("AI_sz_001"), near.route);
         assertEquals(0, near.routeStartIdx, "最近路点是首点");
         assertEquals(458.7f, near.x, 1e-4f, "吸附到路点坐标");
         assertEquals(637.8f, near.z, 1e-4f);
+        assertNotNull(near.schedule, "绑定即构建时间表");
+        assertEquals(3, near.schedule.waypoints(), "时间表含全部 3 点（无高度异常）");
         assertEquals(1, stats.walkers());
-        // 模板 PathID 缺省绑定（无 creator 覆盖）。
+        // 模板 PathID 缺省绑定（无 creator 覆盖）；同批绑定共享同一时间表时钟。
         NpcSpawn viaTemplate = spawn("sz052", "CommonNpc", 433.95f, 0.62f, 637.7f);
         viaTemplate.resolved.extensions.put("template.PathID", "AI_sz_001");
         PatrolRoutes.bind(List.of(viaTemplate), table);
@@ -119,10 +129,26 @@ class PatrolRoutesTest {
     }
 
     @Test
+    void clampedSpeedFallsBackAndClamps() {
+        NpcSpawn npc = spawn("sz051", "CommonNpc", 0, 0, 0);
+        assertEquals(1.25f, PatrolRoutes.clampedSpeed(npc, "WalkSpeed", 1.25f), 1e-6f, "缺失回退");
+        assertEquals(4.0f, PatrolRoutes.clampedSpeed(npc, "RunSpeed", 4.0f), 1e-6f);
+        npc.resolved.properties.put("WalkSpeed",
+                com.nineyin.server.protocol.PropertyValues.Value.ofFloat32(0.3f));
+        assertEquals(0.5f, PatrolRoutes.clampedSpeed(npc, "WalkSpeed", 1.25f), 1e-6f, "下限钳制");
+        npc.resolved.properties.put("WalkSpeed",
+                com.nineyin.server.protocol.PropertyValues.Value.ofFloat32(99f));
+        assertEquals(15f, PatrolRoutes.clampedSpeed(npc, "WalkSpeed", 1.25f), 1e-6f, "上限钳制");
+        npc.resolved.properties.put("WalkSpeed",
+                com.nineyin.server.protocol.PropertyValues.Value.ofFloat32(2.5f));
+        assertEquals(2.5f, PatrolRoutes.clampedSpeed(npc, "WalkSpeed", 1.25f), 1e-6f);
+    }
+
+    @Test
     void bindStandsForFarMissingOrCombat() {
         PatrolRoute route = new PatrolRoute("AI_sz_001", List.of(
-                new Waypoint(0f, 0f, 0f, 0f, false),
-                new Waypoint(5f, 0f, 0f, 0f, false)));
+                new Waypoint(0f, 0f, 0f, 0f, false, 0),
+                new Waypoint(5f, 0f, 0f, 0f, false, 0)));
         Map<String, PatrolRoute> table = Map.of("AI_sz_001", route);
         // 出生点距最近路点 40m（45-5）> 35m 上限 → 站立。
         NpcSpawn far = spawn("far", "CommonNpc", 45f, 0f, 0f);

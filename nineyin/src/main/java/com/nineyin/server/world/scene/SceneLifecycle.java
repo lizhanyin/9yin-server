@@ -10,7 +10,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 import com.nineyin.server.world.npc.NpcSpawn;
-import com.nineyin.server.world.npc.PatrolRoute;
+import com.nineyin.server.world.npc.PatrolSchedule;
 import com.nineyin.server.protocol.NpcMessages;
 import com.nineyin.server.protocol.NpcSchema;
 import com.nineyin.server.protocol.PropertyValues;
@@ -36,13 +36,12 @@ public final class SceneLifecycle {
         final String configId;
         final String scriptClass;
         final boolean combat;
-        final PatrolRoute route;
-        final int routeStartIdx;
+        final PatrolSchedule schedule;
 
         SceneEntity(int id, String description, int ownerId, WorldScene.Transform transform,
                     List<PropertyValues.Indexed> properties, byte[] payload,
                     String configId, String scriptClass, boolean combat,
-                    PatrolRoute route, int routeStartIdx) {
+                    PatrolSchedule schedule) {
             this.id = id;
             this.description = description;
             this.ownerId = ownerId;
@@ -52,22 +51,12 @@ public final class SceneLifecycle {
             this.configId = configId;
             this.scriptClass = scriptClass;
             this.combat = combat;
-            this.route = route;
-            this.routeStartIdx = routeStartIdx;
+            this.schedule = schedule;
         }
     }
 
-    /** 巡逻步进状态（路线当前下标、往返方向与链代）。 */
-    private static final class PatrolState {
-        int idx;
-        int dir = 1;
-        final long chain;
-
-        PatrolState(int idx, long chain) {
-            this.idx = idx;
-            this.chain = chain;
-        }
-    }
+    /** 在巡实体的步进链代（视口重进换新链，旧链回调按代自灭）。 */
+    private final Map<Integer, Long> patrolChains = new HashMap<>();
 
     private record LocationReplay(int id, byte[] payload) {
     }
@@ -81,20 +70,14 @@ public final class SceneLifecycle {
     private static final long PATROL_STAGGER_MILLIS = 300;
     /** 错峰铺开宽度（超过后回绕，避免大场景尾部延迟过长）。 */
     private static final int PATROL_STAGGER_SPREAD = 16;
-    /** 路点停留（毫秒）。 */
-    private static final long PATROL_WAYPOINT_WAIT_MILLIS = 200;
-    /** 单腿 XZ 上限（米）：更长的腿视为脏数据跳过。 */
-    private static final float PATROL_MAX_LEG_METERS = 28f;
-    /** 单腿高度差上限（米）。 */
-    private static final float PATROL_MAX_LEG_DY_METERS = 6f;
 
     private final Connection connection;
     private final ScheduledExecutorService scheduler;
+    /** 时刻源（默认系统时钟；测试注入可控时钟驱动时间表步进）。 */
+    private final java.util.function.LongSupplier clock;
     private final WorldScene scene = new WorldScene();
     private final WorldViewport viewport = new WorldViewport();
     private final Map<Integer, SceneEntity> entities = new HashMap<>();
-    /** 在巡实体的步进状态（id → idx/dir）；unregister/begin 清除。 */
-    private final Map<Integer, PatrolState> patrolStates = new HashMap<>();
     private boolean closed;
     private long epoch;
     private final List<ScheduledFuture<?>> timers = new ArrayList<>();
@@ -105,8 +88,15 @@ public final class SceneLifecycle {
     private long patrolChainSeq;
 
     public SceneLifecycle(Connection connection, ScheduledExecutorService scheduler) {
+        this(connection, scheduler, System::currentTimeMillis);
+    }
+
+    /** 测试注入可控时钟（时间表步进确定性驱动）。 */
+    public SceneLifecycle(Connection connection, ScheduledExecutorService scheduler,
+                          java.util.function.LongSupplier clock) {
         this.connection = connection;
         this.scheduler = scheduler;
+        this.clock = clock;
     }
 
     /** Go begin：新场景世代（清实体/停定时器），不发帧。 */
@@ -116,18 +106,30 @@ public final class SceneLifecycle {
         }
         scene.begin(config, resource);
         entities.clear();
-        patrolStates.clear();
+        patrolChains.clear();
         armed = false;
         materialized = false;
         epoch++;
         stopTimersLocked();
     }
 
-    /** Go registerNPC：预编码 0x0D 载荷并入世界实体（不上线）。 */
+    /**
+     * Go registerNPC：预编码 0x0D 载荷并入世界实体（不上线）。
+     * 巡逻 NPC 按共同时钟采样当前时刻位置（入参须为每次注册的独立克隆，
+     * 如 NpcViewport.cloneSpawn——本方法会就地改写其坐标）。
+     */
     public synchronized void registerNpc(int id, NpcSpawn npc) {
         if (id == 0 || id == 1) {
             throw new IllegalStateException("NPC scene identity " + id
                     + " collides with reserved player identity");
+        }
+        boolean combat = isCombatScriptClass(npc.resolved.scriptClass);
+        if (!combat && npc.schedule != null) {
+            PatrolSchedule.Position position = npc.schedule.positionAt(clock.getAsLong());
+            npc.x = position.x();
+            npc.y = position.y();
+            npc.z = position.z();
+            npc.orient = position.orient();
         }
         List<PropertyValues.Indexed> ordered = npc.resolved.orderedProperties(
                 NpcSchema.visibleNpcModernV1());
@@ -138,12 +140,11 @@ public final class SceneLifecycle {
         }
         WorldScene.Transform transform = new WorldScene.Transform(npc.x, npc.y, npc.z, npc.orient);
         scene.add(id, 1, WorldScene.EntityKind.NPC, transform, archive);
-        boolean combat = isCombatScriptClass(npc.resolved.scriptClass);
         entities.put(id, new SceneEntity(id, "npc:" + npc.resolved.configId, 1, transform,
                 ordered, payload, npc.resolved.configId, npc.resolved.scriptClass,
-                combat, npc.route, npc.routeStartIdx));
-        // 物化后视口新进（重进）的巡逻 NPC 立即开链（吸附起点重新起步）。
-        if (materialized && npc.route != null && !combat) {
+                combat, npc.schedule));
+        // 物化后视口新进（重进）的巡逻 NPC 立即开链（从时间表当前处继续）。
+        if (materialized && npc.schedule != null && !combat) {
             startPatrolFor(id, 0);
         }
     }
@@ -216,7 +217,7 @@ public final class SceneLifecycle {
     public synchronized void unregister(int id) {
         scene.remove(id);
         entities.remove(id);
-        patrolStates.remove(id);
+        patrolChains.remove(id);
     }
 
     /** Go clientReady：armed 置位，不发帧（ready 早于 RegisterCallBack 的窗口）。 */
@@ -302,7 +303,7 @@ public final class SceneLifecycle {
             scene.replace(moved);
             entities.put(id, new SceneEntity(meta.id, meta.description, meta.ownerId,
                     destination, meta.properties, meta.payload, meta.configId, meta.scriptClass,
-                    meta.combat, meta.route, meta.routeStartIdx));
+                    meta.combat, meta.schedule));
             connection.writeFrame(NpcMessages.serverMoving(meta.id, meta.ownerId,
                     NpcMessages.motionFromDest(destination.x(), destination.y(),
                             destination.z(), destination.orient())));
@@ -329,9 +330,9 @@ public final class SceneLifecycle {
     }
 
     /**
-     * 启动路线巡逻：全部已注册、带 mappath 路线、非战斗的实体按 ID 序开链。
+     * 启动路线巡逻：全部已注册、带巡逻时间表、非战斗的实体按 ID 序开链。
      * 首步 5s 后（避开 0x1F 重放窗口 250..5000ms，防重放帧把走动 NPC 拽回出生点）
-     * + 下标×300ms 错峰。
+     * + 下标×300ms 错峰。步进按时间表绝对时刻推进（跨连接一致，重进续走）。
      */
     public synchronized void startPatrol() {
         if (closed) {
@@ -339,7 +340,7 @@ public final class SceneLifecycle {
         }
         List<Integer> ids = new ArrayList<>(entities.size());
         for (SceneEntity meta : entities.values()) {
-            if (!meta.combat && meta.route != null && !patrolStates.containsKey(meta.id)) {
+            if (!meta.combat && meta.schedule != null && !patrolChains.containsKey(meta.id)) {
                 ids.add(meta.id);
             }
         }
@@ -352,11 +353,11 @@ public final class SceneLifecycle {
     /** 单实体开链（物化后视口重进复用；stagger 为错峰序号）。 */
     private void startPatrolFor(int id, int stagger) {
         SceneEntity meta = entities.get(id);
-        if (meta == null || meta.combat || meta.route == null || patrolStates.containsKey(id)) {
+        if (meta == null || meta.combat || meta.schedule == null || patrolChains.containsKey(id)) {
             return;
         }
         long chain = ++patrolChainSeq;
-        patrolStates.put(id, new PatrolState(meta.routeStartIdx, chain));
+        patrolChains.put(id, chain);
         long epochSnapshot = epoch;
         scheduleLocked(PATROL_FIRST_STEP_DELAY_MILLIS
                         + (long) (stagger % PATROL_STAGGER_SPREAD) * PATROL_STAGGER_MILLIS,
@@ -364,90 +365,39 @@ public final class SceneLifecycle {
     }
 
     /**
-     * 巡逻步进：下一路点（端点弹回）；腿长 XZ&gt;28m、|dy|&gt;6m 或 &lt;0.15m 的点
-     * 只推进不下发；速度取实体 WalkSpeed/RunSpeed 属性（客户端 0x0D 同值驱动动画，
-     * 缺失回退 1.25/4.0），行程时间 = 距离/速度，到点后停 200ms 走下一腿。
+     * 巡逻步进（时间表驱动）：行进段发 0x20 目标路点（剩余时长 = 时间表绝对
+     * 时刻推算，与客户端 0x0D 同值速度一致），到点/停留段只排程不发帧；
+     * 停留时长取 mappath 停留列（0~120s）。
      */
     private void patrolStep(int id, long chain, long epochSnapshot) {
-        WorldScene.Transform destination;
-        long legMillis;
+        long delayMillis;
+        WorldScene.Transform destination = null;
+        long travelMillis = 0;
         synchronized (this) {
-            PatrolState state = patrolStates.get(id);
+            Long live = patrolChains.get(id);
             SceneEntity meta = entities.get(id);
-            if (state != null && state.chain != chain) {
-                return; // 旧链回调：新链已接管状态，勿动
+            if (live != null && live != chain) {
+                return; // 旧链回调：新链已接管，勿动
             }
-            if (closed || epoch != epochSnapshot || state == null || meta == null) {
-                patrolStates.remove(id); // 实体已摘/换代：本链自灭
+            if (closed || epoch != epochSnapshot || live == null || meta == null) {
+                patrolChains.remove(id); // 实体已摘/换代：本链自灭
                 return;
             }
-            PatrolRoute route = meta.route;
-            Leg leg = nextLeg(route, state, meta.transform);
-            if (leg == null) {
-                patrolStates.remove(id); // 路线无可达点：站立
-                return;
-            }
-            float speed = patrolSpeed(meta, leg.run());
-            float travelMillis = leg.distanceXz() / speed * 1000f;
-            legMillis = Math.max(600, Math.min(60_000, (long) travelMillis));
-            destination = new WorldScene.Transform(leg.x(), leg.y(), leg.z(), leg.orient());
-        }
-        moveNpc(id, destination, legMillis);
-        scheduleLocked(legMillis + PATROL_WAYPOINT_WAIT_MILLIS,
-                () -> patrolStep(id, chain, epochSnapshot));
-    }
-
-    /** 单腿目标（含朝向与步速类型）；无可达点返回 null。 */
-    private static Leg nextLeg(PatrolRoute route, PatrolState state, WorldScene.Transform from) {
-        int dir = state.dir == 0 ? 1 : state.dir;
-        for (int attempt = 0; attempt < route.size(); attempt++) {
-            int next = state.idx + dir;
-            if (next < 0 || next >= route.size()) {
-                dir = -dir; // 端点弹回
-                next = state.idx + dir;
-                if (next < 0 || next >= route.size()) {
-                    return null;
-                }
-            }
-            PatrolRoute.Waypoint waypoint = route.at(next);
-            state.idx = next;
-            state.dir = dir;
-            float dx = waypoint.x() - from.x();
-            float dy = waypoint.y() - from.y();
-            float dz = waypoint.z() - from.z();
-            float distXz = (float) Math.sqrt(dx * dx + dz * dz);
-            if (distXz > PATROL_MAX_LEG_METERS || Math.abs(dy) > PATROL_MAX_LEG_DY_METERS) {
-                continue; // 脏数据/断链路点：跳过
-            }
-            if (distXz < 0.15f) {
-                continue; // 重合点：推进但不下发
-            }
-            float orient = waypoint.hasFacing()
-                    ? waypoint.orient() : (float) Math.atan2(dx, dz);
-            return new Leg(waypoint.x(), waypoint.y(), waypoint.z(), orient,
-                    distXz, waypoint.run());
-        }
-        return null;
-    }
-
-    /** 巡逻速度：run 腿 RunSpeed、walk 腿 WalkSpeed（与 0x0D 下发属性同值），钳 0.5..15。 */
-    private static float patrolSpeed(SceneEntity meta, boolean run) {
-        float fallback = run ? 4.0f : 1.25f;
-        float speed = 0f;
-        for (PropertyValues.Indexed property : meta.properties) {
-            if (run ? "RunSpeed".equals(property.name()) : "WalkSpeed".equals(property.name())) {
-                speed = property.value().f32();
-                break;
+            Object action = meta.schedule.actionAt(clock.getAsLong());
+            if (action instanceof PatrolSchedule.Moving moving) {
+                destination = new WorldScene.Transform(moving.destX(), moving.destY(),
+                        moving.destZ(), moving.destOrient());
+                travelMillis = Math.max(50, moving.remainingMs());
+                delayMillis = travelMillis;
+            } else {
+                PatrolSchedule.Dwelling dwelling = (PatrolSchedule.Dwelling) action;
+                delayMillis = Math.max(50, dwelling.waitMs());
             }
         }
-        if (speed <= 0f || !Float.isFinite(speed)) {
-            speed = fallback;
+        if (destination != null) {
+            moveNpc(id, destination, travelMillis);
         }
-        return Math.max(0.5f, Math.min(15f, speed));
-    }
-
-    /** 一步移动目标（服务端行程计算用）。 */
-    private record Leg(float x, float y, float z, float orient, float distanceXz, boolean run) {
+        scheduleLocked(delayMillis, () -> patrolStep(id, chain, epochSnapshot));
     }
 
     /** Go scheduleLocationReplaysLocked：+250/750/1500ms/3s/5s 重放 0x1F 批次。 */
@@ -489,7 +439,7 @@ public final class SceneLifecycle {
     public synchronized void close() {
         closed = true;
         epoch++;
-        patrolStates.clear();
+        patrolChains.clear();
         stopTimersLocked();
     }
 

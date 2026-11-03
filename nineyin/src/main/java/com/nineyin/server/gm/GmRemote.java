@@ -149,8 +149,43 @@ public class GmRemote {
             case "set_power_level" -> nonNegative(params, "value");
             case "set_alignment", "set_vitals", "cancel_title" -> null;
             case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
+            // V2 装备外观挂载：物品发放（wearNow 可选 0/1；不可穿戴由游戏侧降级入背包）。
+            case "grant_item", "add_item" -> {
+                String configBad = nonEmpty(params, "itemConfig");
+                if (configBad != null) {
+                    yield configBad;
+                }
+                yield intRange(params, "amount", 1, 9999);
+            }
+            // V3 风物志：卡牌挂载/卸下/全量收录（GM 网页直接驱动）。
+            case "equip_card" -> intRange(params, "cardId", 1, Integer.MAX_VALUE);
+            case "unequip_card", "grant_all_cards", "grant_all_fashion" -> null;
+            // 配套：模板生成武器（101-108/122 + cook/smith）与防具（部位名白名单）。
+            case "gm_generate_weapon" -> {
+                String typeBad = intRange(params, "weaponType", 101, 122);
+                if (typeBad != null) {
+                    yield typeBad;
+                }
+                String crafter = params != null ? params.getString("crafter") : null;
+                yield crafter != null && (crafter.equals("cook") || crafter.equals("smith"))
+                        ? null : "crafter must be cook or smith";
+            }
+            case "gm_generate_armor" -> {
+                String slot = params != null ? params.getString("armorSlot") : null;
+                yield slot != null && java.util.Set.of("helmet", "amulet", "cloth", "pants",
+                        "leg", "shoes", "wrist", "ear", "ring").contains(slot)
+                        ? null : "armorSlot must be helmet/amulet/cloth/pants/leg/shoes/ear/ring";
+            }
             default -> "unsupported action: " + action;
         };
+    }
+
+    private static String nonEmpty(JSONObject params, String key) {
+        String value = params != null ? params.getString(key) : null;
+        if (value == null || value.trim().isEmpty()) {
+            return key + " must be a non-empty string";
+        }
+        return null;
     }
 
     private static String nonNegative(JSONObject params, String key) {

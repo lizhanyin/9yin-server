@@ -5,12 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import com.alibaba.fastjson2.JSONObject;
 import com.nineyin.server.game.avatar.PlayerActor;
@@ -377,5 +379,78 @@ class LoginFlowGmCommandTest {
         assertFalse(reply(silver).ok());
         assertFalse(reply(guanYin).ok());
         assertNull(env.channel.readOutbound());
+    }
+
+    // ------------------------------------------------- V2/V3 外观挂载动作
+
+    /** grant_item 无 inventory DB 时明确失败且不写帧（不穿戴/不入包半途状态）。 */
+    @Test
+    void grantItemFailsGracefullyWithoutInventoryStore() {
+        Env env = new Env();
+        env.session.selected = testRoleSnapshot();
+        GmCommand grant = env.enqueue("grant_item", Map.of("itemConfig", "cloth_b0001", "amount", 1));
+        GmCommand missing = env.enqueue("grant_item", Map.of("itemConfig", "", "amount", 1));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(grant).ok());
+        assertTrue(reply(grant).message().contains("物品 DB 未接入"));
+        assertFalse(reply(missing).ok());
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+    }
+
+    /**
+     * equip_card：挂载风物志皮肤成功——CardRec 位图行（0x11）+ UseCardRec 行 +
+     * ShowEquipType 属性帧（0x10）+ on_card_msg（0x1E），并落 data/skins.json。
+     * 资源来自参考服 share（复制 card.ini 进临时根；LoginFlow 须在覆盖根之后
+     * 构造——SkinStore 的 data/skins.json 路径在构造期解析）。
+     */
+    @Test
+    void mountSkinPushesRecordsAndShowEquipType(@TempDir Path tempRoot) throws Exception {
+        Path goRoot = Path.of("E:/Workspace/project/game/9yin-go-server1");
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.Files.isRegularFile(
+                        goRoot.resolve(Path.of("resources", "modern", "share", "rule", "card.ini"))),
+                "参考服 share 资源不可用，跳过风物志挂载编排断言");
+        Path ruleDir = tempRoot.resolve(Path.of("resources", "modern", "share", "rule"));
+        java.nio.file.Files.createDirectories(ruleDir);
+        java.nio.file.Files.copy(goRoot.resolve(Path.of("resources", "modern", "share", "rule", "card.ini")),
+                ruleDir.resolve("card.ini"));
+
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand mount = env.enqueue("equip_card", Map.of("cardId", 1));
+            GmCommand unknown = env.enqueue("equip_card", Map.of("cardId", 999_999));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(mount).ok(), "挂载皮肤 1（Weapon blade_card_001）应成功");
+            assertTrue(reply(mount).message().contains("blade_card_001"));
+            assertFalse(reply(unknown).ok(), "目录外皮肤号应失败");
+
+            // 帧序：CardRec 行 0x11 → UseCardRec 行 0x11 → ShowEquipType 0x10 → on_card_msg 0x1E。
+            List<Byte> opcodes = new java.util.ArrayList<>();
+            byte[] frame;
+            while ((frame = env.channel.readOutbound()) != null) {
+                opcodes.add(frame[0]);
+            }
+            assertEquals(List.of((byte) 0x11, (byte) 0x11, (byte) 0x10, (byte) 0x1E), opcodes);
+            // 存档落临时根 data/skins.json（collected=[1] mounted=[1]）。
+            assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "skins.json"))));
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /** GM 动作挂载角色快照（session.selected；外观/位置取最小合法值）。 */
+    private static com.nineyin.server.db.role.Roles.RoleSnapshot testRoleSnapshot() {
+        return new com.nineyin.server.db.role.Roles.RoleSnapshot(
+                618, 0, "李逍遥", false, 1, 1,
+                new com.nineyin.server.db.role.Roles.Appearance(1, List.of()),
+                new com.nineyin.server.db.role.Roles.Location(
+                        new com.nineyin.server.db.role.Roles.Scene("school09", "school09"),
+                        new com.nineyin.server.db.role.Roles.Position(0, 0, 0, 0), 1));
     }
 }

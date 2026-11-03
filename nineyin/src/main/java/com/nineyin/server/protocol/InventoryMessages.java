@@ -61,6 +61,12 @@ public final class InventoryMessages {
         };
     }
 
+    /** 背包页视图 → 时装镜像页视图（无镜像页返回原视图，成对清位防误删用）。 */
+    public static int bagMirrorOf(int view) {
+        Integer mirror = FASHION_MIRROR.get(view);
+        return mirror != null ? mirror : view;
+    }
+
     public static List<byte[]> bagViewCreateFrames() {
         List<byte[]> frames = new ArrayList<>(17);
         // 8 主页：cap=90 + BaseCap=18（真实客户端实测布局）。
@@ -143,8 +149,8 @@ public final class InventoryMessages {
     }
 
     /** 已装备武器（Weapon/ShotWeapon/InnerWeapon 优先级取首个）的模型路径；空手=""。 */
-    static String weaponModeOf(int sex, List<RoleInventoryStore.Equip> equips,
-                               EquipmentResolver resolver) {
+    public static String weaponModeOf(int sex, List<RoleInventoryStore.Equip> equips,
+                                      EquipmentResolver resolver) {
         for (RoleInventoryStore.Equip equip : equips) {
             String type = equip.equipType() == null ? "" : equip.equipType();
             if (type.equals("Weapon") || type.equals("ShotWeapon") || type.equals("InnerWeapon")) {
@@ -159,6 +165,12 @@ public final class InventoryMessages {
 
     /** View1 纸娃娃行（index=身体槽位）：ConfigID/数量/类型/EquipType(真值)/耐久/精炼/UniqueID/Photo。 */
     public static byte[] equipmentViewAdd(long roleId, RoleInventoryStore.Equip equip,
+                                          EquipmentResolver resolver) {
+        return equipmentViewAdd(VIEW_DOLL, roleId, equip, resolver);
+    }
+
+    /** 指定视图的装备行（VIEW_DOLL=1 纸娃娃；时装/身份装镜像新面板 40-43）。 */
+    public static byte[] equipmentViewAdd(int viewId, long roleId, RoleInventoryStore.Equip equip,
                                           EquipmentResolver resolver) {
         EquipmentModels.ItemStatic stat = EquipmentModels.itemStatic(equip.configId());
         List<SceneMessages.ViewProperty> props = new ArrayList<>(16);
@@ -182,7 +194,7 @@ public final class InventoryMessages {
         if (stat != null && stat.photo() != null && !stat.photo().isEmpty()) {
             Props.addView(props, "Photo", PropertyValues.Value.ofString(stat.photo()));
         }
-        return SceneMessages.viewAdd(VIEW_DOLL, equip.slot(), props);
+        return SceneMessages.viewAdd(viewId, equip.slot(), props);
     }
 
     /** 背包行：非装备 6 项；装备类补至 14-16 项（EquipType 必须真值否则不渲染）。 */

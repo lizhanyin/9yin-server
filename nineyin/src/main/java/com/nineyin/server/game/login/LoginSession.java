@@ -30,6 +30,15 @@ public final class LoginSession {
     boolean customizingSeenUpload;
     /** 键位映射：post-spawn 是否已尝试推送存档（ShortcutKey 属性帧）。 */
     boolean keybindPushed;
+    /** 风物志：会话内皮肤状态（选角时装载，GM 动作原地改写）；ClientReady 是否已推送。 */
+    com.nineyin.server.game.avatar.skin.SkinStore.State skinState;
+    boolean skinsPushed;
+    /** 风物志：已推送的收集位图行数/挂载行数（整刷前删行的口径）。 */
+    int skinRows;
+    int skinMountedRows;
+    /** 时装页签：已激活套装（role_fashion_suits；选角时装载，ClientReady 推 FashionSuitRec 行）。 */
+    java.util.List<String> fashionSuits = java.util.List.of();
+    boolean fashionPushed;
     /** 二期 NPC：场景目录/活跃下标集/生命周期；lastPositionSave 是 2s 节流基准。 */
     SceneLifecycle world;
     List<NpcSpawn> sceneNpcs = List.of();

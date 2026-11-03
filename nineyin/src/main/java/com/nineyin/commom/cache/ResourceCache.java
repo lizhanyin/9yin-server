@@ -45,13 +45,15 @@ public final class ResourceCache {
     }
 
     /**
-     * 文本整体读取（BOM 容错）并按文件缓存——唯一的读盘层。
+     * 文本整体读取（BOM 容错）并按「文件 + 字符集」缓存——唯一的读盘层。
+     * 键含 charset：同一 ini 可能被不同消费方按 ISO-8859-1（装备表无损透传）
+     * 与 GBK（物品名）各读一次，只按路径缓存会互相污染。
      * 其余解析（ini/idres）基于该缓存文本执行；解析产物由调用方经 {@link #of}
      * 挂在自己的键（通常是目录/root 路径）上，避免同文件递归更新缓存。
      */
     public static String text(Path file, Charset charset) {
-        return of(file.toAbsolutePath().normalize(), () -> {
-            Path path = file.toAbsolutePath().normalize();
+        Path path = file.toAbsolutePath().normalize();
+        return of(java.util.List.of(path, charset), () -> {
             if (!Files.isRegularFile(path)) {
                 return "";
             }

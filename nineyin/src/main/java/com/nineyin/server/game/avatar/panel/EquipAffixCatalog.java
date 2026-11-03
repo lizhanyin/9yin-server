@@ -75,6 +75,11 @@ public final class EquipAffixCatalog {
         return mods != null ? mods : List.of();
     }
 
+    /** 全部词缀包号（GM 生成武器/防具随机词条用）。 */
+    public List<Integer> packIds() {
+        return new ArrayList<>(packs.keySet());
+    }
+
     public int size() {
         return packs.size();
     }

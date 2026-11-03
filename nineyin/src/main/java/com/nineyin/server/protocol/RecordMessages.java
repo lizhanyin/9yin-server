@@ -68,11 +68,20 @@ public final class RecordMessages {
 
     /** Go serverRecordAddInt32：单 int 列记录行（Task_Completed 位图）。 */
     public static byte[] recordAddInt32(int objectId, int ownerId, int recordIndex, long value) {
+        return recordAddInt32Row(objectId, ownerId, recordIndex, 0, value);
+    }
+
+    /**
+     * 显式起始行的单 int 列记录行（CardRec 位图按行号对齐：行 N = 卡号
+     * [32N+1, 32N+32] 的位图）。客户端对 startRow 的方言是「空记录追加 / 指定行
+     * 覆盖」皆可命中（整刷时行序升序推送），增量更新必须先删行再整刷。
+     */
+    public static byte[] recordAddInt32Row(int objectId, int ownerId, int recordIndex, int row, long value) {
         PacketWriter writer = PacketWriter.ofCapacity(20);
         return writer.writeU8(0x11).writeU8(0)
                 .writeU32(objectId).writeU32(ownerId)
                 .writeU16(recordIndex)
-                .writeU16(0).writeU16(1)
+                .writeU16(row).writeU16(1)
                 .writeU32(value)
                 .toBytes();
     }

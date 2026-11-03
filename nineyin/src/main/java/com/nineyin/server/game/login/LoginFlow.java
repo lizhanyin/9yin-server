@@ -1,5 +1,6 @@
 package com.nineyin.server.game.login;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -7,7 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
+import com.nineyin.server.game.avatar.appearance.AppearanceSync;
+import com.nineyin.server.game.avatar.skin.SkinMessages;
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.server.game.avatar.equipment.ToolItemCatalog;
 import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.world.fight.SkillCastHandler;
@@ -37,6 +41,7 @@ import com.nineyin.server.protocol.LoginMessages;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
 import com.nineyin.server.protocol.RecordMessages;
+import com.nineyin.server.protocol.RecordSchemas;
 import com.nineyin.server.protocol.SceneNames;
 import com.nineyin.server.protocol.SceneMessages;
 import com.nineyin.server.db.role.RoleStoreFacade;
@@ -73,6 +78,10 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.customizing.CustomizingStore customizingStore =
             com.nineyin.server.game.avatar.customizing.CustomizingStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "customizing.json"));
+    /** 风物志皮肤存档（data/skins.json 主档；DB 经 {@link #attachSkinDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.skin.SkinStore skinStore =
+            com.nineyin.server.game.avatar.skin.SkinStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "skins.json"));
     private final GmHub gmHub;
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
@@ -125,6 +134,16 @@ public final class LoginFlow {
             log.info("customizing store attached to MySQL role_customizing");
         } catch (RuntimeException e) {
             log.warn("customizing store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
+    /** 风物志皮肤存档 DB 双源挂接（role_skins；失败仅告警，JSON 仍为主档）。 */
+    public void attachSkinDatabase(String dsn) {
+        try {
+            skinStore.attachDatabase(dsn);
+            log.info("skin store attached to MySQL role_skins");
+        } catch (RuntimeException e) {
+            log.warn("skin store MySQL unavailable, JSON only: {}", e.getMessage());
         }
     }
 
@@ -283,6 +302,10 @@ public final class LoginFlow {
         connection.writeFrame(SceneMessages.entryScene(location.scene()));
         // 四期装备词缀/特效层（DB 模式）：addObject 归档前重算，登录帧即带装备加成面板。
         var equips = loadEquips(session);
+        // V2 装备外观挂载：已穿衣/裤/鞋装备的模型覆盖创角初始装——重登不再回落
+        // 「初始屌丝装」；帽/时装镜像通道在 addObject 后补帧（pushEquipAppearance）。
+        session.visual = AppearanceSync.mergeVisual(
+                session.visual, session.visual.sex(), equips, EquipmentResolver.loadDefault());
         applyEquipBonuses(session, equips);
         loadPanelData(session);
         connection.writeFrame(session.player.addObject(location.position(), session.visual));
@@ -303,6 +326,19 @@ public final class LoginFlow {
                         session.machine.id(), equips.size(), bagItems.size(), session.selected.id());
             } catch (RuntimeException e) {
                 log.warn("session={} push inventory: {}", session.machine.id(), e.getMessage());
+            }
+        }
+        // V2 装备外观挂载（DB 模式）：帽/时装镜像通道 0x10 补帧——addObject 的 Hat 位
+        // 是发型别名（F 抓包方言），真帽子与时装覆盖走属性帧；无帽/时装不发（帧序对齐 golden）。
+        pushEquipAppearance(connection, session, equips);
+        // V3 风物志：装载角色皮肤存档（ClientReady 后推送，图鉴/挂载状态恢复）。
+        session.skinState = skinStore.load(session.selected.id());
+        // 时装页签：已激活套装装载（role_fashion_suits；ClientReady 推 FashionSuitRec 行）。
+        if (inventoryStore != null) {
+            try {
+                session.fashionSuits = inventoryStore.fashionSuits(session.selected.id());
+            } catch (RuntimeException e) {
+                log.warn("session={} load fashion suits: {}", session.machine.id(), e.getMessage());
             }
         }
         // NPC viewport 仅注册不上线（ClientReady/首个 0x0A 屏障后物化）。
@@ -541,6 +577,16 @@ public final class LoginFlow {
             case "set_act_day_limit" -> applyActDayLimit(connection, session, command);
             case "clear_team_fatigue" -> applyClearTeamFatigue(connection, session, command);
             case "set_team_faculty_last" -> applyTeamFacultyLast(connection, session, command);
+            // V2 装备外观挂载：物品发放（立即穿戴=纸娃娃行+外观帧+词缀重算；否则入背包）。
+            case "grant_item", "add_item" -> applyGrantItem(connection, session, command);
+            // V3 风物志：皮肤收集/挂载/卸下（GM 网页直接驱动，不用点背包收集）。
+            case "equip_card" -> applyMountSkin(connection, session, command);
+            case "unequip_card" -> applyUnmountSkins(connection, session, command);
+            case "grant_all_cards" -> applyGrantAllSkins(connection, session, command);
+            // 配套：模板生成武器/防具（随机词条）+ 一键激活全部时装。
+            case "gm_generate_weapon" -> applyGenerateWeapon(connection, session, command);
+            case "gm_generate_armor" -> applyGenerateArmor(connection, session, command);
+            case "grant_all_fashion" -> applyGrantAllFashion(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -1009,6 +1055,639 @@ public final class LoginFlow {
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties));
     }
 
+    // ================= V2 装备外观挂载：GM 物品发放/穿戴 =================
+
+    /**
+     * grant_item/add_item：发放物品。wearNow=1 且 EquipType 可穿戴 → 写
+     * role_equip_items + 纸娃娃行（时装/身份装镜像新面板 40-43）+ 外观 0x10 +
+     * 词缀重算 + vital；否则入背包（role_bag_items + 成对 0x19/0x18 帧）。
+     */
+    private void applyGrantItem(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null) {
+            command.fail("角色尚未选定");
+            return;
+        }
+        String configId = command.strParam("itemConfig").trim();
+        int amount = Math.max(1, command.intParam("amount", 1));
+        boolean wearNow = wearNowParam(command);
+        if (configId.isEmpty()) {
+            command.fail("itemConfig 必填");
+            return;
+        }
+        if (inventoryStore == null) {
+            command.fail("物品 DB 未接入（MySQL inventory 源缺失）");
+            return;
+        }
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(configId);
+        if (info == null) {
+            command.fail("物品不存在: " + configId + "（equipment.ini/tool_item.ini 均未命中）");
+            return;
+        }
+        int slot = AppearanceSync.slotOfEquipType(info.equipType());
+        if (wearNow && slot == 0) {
+            wearNow = false; // 不可穿戴（道具/饰品）降级入背包
+        }
+        long roleId = session.selected.id();
+        if (wearNow) {
+            RoleInventoryStore.Equip equip = new RoleInventoryStore.Equip(
+                    info.configId(), info.itemType(), info.equipType(), slot,
+                    100, 100, info.artPack(), "");
+            try {
+                inventoryStore.upsertEquip(roleId, equip);
+            } catch (RuntimeException e) {
+                command.fail("穿戴落库失败: " + e.getMessage());
+                return;
+            }
+            pushWearFrames(connection, session, equip);
+            command.succeed("已穿戴 " + (info.name().isEmpty() ? info.configId() : info.name())
+                    + "（" + info.configId() + "，槽位 " + slot + "）外观已同步");
+        } else {
+            int viewId = info.viewId() > 0 ? info.viewId() : 1;
+            RoleInventoryStore.BagItem item = new RoleInventoryStore.BagItem(
+                    0, info.configId(), info.itemType(), amount, viewId, info.name(),
+                    info.equipType(), 0, info.script(), null, null, null, 0, 0);
+            int bagSlot;
+            try {
+                bagSlot = inventoryStore.insertBagItem(roleId, item);
+            } catch (RuntimeException e) {
+                command.fail("入包失败: " + e.getMessage());
+                return;
+            }
+            item = new RoleInventoryStore.BagItem(bagSlot, item.configId(), item.itemType(),
+                    item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
+                    item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
+                    item.hardiness(), item.maxHardiness());
+            pushBagItemFrames(connection, session, item);
+            command.succeed("已发放 " + (info.name().isEmpty() ? info.configId() : info.name())
+                    + " x" + amount + " 至背包第 " + bagSlot + " 格");
+        }
+        log.info("session={} GM grant_item {} wearNow={}", session.machine.id(), info.configId(), wearNow);
+    }
+
+    /** wearNow 参数（面板发 JSON 布尔，RPC 串化后可能是 0/1 整形）。 */
+    private static boolean wearNowParam(GmCommand command) {
+        Object raw = command.params().get("wearNow");
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        return command.intParam("wearNow", 0) != 0;
+    }
+
+    /** 穿戴帧组：纸娃娃行（槽位+新面板镜像）→ 外观 0x10 → 词缀重算 → vital。 */
+    private void pushWearFrames(Connection connection, LoginSession session, RoleInventoryStore.Equip equip) {
+        EquipmentResolver resolver = EquipmentResolver.loadDefault();
+        long roleId = session.selected.id();
+        connection.writeFrame(SceneMessages.viewRemove(InventoryMessages.VIEW_DOLL, equip.slot()));
+        connection.writeFrame(InventoryMessages.equipmentViewAdd(roleId, equip, resolver));
+        int mirror = AppearanceSync.mirrorSlot(equip.slot());
+        if (mirror != equip.slot()) {
+            RoleInventoryStore.Equip mirrored = new RoleInventoryStore.Equip(equip.configId(),
+                    equip.itemType(), equip.equipType(), mirror, equip.hardiness(),
+                    equip.maxHardiness(), equip.artPack(), equip.propBuilt());
+            connection.writeFrame(SceneMessages.viewRemove(InventoryMessages.VIEW_DOLL, mirror));
+            connection.writeFrame(InventoryMessages.equipmentViewAdd(
+                    InventoryMessages.VIEW_DOLL, roleId, mirrored, resolver));
+        }
+        var equips = loadEquips(session);
+        session.visual = AppearanceSync.mergeVisual(session.visual, session.visual.sex(), equips, resolver);
+        connection.writeFrame(AppearanceSync.appearanceFrame(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                session.visual.sex(), equips, resolver));
+        applyEquipBonuses(session, equips);
+        connection.writeFrame(session.player.vitalUpdate());
+    }
+
+    /** 入包帧组：0x19(view,slot) → 0x18 行 → 0x19(镜像页,slot)（登录整推同序）。 */
+    private void pushBagItemFrames(Connection connection, LoginSession session, RoleInventoryStore.BagItem item) {
+        int view = InventoryMessages.bagViewOf(item.viewId());
+        connection.writeFrame(SceneMessages.viewRemove(view, item.slot()));
+        connection.writeFrame(InventoryMessages.bagViewAdd(
+                session.selected.id(), item, EquipmentResolver.loadDefault()));
+        int mirror = InventoryMessages.bagMirrorOf(view);
+        if (mirror != view) {
+            connection.writeFrame(SceneMessages.viewRemove(mirror, item.slot()));
+        }
+    }
+
+    // ================= V3 风物志挂载：GM 皮肤动作（协议动作名沿用官方 card 语义） =================
+
+    /** equip_card：收录（未收集自动补）+ 挂载（UseCardRec 行 + ShowEquipType=2）。 */
+    private void applyMountSkin(Connection connection, LoginSession session, GmCommand command) {
+        Integer skinId = command.intParam("cardId");
+        if (skinId == null || skinId <= 0) {
+            command.fail("cardId 必须正整数");
+            return;
+        }
+        var skin = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault().byId(skinId);
+        if (skin == null) {
+            command.fail("风物志皮肤不存在: " + skinId + "（rule/card.ini 未命中）");
+            return;
+        }
+        var state = sessionSkinState(session);
+        List<Integer> collected = new ArrayList<>(state == null ? List.of() : state.collected());
+        if (!collected.contains(skinId)) {
+            collected.add(skinId);
+            java.util.Collections.sort(collected);
+        }
+        List<Integer> mounted = new ArrayList<>(state == null ? List.of() : state.mounted());
+        mounted.remove(skinId); // 重复挂载 = 刷新到末位
+        mounted.add(skinId);
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
+        for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
+            connection.writeFrame(frame);
+        }
+        command.succeed("已挂载风物志皮肤 " + skinId + "（" + skinPartSummary(skin) + "）ShowEquipType=2");
+        log.info("session={} GM equip_card={} parts={}", session.machine.id(), skinId, skinPartSummary(skin));
+    }
+
+    /** unequip_card：清空挂载（收集保留；ShowEquipType 回 0）。 */
+    private void applyUnmountSkins(Connection connection, LoginSession session, GmCommand command) {
+        var state = sessionSkinState(session);
+        List<Integer> collected = state == null ? List.of() : state.collected();
+        if (state == null || state.mounted().isEmpty()) {
+            command.succeed("当前没有挂载任何风物志皮肤");
+            return;
+        }
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, List.of()));
+        for (byte[] frame : skinRefreshFrames(session, collected, List.of())) {
+            connection.writeFrame(frame);
+        }
+        command.succeed("已卸下全部风物志皮肤（共 " + state.mounted().size() + " 张），收集图鉴保留");
+    }
+
+    /** grant_all_cards：全量收录（挂载保持不变）。 */
+    private void applyGrantAllSkins(Connection connection, LoginSession session, GmCommand command) {
+        var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
+        if (catalog.isEmpty()) {
+            command.fail("风物志目录为空（rule/card.ini 缺失或未解析）");
+            return;
+        }
+        var state = sessionSkinState(session);
+        List<Integer> collected = new ArrayList<>();
+        for (var skin : catalog.all()) {
+            collected.add(skin.id());
+        }
+        List<Integer> mounted = state == null ? List.of() : state.mounted();
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
+        for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
+            connection.writeFrame(frame);
+        }
+        command.succeed("已收录全部风物志皮肤 " + collected.size() + " 张（图鉴点亮）");
+        log.info("session={} GM grant_all_cards={} mounted={}",
+                session.machine.id(), collected.size(), mounted.size());
+    }
+
+    /** 皮肤部件摘要（回执文案用，如 "Weapon blade_card_001"）。 */
+    private static String skinPartSummary(
+            com.nineyin.server.game.avatar.skin.SkinCatalog.Skin skin) {
+        StringBuilder summary = new StringBuilder();
+        for (var partModel : skin.models(0)) {
+            if (summary.length() > 0) {
+                summary.append(';');
+            }
+            summary.append(partModel.part()).append(' ').append(partModel.model());
+        }
+        return summary.length() == 0 ? "无模型" : summary.toString();
+    }
+
+    /** 会话皮肤状态（首访问装载存档；无存档返回 null）。 */
+    private com.nineyin.server.game.avatar.skin.SkinStore.State sessionSkinState(LoginSession session) {
+        if (session.skinState != null || session.selected == null) {
+            return session.skinState;
+        }
+        try {
+            session.skinState = skinStore.load(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load skin state: {}", session.machine.id(), e.getMessage());
+        }
+        return session.skinState;
+    }
+
+    private void saveSkinState(LoginSession session, com.nineyin.server.game.avatar.skin.SkinStore.State state) {
+        session.skinState = state;
+        try {
+            skinStore.save(session.selected.id(), state);
+        } catch (RuntimeException e) {
+            log.warn("session={} save skin state: {}", session.machine.id(), e.getMessage());
+        }
+    }
+
+    // ---------------- V3 风物志：客户端上行（卡片使用 → 收录 → 衣橱换装） ----------------
+
+    /**
+     * C2S 30 穿脱/使用（引擎原生信封，载荷布局无抓包钉死——整型参数全量记录供
+     * 真机校准）。可判定语义：载荷中相邻整型对按 (view,slot)/(slot,view) 双向
+     * 尝试命中 script=CardItem 的背包卡片时走「使用收录」链——消耗卡片 →
+     * 收录风物志（CardRec 位图 + on_card_msg），衣橱内即可换装（custom 180）。
+     */
+    void handleBagItemUse(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        List<Integer> args = customIntArgs(custom);
+        log.info("session={} custom 30 use/wear args={} (布局待真机校准)", session.machine.id(), args);
+        if (inventoryStore == null || args.size() < 2) {
+            return;
+        }
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null) {
+            return;
+        }
+        for (int i = 0; i + 1 < args.size(); i++) {
+            RoleInventoryStore.BagItem hit = skinCardAt(bagItems, args.get(i), args.get(i + 1));
+            if (hit == null) {
+                hit = skinCardAt(bagItems, args.get(i + 1), args.get(i));
+            }
+            if (hit != null) {
+                collectSkin(connection, session, hit, true);
+                return;
+            }
+        }
+    }
+
+    /** 背包 (view,slot) → 风物志卡片行（非 CardItem 返回 null）。 */
+    private RoleInventoryStore.BagItem skinCardAt(List<RoleInventoryStore.BagItem> bagItems,
+                                                  int view, int slot) {
+        for (RoleInventoryStore.BagItem item : bagItems) {
+            if (item.slot() != slot || InventoryMessages.bagViewOf(item.viewId()) != view) {
+                continue;
+            }
+            ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(item.configId());
+            if (info != null && info.isSkinCard()) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    /** 使用卡片收录：消耗 1 张（consume=true 且库可用）→ 收录皮肤（不自动挂载，衣橱内自行换装）。 */
+    private void collectSkin(Connection connection, LoginSession session,
+                             RoleInventoryStore.BagItem item, boolean consume) {
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(item.configId());
+        if (info == null || !info.isSkinCard()) {
+            return;
+        }
+        int skinId = info.cardId();
+        if (consume && !consumeBagCard(connection, session, item)) {
+            return; // 消耗失败（数量不足/DB 异常）不收录
+        }
+        var state = sessionSkinState(session);
+        List<Integer> collected = new ArrayList<>(state == null ? List.of() : state.collected());
+        List<Integer> mounted = state == null ? List.of() : state.mounted();
+        if (!collected.contains(skinId)) {
+            collected.add(skinId);
+            java.util.Collections.sort(collected);
+        }
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
+        for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
+            connection.writeFrame(frame);
+        }
+        log.info("session={} 使用卡片 {}（{}）收录风物志皮肤 {}，衣橱内可换装",
+                session.machine.id(), item.configId(),
+                info.name().isEmpty() ? info.configId() : info.name(), skinId);
+    }
+
+    /** 消耗背包卡片 1 张并同步客户端行（剩余>0 重推行，=0 删行+镜像清位）。 */
+    private boolean consumeBagCard(Connection connection, LoginSession session,
+                                   RoleInventoryStore.BagItem item) {
+        int remaining;
+        try {
+            remaining = inventoryStore.consumeBagItem(session.selected.id(), item.slot(), 1);
+        } catch (RuntimeException e) {
+            log.warn("session={} consume card {}: {}", session.machine.id(), item.configId(), e.getMessage());
+            return false;
+        }
+        if (remaining < 0) {
+            return false;
+        }
+        int view = InventoryMessages.bagViewOf(item.viewId());
+        int mirror = InventoryMessages.bagMirrorOf(view);
+        if (remaining > 0) {
+            RoleInventoryStore.BagItem updated = new RoleInventoryStore.BagItem(
+                    item.slot(), item.configId(), item.itemType(), remaining, item.viewId(),
+                    item.name(), item.equipType(), item.colorLevel(), item.script(),
+                    item.anchorSlot(), item.expiresAt(), item.artPack(),
+                    item.hardiness(), item.maxHardiness());
+            connection.writeFrame(SceneMessages.viewRemove(view, item.slot()));
+            connection.writeFrame(InventoryMessages.bagViewAdd(
+                    session.selected.id(), updated, EquipmentResolver.loadDefault()));
+            connection.writeFrame(SceneMessages.viewRemove(mirror, item.slot()));
+        } else {
+            connection.writeFrame(SceneMessages.viewRemove(view, item.slot()));
+            connection.writeFrame(SceneMessages.viewRemove(mirror, item.slot()));
+        }
+        return true;
+    }
+
+    /**
+     * C2S 180 custom_card（衣橱卡牌 UI，`custom_card(int,...)`）。
+     * 子操作布局无抓包——按皮肤当前状态推进（幂等状态机，真机日志校准）：
+     * 未收录 → 收录（背包有对应卡片则消耗 1 张）；已收录未挂载 → 挂载
+     * （同部件互斥换装：新皮肤覆盖部件与已挂载重叠时替换，发型等新部件叠加）；
+     * 已挂载 → 卸下。
+     */
+    void handleWardrobeCard(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        List<Integer> args = customIntArgs(custom);
+        log.info("session={} custom 180 card args={} (子操作待真机校准)", session.machine.id(), args);
+        Integer skinId = firstKnownSkinArg(args);
+        if (skinId == null) {
+            return;
+        }
+        var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
+        var skin = catalog.byId(skinId);
+        if (skin == null) {
+            return;
+        }
+        var state = sessionSkinState(session);
+        List<Integer> collected = new ArrayList<>(state == null ? List.of() : state.collected());
+        List<Integer> mounted = new ArrayList<>(state == null ? List.of() : state.mounted());
+        String action;
+        if (!collected.contains(skinId)) {
+            // 收录：背包有对应卡片则消耗（「使用后进入衣橱」的卡片链入口）。
+            consumeCardItemOfSkin(connection, session, skinId);
+            collected.add(skinId);
+            java.util.Collections.sort(collected);
+            action = "收录";
+        } else if (mounted.contains(skinId)) {
+            mounted.remove(Integer.valueOf(skinId));
+            action = "卸下";
+        } else {
+            // 换装：同部件互斥（武器换武器、衣服换衣服），不同部件叠加（发型卡口径）。
+            int sex = session.visual == null ? 0 : session.visual.sex();
+            java.util.Set<String> parts = skin.parts(sex);
+            mounted.removeIf(id -> {
+                var other = catalog.byId(id);
+                return other != null
+                        && !java.util.Collections.disjoint(other.parts(sex), parts);
+            });
+            mounted.add(skinId);
+            action = "挂载";
+        }
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
+        for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
+            connection.writeFrame(frame);
+        }
+        log.info("session={} 衣橱{}风物志皮肤 {}（{}）mounted={}",
+                session.machine.id(), action, skinId, skinPartSummary(skin), mounted);
+    }
+
+    /** 皮肤号对应的背包卡片（card_item_*，CardID 字段直连）存在则消耗 1 张。 */
+    private void consumeCardItemOfSkin(Connection connection, LoginSession session, int skinId) {
+        if (inventoryStore == null) {
+            return;
+        }
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().cardItemBySkinId(skinId);
+        if (info == null) {
+            return;
+        }
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null) {
+            return;
+        }
+        for (RoleInventoryStore.BagItem item : bagItems) {
+            if (item.configId().equalsIgnoreCase(info.configId())) {
+                consumeBagCard(connection, session, item);
+                return;
+            }
+        }
+    }
+
+    /** custom 载荷整型参数（跳过首位消息号；int32/int64/整值 float 皆收）。 */
+    private static List<Integer> customIntArgs(CustomC2S.Message custom) {
+        List<Integer> args = new ArrayList<>();
+        for (int i = 1; i < custom.values.size(); i++) {
+            CustomC2S.Value value = custom.values.get(i);
+            if (value.tag >= 2 && value.tag <= 5) {
+                try {
+                    args.add(value.exactInt32());
+                } catch (RuntimeException ignored) {
+                    // 非整值跳过
+                }
+            }
+        }
+        return args;
+    }
+
+    /** 首个命中皮肤目录的整型参数（衣橱操作的皮肤号定位）。 */
+    private static Integer firstKnownSkinArg(List<Integer> args) {
+        var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
+        for (int arg : args) {
+            if (arg > 0 && catalog.byId(arg) != null) {
+                return arg;
+            }
+        }
+        return null;
+    }
+
+    /** 背包行装载（DB 不可用/异常返回 null）。 */
+    private List<RoleInventoryStore.BagItem> safeBagItems(LoginSession session) {
+        if (inventoryStore == null || session.selected == null) {
+            return null;
+        }
+        try {
+            return inventoryStore.bagItems(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load bag items: {}", session.machine.id(), e.getMessage());
+            return null;
+        }
+    }
+
+    // ================= 配套：模板生成武器/防具 + 一键激活时装 =================
+
+    /** 武器类型 → 模型前缀（101刀/102剑/103匕首/104双刀/105双剑/106双刺/107长棍/108短棍/122重剑）。 */
+    private static final java.util.Map<Integer, String> WEAPON_PREFIX = java.util.Map.of(
+            101, "blade_", 102, "sword_", 103, "thorn_", 104, "sblade_", 105, "ssword_",
+            106, "sthorn_", 107, "lstuff_", 108, "cosh_", 122, "claymore_");
+
+    /** 防具部位名（GM 面板口径）→ EquipType。 */
+    private static final java.util.Map<String, String> ARMOR_SLOT = java.util.Map.of(
+            "helmet", "Hat", "amulet", "Necklace", "cloth", "Cloth", "pants", "Pants",
+            "leg", "Leg", "shoes", "Shoes", "wrist", "Wrist", "ear", "Earring", "ring", "Fingerring");
+
+    /** gm_generate_weapon：按武器类型挑模板 + 生成随机词条（厨师 6 条/铁匠 3 条）并立即穿戴。 */
+    private void applyGenerateWeapon(Connection connection, LoginSession session, GmCommand command) {
+        Integer weaponType = command.intParam("weaponType");
+        String crafter = command.strParam("crafter");
+        if (weaponType == null || !WEAPON_PREFIX.containsKey(weaponType)) {
+            command.fail("weaponType 必须是 101-108/122（刀/剑/匕首/双刀/双剑/双刺/长棍/短棍/重剑）");
+            return;
+        }
+        if (!crafter.equals("cook") && !crafter.equals("smith")) {
+            command.fail("crafter 必须是 cook（厨师）或 smith（铁匠）");
+            return;
+        }
+        ToolItemCatalog.ItemInfo template = pickTemplate(
+                session, "Weapon", WEAPON_PREFIX.get(weaponType), session.visual.sex());
+        if (template == null) {
+            command.fail("没有武器类型 " + weaponType + " 的可穿戴模板");
+            return;
+        }
+        int affixCount = crafter.equals("cook") ? 6 : 3;
+        wearGenerated(connection, session, command, template,
+                randomPropBuilt(affixCount), "武器");
+    }
+
+    /** gm_generate_armor：按防具部位挑模板 + 3 条随机词条（可穿戴部位直接穿，饰品入背包）。 */
+    private void applyGenerateArmor(Connection connection, LoginSession session, GmCommand command) {
+        String armorSlot = command.strParam("armorSlot");
+        String equipType = ARMOR_SLOT.get(armorSlot);
+        if (equipType == null) {
+            command.fail("armorSlot 必须是 helmet/amulet/cloth/pants/leg/shoes/ear/ring");
+            return;
+        }
+        ToolItemCatalog.ItemInfo template = pickTemplate(session, equipType, null, session.visual.sex());
+        if (template == null) {
+            command.fail("没有部位 " + armorSlot + " 的可穿戴模板");
+            return;
+        }
+        wearGenerated(connection, session, command, template, randomPropBuilt(3), "防具");
+    }
+
+    /** 模板挑选：EquipType 匹配（武器再加模型前缀）+ 性别过滤 + 品质降序取随机一件。 */
+    private ToolItemCatalog.ItemInfo pickTemplate(LoginSession session, String equipType,
+                                                  String modelPrefix, int sex) {
+        EquipmentResolver resolver = EquipmentResolver.loadDefault();
+        List<ToolItemCatalog.ItemInfo> candidates = new ArrayList<>();
+        for (ToolItemCatalog.ItemInfo info : ToolItemCatalog.loadDefault().all()) {
+            if (!info.equipType().equals(equipType)) {
+                continue;
+            }
+            if (info.needSex() != 2 && info.needSex() != sex) {
+                continue; // NeedSex 0男/1女/2通用
+            }
+            if (modelPrefix != null
+                    && !resolver.resolve(info.configId(), sex).startsWith(modelPrefix)) {
+                continue;
+            }
+            candidates.add(info);
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        candidates.sort((a, b) -> Integer.compare(b.colorLevel(), a.colorLevel()));
+        int window = Math.min(8, candidates.size()); // 头部品质窗口内随机
+        return candidates.get(sessionRandom(session).nextInt(window));
+    }
+
+    /** 随机词条串（"1,pack;1,pack…"，词缀包号从 EquipAffixCatalog 全池随机）。 */
+    private String randomPropBuilt(int count) {
+        var packIds = com.nineyin.server.game.avatar.panel.EquipAffixCatalog.load().packIds();
+        java.util.Random random = sessionRandom(null);
+        if (packIds.isEmpty()) {
+            return "";
+        }
+        StringBuilder built = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            if (built.length() > 0) {
+                built.append(';');
+            }
+            built.append("1,").append(packIds.get(random.nextInt(packIds.size())));
+        }
+        return built.toString();
+    }
+
+    private java.util.Random sessionRandom(LoginSession session) {
+        return session != null ? session.combatRandom : new java.util.Random();
+    }
+
+    /** 生成模板落地：词条可写则穿戴（affixes JSON），否则入背包（v1 饰品槽位未证）。 */
+    private void wearGenerated(Connection connection, LoginSession session, GmCommand command,
+                               ToolItemCatalog.ItemInfo template, String propBuilt, String kind) {
+        if (session.selected == null || inventoryStore == null) {
+            command.fail("物品 DB 未接入（MySQL inventory 源缺失）");
+            return;
+        }
+        int slot = AppearanceSync.slotOfEquipType(template.equipType());
+        if (slot == 0) {
+            command.fail(template.configId() + "（" + kind + "模板）槽位未证，暂不支持穿戴");
+            return;
+        }
+        RoleInventoryStore.Equip equip = new RoleInventoryStore.Equip(
+                template.configId(), template.itemType(), template.equipType(), slot,
+                100, 100, template.artPack(), propBuilt);
+        try {
+            inventoryStore.upsertEquip(session.selected.id(), equip);
+        } catch (RuntimeException e) {
+            command.fail("穿戴落库失败: " + e.getMessage());
+            return;
+        }
+        pushWearFrames(connection, session, equip);
+        int affixCount = propBuilt.isEmpty() ? 0 : propBuilt.split(";").length;
+        command.succeed("已生成并穿戴" + kind + " " + template.configId()
+                + "（词条 " + affixCount + " 条）外观与加成已同步");
+        log.info("session={} GM generate {} {} affixes={}",
+                session.machine.id(), kind, template.configId(), affixCount);
+    }
+
+    /** grant_all_fashion：激活全部时装（EquipType=FashionCoat）→ role_fashion_suits + FashionSuitRec 行 + JSON 存档。 */
+    private void applyGrantAllFashion(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || inventoryStore == null) {
+            command.fail("物品 DB 未接入（MySQL inventory 源缺失）");
+            return;
+        }
+        List<String> suitIds = new ArrayList<>();
+        for (ToolItemCatalog.ItemInfo info : ToolItemCatalog.loadDefault().all()) {
+            if (info.equipType().equals("FashionCoat") || info.equipType().equals("NewFashionCoat")) {
+                suitIds.add(info.configId());
+            }
+        }
+        if (suitIds.isEmpty()) {
+            command.fail("装备配置中没有 FashionCoat 时装（equipment.ini 未解析？）");
+            return;
+        }
+        try {
+            inventoryStore.activateFashionSuits(session.selected.id(), suitIds);
+        } catch (RuntimeException e) {
+            command.fail("时装落库失败: " + e.getMessage());
+            return;
+        }
+        session.fashionSuits = suitIds;
+        for (byte[] frame : fashionSuitFrames(suitIds)) {
+            connection.writeFrame(frame);
+        }
+        archiveFashionSuits(session.selected.id(), suitIds);
+        command.succeed("已激活全部时装 " + suitIds.size() + " 套（属性面板「时装」页签 + data/新版服装数据.json）");
+        log.info("session={} GM grant_all_fashion={}", session.machine.id(), suitIds.size());
+    }
+
+    /** FashionSuitRec 行（[7,3,3,4,3,3]：configId + 数值列零填充——列语义无抓包，真机校准点）。 */
+    private List<byte[]> fashionSuitFrames(List<String> suitIds) {
+        int record = RecordSchemas.indexByName("FashionSuitRec");
+        List<byte[]> frames = new ArrayList<>(suitIds.size());
+        for (String suitId : suitIds) {
+            frames.add(RecordMessages.recordAddCells(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, record,
+                    RecordMessages.Cell.ofString(suitId),
+                    RecordMessages.Cell.ofInt(0), RecordMessages.Cell.ofInt(0),
+                    RecordMessages.Cell.ofInt64(0),
+                    RecordMessages.Cell.ofInt(0), RecordMessages.Cell.ofInt(0)));
+        }
+        return frames;
+    }
+
+    /** 永久存档 data/新版服装数据.json（GM 面板承诺口径；DB 是权威源）。 */
+    private void archiveFashionSuits(long roleId, List<String> suitIds) {
+        try {
+            Path archive = com.nineyin.util.ServerPaths.projectPath("data", "新版服装数据.json");
+            com.alibaba.fastjson2.JSONObject document = new com.alibaba.fastjson2.JSONObject();
+            document.put("version", 1);
+            com.alibaba.fastjson2.JSONObject roles = new com.alibaba.fastjson2.JSONObject();
+            roles.put(Long.toString(roleId), suitIds);
+            document.put("roles", roles);
+            Path directory = archive.getParent();
+            if (directory != null) {
+                java.nio.file.Files.createDirectories(directory);
+            }
+            java.nio.file.Files.writeString(archive,
+                    document.toJSONString(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.warn("archive fashion suits: {}", e.getMessage());
+        }
+    }
+
     /** Go main.go gm.attach：选角完成即挂面板会话快照。 */
     private void attachGmSnapshot(Connection connection, LoginSession session, Roles.Location location) {
         GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
@@ -1167,6 +1846,18 @@ public final class LoginFlow {
             // 客户端恒为默认 QWES 映射，切 WASD 重登即丢（参考端 641B 同款帧）。
             pushSavedKeybind(connection, session);
         }
+        if (session.player != null && !session.skinsPushed) {
+            // V3 风物志：CardRec 收集位图 + UseCardRec 挂载行 + ShowEquipType 显示
+            // 开关（无存档不发，客户端保持未收集基线）。
+            pushSavedSkins(connection, session);
+        }
+        if (session.player != null && !session.fashionPushed) {
+            // 时装页签：FashionSuitRec 行（role_fashion_suits 已激活套装；无激活零帧）。
+            session.fashionPushed = true;
+            for (byte[] frame : fashionSuitFrames(session.fashionSuits)) {
+                connection.writeFrame(frame);
+            }
+        }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
             StarterGrants.enableSkillActionSwitch(connection);
@@ -1293,6 +1984,10 @@ public final class LoginFlow {
             case 107 -> handleCustomizingUpload(connection, session, custom);
             case 200 -> handleSetShortcut(connection, session, custom);
             case 201 -> handleRemoveShortcut(connection, session, custom);
+            // V3 风物志：30=引擎原生穿脱/使用（卡片使用收录入口），180=custom_card
+            // 衣橱卡牌 UI（换装切换入口）。
+            case 30 -> handleBagItemUse(connection, session, custom);
+            case 180 -> handleWardrobeCard(connection, session, custom);
             case 240, 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
@@ -1653,6 +2348,66 @@ public final class LoginFlow {
         connection.writeFrame(keybindFrame(bind));
         log.info("session={} pushed saved keybind {} bytes (ShortcutKey idx=198)",
                 session.machine.id(), bind.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+    }
+
+    /** ClientReady 推送存档的风物志皮肤状态（无存档零帧；收集位图 + 挂载行 + 显示开关）。 */
+    void pushSavedSkins(Connection connection, LoginSession session) {
+        session.skinsPushed = true;
+        if (session.selected == null) {
+            return;
+        }
+        if (session.skinState == null) {
+            session.skinState = skinStore.load(session.selected.id());
+        }
+        com.nineyin.server.game.avatar.skin.SkinStore.State state = session.skinState;
+        if (state == null || (state.collected().isEmpty() && state.mounted().isEmpty())) {
+            return;
+        }
+        for (byte[] frame : skinRefreshFrames(session, state.collected(), state.mounted())) {
+            connection.writeFrame(frame);
+        }
+        log.info("session={} pushed saved skins collected={} mounted={}",
+                session.machine.id(), state.collected().size(), state.mounted().size());
+    }
+
+    /** 风物志皮肤整刷帧组：清旧收集位图行 → 重推位图（显式行号）→ 挂载行 → 显示开关。 */
+    private List<byte[]> skinRefreshFrames(LoginSession session,
+                                           List<Integer> collected, List<Integer> mounted) {
+        int objectId = SceneMessages.PLAYER_OBJECT_ID;
+        int ownerId = SceneMessages.PLAYER_OWNER_ID;
+        List<byte[]> frames = new ArrayList<>();
+        frames.addAll(SkinMessages.collectedClearFrames(objectId, ownerId, session.skinRows));
+        frames.addAll(SkinMessages.collectedFrames(objectId, ownerId, collected));
+        frames.addAll(SkinMessages.unmountAllFrames(objectId, ownerId, session.skinMountedRows));
+        frames.addAll(SkinMessages.mountedFrames(objectId, ownerId, mounted));
+        int lastSkin = mounted.isEmpty() ? 0 : mounted.get(mounted.size() - 1);
+        frames.add(SkinMessages.showEquipTypeFrame(objectId, ownerId,
+                mounted.isEmpty()
+                        ? SkinMessages.SHOW_EQUIP_TYPE_NORMAL : SkinMessages.SHOW_EQUIP_TYPE_SKIN,
+                lastSkin));
+        frames.add(SkinMessages.skinMsgFrame(lastSkin));
+        session.skinRows = SkinMessages.collectedRowCount(collected);
+        session.skinMountedRows = mounted.size();
+        return frames;
+    }
+
+    /** 登录期帽/时装外观 0x10 补帧（无帽且无时装零帧，帧序对齐 golden 基线）。 */
+    private void pushEquipAppearance(Connection connection, LoginSession session,
+                                     List<RoleInventoryStore.Equip> equips) {
+        if (equips.isEmpty()) {
+            return;
+        }
+        var models = AppearanceSync.wornModels(session.visual.sex(), equips, EquipmentResolver.loadDefault());
+        boolean overlay = models.containsKey(AppearanceSync.SLOT_HAT)
+                || models.containsKey(AppearanceSync.SLOT_FASHION_COAT)
+                || models.containsKey(AppearanceSync.SLOT_FASHION_HAT)
+                || models.containsKey(AppearanceSync.SLOT_FASHION_SHOES);
+        if (!overlay) {
+            return;
+        }
+        connection.writeFrame(AppearanceSync.appearanceFrame(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                session.visual.sex(), equips, EquipmentResolver.loadDefault()));
     }
 
     /** ClientReady 推送存档的个性配置（无存档零帧；客户端保持默认并自行上传基线）。 */

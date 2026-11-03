@@ -324,12 +324,251 @@ public final class RoleInventoryStore implements AutoCloseable {
         }
     }
 
+    /**
+     * GM 发放穿戴（grant_item wearNow）：同槽先删后插（seq 追加）。
+     * affixes 列在 F 版参考服还原库可能缺失，写入按读路径同款降级（无词缀列）。
+     */
+    public void upsertEquip(long roleId, Equip equip) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
+                    delete.setLong(1, roleId);
+                    delete.setInt(2, equip.slot());
+                    delete.executeUpdate();
+                }
+                boolean affixes = equip.propBuilt() != null && !equip.propBuilt().isEmpty();
+                try {
+                    try (PreparedStatement insert = connection.prepareStatement(
+                            "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                                    + "hardiness, max_hardiness, slot, art_pack, affixes) "
+                                    + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
+                                    + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))")) {
+                        bindEquip(insert, roleId, equip);
+                        insert.setString(10, affixesJson(equip.propBuilt()));
+                        insert.executeUpdate();
+                    }
+                } catch (java.sql.SQLException e) {
+                    if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'affixes'")) {
+                        throw e;
+                    }
+                    log.warn("role_equip_items has no affixes column (F-schema db); insert without affixes role={}",
+                            roleId);
+                    try (PreparedStatement insert = connection.prepareStatement(
+                            "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                                    + "hardiness, max_hardiness, slot, art_pack) "
+                                    + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
+                                    + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
+                        bindEquip(insert, roleId, equip);
+                        insert.executeUpdate();
+                    }
+                }
+                connection.commit();
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("upsertEquip failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static void bindEquip(PreparedStatement statement, long roleId, Equip equip) throws Exception {
+        statement.setLong(1, roleId);
+        statement.setLong(2, roleId);
+        statement.setString(3, equip.configId());
+        statement.setInt(4, equip.itemType());
+        statement.setString(5, equip.equipType() == null ? "" : equip.equipType());
+        statement.setInt(6, equip.hardiness());
+        statement.setInt(7, equip.maxHardiness());
+        statement.setInt(8, equip.slot());
+        statement.setInt(9, equip.artPack());
+    }
+
+    /** propBuilt "1,id;1,id2" → affixes JSON [{"pack_rec":0,"prop_built":id},…]（读路径反解同构）。 */
+    static String affixesJson(String propBuilt) {
+        if (propBuilt == null || propBuilt.isEmpty()) {
+            return null;
+        }
+        StringBuilder json = new StringBuilder("[");
+        for (String segment : propBuilt.split(";")) {
+            String trimmed = segment.trim();
+            int comma = trimmed.indexOf(',');
+            try {
+                int value = Integer.parseInt(comma >= 0 ? trimmed.substring(comma + 1) : trimmed);
+                if (json.length() > 1) {
+                    json.append(',');
+                }
+                json.append("{\"pack_rec\":0,\"prop_built\":").append(value).append('}');
+            } catch (NumberFormatException ignored) {
+                // 非数值段跳过
+            }
+        }
+        return json.length() > 1 ? json.append(']').toString() : null;
+    }
+
+    /** GM 卸下装备（按身体槽位删行）。 */
+    public void deleteEquip(long roleId, int slot) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
+            statement.setLong(1, roleId);
+            statement.setInt(2, slot);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            throw new IllegalStateException("deleteEquip failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * GM 发放入背包（grant_item 非 wearNow）：找 1..90 首个空槽（扩容页锚点
+     * 之外的固定 90 格口径同登录下发），seq 追加。满包抛 IllegalStateException。
+     *
+     * @return 占用槽位（1..90）
+     */
+    public int insertBagItem(long roleId, BagItem item) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                java.util.Set<Integer> used = new java.util.HashSet<>();
+                try (PreparedStatement find = connection.prepareStatement(
+                        "SELECT slot FROM role_bag_items WHERE role_id = ?")) {
+                    find.setLong(1, roleId);
+                    try (ResultSet result = find.executeQuery()) {
+                        while (result.next()) {
+                            used.add(result.getInt(1));
+                        }
+                    }
+                }
+                int slot = item.slot();
+                if (slot <= 0) {
+                    slot = -1;
+                    for (int candidate = 1; candidate <= BAG_SLOTS; candidate++) {
+                        if (!used.contains(candidate)) {
+                            slot = candidate;
+                            break;
+                        }
+                    }
+                    if (slot < 0) {
+                        throw new IllegalStateException("bag full (1..90)");
+                    }
+                }
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                                + "view_id, name, script) VALUES (?, "
+                                + "(SELECT COALESCE(MAX(b.seq), 0) + 1 FROM role_bag_items b "
+                                + "WHERE b.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
+                    insert.setLong(1, roleId);
+                    insert.setLong(2, roleId);
+                    insert.setInt(3, slot);
+                    insert.setString(4, item.configId());
+                    insert.setInt(5, item.itemType());
+                    insert.setInt(6, item.amount());
+                    insert.setInt(7, item.viewId());
+                    insert.setString(8, item.name() == null ? "" : item.name());
+                    insert.setString(9, item.script() == null ? "" : item.script());
+                    insert.executeUpdate();
+                }
+                connection.commit();
+                return slot;
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("insertBagItem failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** 背包槽位容量上限（与登录下发裁剪口径一致）。 */
+    private static final int BAG_SLOTS = 90;
+
+    /**
+     * 使用卡片道具消耗（风物志收录）：指定槽位数量减 count，减到 0 删行。
+     *
+     * @return 消耗后剩余数量（删行返回 0）；槽位无行/数量不足返回 -1
+     */
+    public int consumeBagItem(long roleId, int slot, int count) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                Integer amount = null;
+                try (PreparedStatement find = connection.prepareStatement(
+                        "SELECT amount FROM role_bag_items WHERE role_id = ? AND slot = ?")) {
+                    find.setLong(1, roleId);
+                    find.setInt(2, slot);
+                    try (ResultSet result = find.executeQuery()) {
+                        if (result.next()) {
+                            amount = result.getInt(1);
+                        }
+                    }
+                }
+                if (amount == null || amount < count) {
+                    connection.commit();
+                    return -1;
+                }
+                if (amount > count) {
+                    try (PreparedStatement update = connection.prepareStatement(
+                            "UPDATE role_bag_items SET amount = ? WHERE role_id = ? AND slot = ?")) {
+                        update.setInt(1, amount - count);
+                        update.setLong(2, roleId);
+                        update.setInt(3, slot);
+                        update.executeUpdate();
+                    }
+                    connection.commit();
+                    return amount - count;
+                }
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ?")) {
+                    delete.setLong(1, roleId);
+                    delete.setInt(2, slot);
+                    delete.executeUpdate();
+                }
+                connection.commit();
+                return 0;
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("consumeBagItem failed: " + e.getMessage(), e);
+        }
+    }
+
     public List<Bagpack> bagpacks(long roleId) {
         return query("SELECT page, anchor, config_id, boost, expires_at FROM role_bagpacks "
                         + "WHERE role_id = ? ORDER BY page, anchor",
                 statement -> statement.setLong(1, roleId),
                 (result) -> new Bagpack(result.getInt(1), result.getInt(2), result.getString(3),
                         result.getInt(4), getInstant(result, 5)));
+    }
+
+    // ------------------------------------------------------------------
+    // role_fashion_suits —— 时装页签（FashionSuitRec 行的 DB 源）
+    // ------------------------------------------------------------------
+
+    /** 已激活时装套装（suit_id 升序；表缺失/无行返回空）。 */
+    public List<String> fashionSuits(long roleId) {
+        return query("SELECT suit_id FROM role_fashion_suits WHERE role_id = ? ORDER BY suit_id",
+                statement -> statement.setLong(1, roleId),
+                result -> result.getString(1));
+    }
+
+    /** 批量激活时装套装（INSERT IGNORE 幂等；grant_all_fashion 用）。 */
+    public void activateFashionSuits(long roleId, List<String> suitIds) {
+        if (suitIds == null || suitIds.isEmpty()) {
+            return;
+        }
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "INSERT IGNORE INTO role_fashion_suits (role_id, suit_id) VALUES (?, ?)")) {
+            for (String suitId : suitIds) {
+                statement.setLong(1, roleId);
+                statement.setString(2, suitId);
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        } catch (Exception e) {
+            throw new IllegalStateException("activateFashionSuits failed: " + e.getMessage(), e);
+        }
     }
 
     interface StatementBinder {

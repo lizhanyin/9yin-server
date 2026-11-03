@@ -73,7 +73,7 @@ def main():
     print('msgId 分布:', cc.most_common(15))
     for idx, mid, vals in seq_events[:20]:
         vs = []
-        for tag, v in vals[:6]:
+        for v in vals[:6]:
             if isinstance(v, bytes):
                 vs.append(v[:24].decode('gbk', 'replace') if v else '')
             else:

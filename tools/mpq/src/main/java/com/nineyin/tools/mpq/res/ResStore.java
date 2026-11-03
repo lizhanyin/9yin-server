@@ -214,7 +214,7 @@ public final class ResStore implements AutoCloseable {
                 throw new MpqException("本地层枚举失败：" + localTree + "（" + e.getMessage() + "）", e);
             }
         }
-        // 墓碑移除。
+        // 墓碑移除（集合已统一小写，与合并键一致）。
         for (String tomb : manifest.deleted) {
             merged.remove(tomb);
         }

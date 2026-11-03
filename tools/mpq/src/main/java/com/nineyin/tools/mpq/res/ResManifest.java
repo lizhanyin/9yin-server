@@ -83,7 +83,8 @@ final class ResManifest {
         JSONArray arr = root.getJSONArray("deleted");
         if (arr != null) {
             for (Object o : arr) {
-                deleted.add(normalize(String.valueOf(o)));
+                // 统一小写：MPQ 名字不区分大小写，查找与移除都以小写为准。
+                deleted.add(normalizeLower(String.valueOf(o)));
             }
         }
 

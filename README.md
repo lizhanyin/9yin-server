@@ -13,7 +13,8 @@
 │   └── com/nineyin/         # server/transport/protocol/login/scene/game/db/auth/shop
 ├── gm-web/                  # GM HTTP 面板（内嵌 Netty HTTP + 控制台页面）
 ├── tools/
-│   └── data-import/         # 数据导入工具（-dsn … apply-schema 建表；导入器逐步补齐）
+│   ├── data-import/         # 数据导入工具（-dsn … apply-schema 建表；导入器逐步补齐）
+│   └── mpq/                 # MPQ 归档读写 + 三层资源仓（base/patch/本地，见 docs/mpq-resource-system.md）
 └── docs/
     ├── Summer框架手册.md     # 原 Summer 框架 README（框架用法手册）
     ├── data-table-design.*  # data 目录 JSON → 45 张 MySQL 表设计
@@ -21,7 +22,7 @@
 ```
 
 依赖方向：`nineyin → summer`、`gm-web → summer`（gm-web 与游戏服已拆分为两个独立进程，
-经 summer RPC 交互）；`tools/data-import` 独立无内部依赖。
+经 summer RPC 交互）；`tools/data-import`、`tools/mpq` 独立无内部依赖。
 
 ## 端口规划（对齐 go 版）
 
@@ -62,6 +63,14 @@
 `combat/formula.lua` 伤害公式，GM 面板 `reload_scripts` 热重载（不重启）；目录缺失
 或脚本出错时自动回退 Java 默认管线，不影响开服。契约见
 [docs/skill-script-framework.md](docs/skill-script-framework.md)。
+
+## 资源打包（MPQ 三层）
+
+游戏资源按 War3 式 MPQ 补丁链存储：`res-base.rep`（全量）+ `res-patch.rep`（覆盖层）
++ `resources/` 本地散文件 + `res-manifest.json` 外置清单（墓碑删除），读取顺序
+本地 > patch > base。工具与三层读取库在 `tools/mpq`（CLI：pack/extract/add/remove/
+store 等），格式、CLI 手册、性能实测与运维流程见
+[docs/mpq-resource-system.md](docs/mpq-resource-system.md)。
 
 ## 数据库
 user: root

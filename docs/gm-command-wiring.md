@@ -122,6 +122,8 @@ set_act_day_limit, clear_team_fatigue, set_team_faculty_last`
 | `clear_team_fatigue` | 无参（TeamFacultyValue 归零，客户端剩余精力恢复 100%） | role_faculty 快照 |
 | `set_team_faculty_last` | `value` ≥0（团练剩余可抵扣修炼度 TeamFacultyLast） | role_faculty 快照 |
 
+完整协议/单位/帧序/坑记录见 `docs/act-faculty-protocol.md`（2026-11-03 权威）。
+
 演武碎银链（客户端语义 lua 钉死）：主面板"可用碎银" = (ActDayValue−ActCostSuiYin)/1000 两
 （毫单位）；演武页两标签依赖 switch 2812（本服不推 → 恒显"不限制"）。打卡 1006/23 pay=1
 按 `faculty/actfacultyinfo.ini` 卡基价（**文**，原值勿乘 1000——乘错会导致碎银余额判不足全部静默拒绝）扣 CapitalType1 并入账

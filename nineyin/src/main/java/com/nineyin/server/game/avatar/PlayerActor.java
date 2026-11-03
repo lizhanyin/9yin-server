@@ -913,7 +913,99 @@ public final class PlayerActor {
         properties.addAll(damageProperties());
         properties.addAll(panel.identityProperties());
         properties.addAll(panel.domainProperties());
+        properties.addAll(panelParityProperties(state, now));
         return properties;
+    }
+
+    /**
+     * 参考全量帧补齐块（F 抓包 61579 演武帧 188 属性对照，2026-11-03）：
+     * 我方 vital 原缺的运动三速/格挡族/面板 Add 分解族/货币四件套/功力对偶。
+     * 值口径：Add 分解族按 IDA 换算（Add=对应有效五维）；PhyVa/MagicVa 基础值取
+     * 真机样例 23/16（模板常量，待 IDA 进一步钉死）；SelectSchool 无数据源不发。
+     */
+    private List<PropertyValues.Indexed> panelParityProperties(Actor.State state, Instant now) {
+        PlayerProgress.Book equipped = progress.book(progress.curNeiGong);
+        PlayerProgress.EquipBonus bonus = panel.equipBonus();
+        int[] effAttr = progress.parityEffectiveAttributes(bonus); // [臂,身,内息,灵]
+        int strEff = effAttr[0];
+        int dexEff = effAttr[1];
+        int ingEff = effAttr[2];
+        int spiEff = effAttr[3];
+        List<PropertyValues.Indexed> properties = new ArrayList<>(32);
+        // 运动三速（参考全量帧随帧；addObject 亦有）。
+        Motion motion = motionSnapshot();
+        Props.add(properties, "MoveSpeed", PropertyValues.Value.ofFloat32(motion.moveSpeed));
+        Props.add(properties, "RunSpeed", PropertyValues.Value.ofFloat32(motion.runSpeed));
+        Props.add(properties, "JumpSpeed", PropertyValues.Value.ofFloat32(8.0f));
+        // 格挡族：InParry=BuffInParry 槽活跃位；ParryValue=格挡上限合计（基础+书加成）。
+        ActiveBuff parry = buffs.get(PARRY_BUFF_SLOT);
+        boolean inParry = parry != null && parry.expiresUtc().isAfter(now);
+        Props.add(properties, "InParry", PropertyValues.Value.ofInt32(inParry ? 1 : 0));
+        Props.add(properties, "ParryValue", PropertyValues.Value.ofInt32(progress.parityParryValue()));
+        Props.add(properties, "PhyParryProb", PropertyValues.Value.ofInt32(50));
+        Props.add(properties, "PhyParryProbAdd", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "PhyParryDamRes", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "PhyParryDamResAdd", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "MagicParryDamRes", PropertyValues.Value.ofFloat32(0));
+        Props.add(properties, "MagicParryDamResAdd", PropertyValues.Value.ofFloat32(0));
+        // 货币四件套（碎银 C1 在主块；此处补 银票 C4 未建档恒 0）。
+        Props.add(properties, "CapitalType0", PropertyValues.Value.ofInt32(gold()));
+        Props.add(properties, "CapitalType2", PropertyValues.Value.ofInt32(guanYin()));
+        Props.add(properties, "CapitalType4", PropertyValues.Value.ofInt32(0));
+        // 面板 Add 分解族（IDA：Phy 系=臂力、魔功=内息、命中/闪避/暗器=身法、魔防=灵气）。
+        Props.add(properties, "MeleePowerAdd", PropertyValues.Value.ofInt32(strEff));
+        Props.add(properties, "MagicPowerAdd", PropertyValues.Value.ofInt32(ingEff));
+        Props.add(properties, "PhyHitAdd", PropertyValues.Value.ofInt32(dexEff));
+        Props.add(properties, "MagicHitAdd", PropertyValues.Value.ofInt32(spiEff));
+        Props.add(properties, "DodgeAdd", PropertyValues.Value.ofInt32(dexEff));
+        Props.add(properties, "ShotPower", PropertyValues.Value.ofInt32(80));
+        Props.add(properties, "ShotPowerAdd", PropertyValues.Value.ofInt32(dexEff));
+        Props.add(properties, "PhyVa", PropertyValues.Value.ofInt32(23));
+        Props.add(properties, "PhyVaAdd", PropertyValues.Value.ofInt32(strEff));
+        Props.add(properties, "MagicVa", PropertyValues.Value.ofInt32(16));
+        Props.add(properties, "MagicVaAdd", PropertyValues.Value.ofInt32(spiEff));
+        // 终伤加成/减免十件套（运功书 varprop 键缺省 0）。
+        Props.add(properties, "PhyFinalDamageAdd",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "PhyFinalDamageAdd")));
+        Props.add(properties, "StiFinalDamageAdd",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "StiFinalDamageAdd")));
+        Props.add(properties, "JujFinalDamageAdd",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "JujFinalDamageAdd")));
+        Props.add(properties, "NegFinalDamageAdd",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "NegFinalDamageAdd")));
+        Props.add(properties, "MasFinalDamageAdd",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "MasFinalDamageAdd")));
+        Props.add(properties, "PhyFinalDamageReduce",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "PhyFinalDamageReduce")));
+        Props.add(properties, "StiFinalDamageReduce",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "StiFinalDamageReduce")));
+        Props.add(properties, "JujFinalDamageReduce",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "JujFinalDamageReduce")));
+        Props.add(properties, "NegFinalDamageReduce",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "NegFinalDamageReduce")));
+        Props.add(properties, "MasFinalDamageReduce",
+                PropertyValues.Value.ofInt32(PlayerProgress.eff(equipped, "MasFinalDamageReduce")));
+        // 功力对偶与著名内功（参考：NeigongUseValue=运功书 power；Famous=书名,层 宽串）。
+        Props.add(properties, "NeigongUseValue",
+                PropertyValues.Value.ofInt32(equipped == null ? 0 : equipped.power));
+        Props.add(properties, "SkillUseValue", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "FamousNeiGongName", PropertyValues.Value.ofWideString(
+                progress.curNeiGong + "," + (equipped == null ? 0 : equipped.level)));
+        return properties;
+    }
+
+    /**
+     * 每秒轻功点心跳帧（F 抓包 61579 与 294/0x38 同拍逐秒：QingGongPoint + GJ 三项，
+     * GJ=高阶轻功点未实现恒 0）。参考 #2192 四元组：150,0,0,0。
+     */
+    public byte[] qingGongHeartbeatFrame() {
+        Actor.State state = actor.snapshot();
+        List<PropertyValues.Indexed> properties = new ArrayList<>(4);
+        Props.add(properties, "QingGongPoint", PropertyValues.Value.ofInt32(state.qingGongPoint()));
+        Props.add(properties, "GJQingGongPoint", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "MaxGJQingGongPoint", PropertyValues.Value.ofInt32(0));
+        Props.add(properties, "MaxGJQingGongPointAdd", PropertyValues.Value.ofInt32(0));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     /** Go factionProperties：原门派 School / 势力 Force / 后期门派 NewSchool 三选一。 */

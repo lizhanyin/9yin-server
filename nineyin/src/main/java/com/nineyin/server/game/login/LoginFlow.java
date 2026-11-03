@@ -456,6 +456,8 @@ public final class LoginFlow {
             try {
                 drainGmCommands(connection, session);
                 connection.writeFrame(timeSyncFrame(clock.instant()));
+                // F 抓包同拍：294 后随轻功点四元组（QingGongPoint/GJ 三项，61579 #2192）。
+                connection.writeFrame(session.player.qingGongHeartbeatFrame());
                 facultyTickOnce(connection, session);
                 meridianTickOnce(connection, session);
                 com.nineyin.server.world.fight.QingGongHandler.glideTick(connection, session.player);

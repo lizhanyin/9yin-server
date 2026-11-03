@@ -511,6 +511,26 @@ public final class PlayerProgress {
         return value == null ? 0 : value;
     }
 
+    /**
+     * 参考全量帧 Add 分解族的有效五维（IDA 换算钉死：Phy/近攻系 Add=臂力、
+     * 魔功系=内息、命中/闪避/暗器=身法、魔防=灵气；F 抓包 61579 #2194 逐值核对）：
+     * 返回 [臂力, 身法, 内息, 灵气]，各叠 基础+装备词缀+运功书。
+     */
+    /** 参考帧 ParryValue：格挡上限合计（基础 + 运功书加成；61579 实证 100+949=1049）。 */
+    public int parityParryValue() {
+        Book equipped = book(curNeiGong);
+        return attributes.maxParry + (equipped == null ? 0 : equipped.maxParryAdd);
+    }
+
+    public int[] parityEffectiveAttributes(EquipBonus bonus) {
+        Book equipped = book(curNeiGong);
+        return new int[]{
+                attributes.str + bonus.strAdd + (equipped == null ? 0 : equipped.strAdd),
+                attributes.dex + bonus.dexAdd + (equipped == null ? 0 : equipped.dexAdd),
+                attributes.ing + bonus.ingAdd + (equipped == null ? 0 : equipped.ingAdd),
+                attributes.spi + bonus.spiAdd + (equipped == null ? 0 : equipped.spiAdd)};
+    }
+
     /** 运功书千分数键（DamageMul 族 ÷1000）。 */
     public static float effMul(Book book, String key) {
         Integer value = book == null ? null : book.effectStats.get(key);

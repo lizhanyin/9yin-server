@@ -157,7 +157,12 @@ class ActTeamBlockTest {
                     props.put(idx, java.nio.ByteBuffer.wrap(frame, off, 8).getLong());
                     off += 8;
                 }
-                case 5 -> off += 4;
+                case 5 -> {
+                    // float 记原始位（断言只查存在性/位值）
+                    props.put(idx, (long) Float.floatToRawIntBits(
+                            java.nio.ByteBuffer.wrap(frame, off, 4).getFloat()));
+                    off += 4;
+                }
                 case 7, 8 -> {
                     int len = (frame[off] | (frame[off + 1] << 8) | (frame[off + 2] << 16)
                             | (frame[off + 3] << 24));
@@ -170,6 +175,14 @@ class ActTeamBlockTest {
     }
 
     private static final int IDX_LOGIC_STATE = 463;
+    private static final int IDX_MOVE_SPEED = 384;
+    private static final int IDX_IN_PARRY = 471;
+    private static final int IDX_PARRY_VALUE = 475;
+    private static final int IDX_SHOT_POWER = 501;
+    private static final int IDX_MELEE_POWER_ADD = 503;
+    private static final int IDX_PHY_FINAL_ADD = 523;
+    private static final int IDX_PHY_VA = 565;
+    private static final int IDX_CAPITAL0 = 416;
     private static final int IDX_FACULTY_STYLE = 759;
     private static final int IDX_TEAM_VALUE = 777;
     private static final int IDX_TEAM_LAST = 778;
@@ -329,6 +342,15 @@ class ActTeamBlockTest {
         assertEquals(2, beginFrames.size());
         Map<Integer, Long> beginVital = decodeProps(beginFrames.get(0));
         assertEquals(108, beginVital.get(IDX_LOGIC_STATE), "演武开始帧必须带 LogicState=108");
+        // 参考全量帧补齐块（61579 #2194 对照）：运动/格挡/Add 分解族/货币/终伤。
+        assertTrue(beginVital.containsKey(IDX_MOVE_SPEED), "MoveSpeed 补齐");
+        assertEquals(0L, beginVital.get(IDX_IN_PARRY), "InParry=0（未格挡）");
+        assertEquals(940L, beginVital.get(IDX_PARRY_VALUE), "ParryValue=100+840 书加成");
+        assertEquals(75L, beginVital.get(IDX_MELEE_POWER_ADD), "MeleePowerAdd=有效臂力 30+45");
+        assertEquals(80L, beginVital.get(IDX_SHOT_POWER));
+        assertEquals(23L, beginVital.get(IDX_PHY_VA));
+        assertEquals(0L, beginVital.get(IDX_PHY_FINAL_ADD));
+        assertTrue(beginVital.containsKey(IDX_CAPITAL0), "CapitalType0(黄金) 补齐");
         assertEquals(2, beginVital.get(IDX_FACULTY_STYLE));
         assertEquals(0, beginVital.get(773), "演武中 FillSpeed=0（面板显示停止）");
         assertEquals(200, beginVital.get(774), "NorFacultyAdd 恒 200（F 抓包 #2194 diff 钉死）");

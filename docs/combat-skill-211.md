@@ -34,7 +34,7 @@
 | 3 | `0x11` cooldown_rec | `[50000, start, start+AddCoolDownTime, CoolDownTeam(u16)]` 公共 GCD |
 | 4 | `0x10` 玩家全量 | isView=0，188 项属性（LogicState/HPRatio/MPRatio/MaxHP/MaxMP/HP/MP/SpeedRatio/MoveSpeed/RunSpeed/HitHP/HitHPRatio/QingGongPoint/.../CurSkillID/CurSkillTarget/.../BufferInfo1-24/五系/PowerLevel/TitleID），即 addObject 同款属性面 |
 | 5 | `0x1E msg337` | `[obj(玩家), f32 x, f32 y, f32 z, f32 朝向, i32 0]` 施法者位置/朝向同步（值来自 211 请求） |
-| 6 | `0x1E msg20` | `[obj(玩家), 技能串, obj(0,0), i32 0, f32 0.0]` 技能动作。**玩家出招目标恒为空对象**（有选中目标也是 obj(0,0)，抓包实证）；NPC 施法时第三参=目标 obj |
+| 6 | `0x1E msg20` | `[obj(玩家), 技能串, obj(动作目标), i32 0, f32 0.0]` 技能动作。第三参三分（57378/52795 抓包实证，§13）：**锁定/冲锋技（SkillLock/CanRush）=211 目标对象**、**自增益招（IsDamage=0）=施法者自己**、其余伤害技=空对象。62433 花神取证全是第三类，故早期误记「恒空对象」——该参数正是客户端本地冲锋的触发条件 |
 | 7 | 每个受击目标 | 下方 §4 |
 | 8 | 有 buff 时 | `0x1E msg169` `[169, i32 0, 窄串 buffConfigId, obj(施法者), obj(承载者), 宽串名, 宽串名, i32 0, i32 0]`（九值；对比格挡形态 v8=int64 毫秒）+ `0x10` 玩家 `BufferInfoN`(N=槽位) |
 | 9 | 动作总时长后 | `0x12` 删 active_skill_rec 行 0 + `0x10` 玩家 `State`(idx19)="stand"（12 次出招=12 对，State 帧全程只出现 stand 复位） |
@@ -108,7 +108,7 @@ buff_new/buff_static/buff_varprop（buf_<技能ID> 精确 buff）。
 1. Go 只发 1 行 cooldown；F exe 发个人+GCD 两行（§5）。
 2. Go 无 active_skill_rec、msg337、msg24/205/18、0x2D、0x13；F exe 全套（§3/§4）。
 3. Go 出招发 State(动作名) 帧 + followup 段；F exe 技能动作纯走 msg20，State 只在收尾发 "stand"（idx19；idx183 是登录首帧的另一同名属性）。
-4. Go msg20 尾参 int 1/float 1；F exe 发 0/0.0，且目标恒 obj(0,0)。
+4. Go msg20 尾参 int 1/float 1；F exe 发 0/0.0，且目标按技能类别三分（§3 帧 6，非恒 obj(0,0)）。
 5. Go 命中掉落银子（MaxHP/100 夹 1..99）；F exe 零掉落。
 6. cooldown_rec 第 4 列官方类型 u16；Java 协商表可自定但对齐 u16 以字节级贴近。
 
@@ -260,11 +260,14 @@ HeightDiff 高度差过滤天然覆盖（圆心在地面、目标在地面 dy≈
 
 **射程闸**：CanRush（skill_static）技能距离上限放宽到 RushRange（无值回落 15 米，
 实测值域 {8,15,30}）；GROUND 落点用 max(RushRange, 30 米) 宽容闸（客户端按 TargetShape
-本地限距，服务端仅防跨图）。冲锋位移信任客户端（用户确认）：服务端只结算伤害，
-玩家位置由客户端移动同步驱动，msg337 仍回显 211 坐标。
+本地限距，服务端仅防跨图）。冲锋位移由客户端本地执行（2026-11-04 抓包钉死触发条件，
+见 §13）：服务端只结算伤害，不发任何玩家位移帧（无 0x1F/0x20，msg337 恒回显 211 出招
+原地）——客户端拿到 msg20 动作帧的目标对象（§3 帧 6）才起冲锋，位移后经 211/移动同步
+回报新位置。
 
 **测试**：`GroundChargeAndRageTest`（圈定免选中按落点命中/超程拒/无落点零伤害；
-冲锋 12m 放行 25m 拒+非冲锋同距对比；怒招 SP 闸门/扣减/命中回怒+SP 帧）。
+冲锋 12m 放行 25m 拒+非冲锋同距对比；怒招 SP 闸门/扣减/命中回怒+SP 帧；
+冲锋/普通/自增益 msg20 目标三分形态）。
 
 ## 12. 套路武器限制 + 空手基础外功（2026-11-04，bug.txt「套路 武器限制」落地）
 
@@ -284,3 +287,50 @@ MeleePower 为独立攻击强度不折入）。修复前空手 attack=0 走公�
 
 **测试**：`WeaponLimitGateTest`（UseLimit=2→{102} 编译/空手静默零帧/持剑放行/
 持刀仍拒/拳套空手可出）。
+
+## 13. 冲锋位移触发条件（2026-11-04，bug.txt「伤害出了，但人没过去」取证）
+
+来源：`E:\Workspace\project\game\9yin\9yin_server1\captures\local\` 57378（君子堂 jysg/yqq +
+峨眉 shl）与 bak/52795（华山 gxfhj + 鸿钧 yydf/hyjf/chz）双抓包逐帧对齐。
+
+**官服机制**：冲锋全程**客户端本地执行**，服务端零位移帧——玩家对象全程无 0x1F/0x20，
+msg337 恒回显 211 出招原地（57378 #1897/#2200/#3292 与各自 211 逐位一致），CD 行无冲锋
+时限特殊形态（jysg03 个人 8s/GCD 7s 常规）。**触发条件 = msg20 动作帧第三参携带目标
+对象**：客户端收到非空目标才播放冲锋动作并把角色送到目标身位（57378 中 yqq02 七连发，
+施法者坐标 682.5→678.6→691.8 随冲锋变化，均由下一发 211 回报）。
+
+**msg20 第三参三分**（两包 34 出招全对齐、无反例）：
+
+| 技能类别 | 判据 | msg20 第三参 | 抓包例 |
+|---|---|---|---|
+| 锁定/冲锋技 | script=SkillLock 或 CanRush=1（单体与圈定同规） | 211 idx10 目标对象 | jysg03/yqq02/shl03/gxfhj02/05（SkillLock 非冲锋圈定族同带） |
+| 自增益招 | IsDamage=0 | 施法者自己 | jysg06/gxfhj04/07/yydf05 |
+| 其余伤害技 | SkillNormal + IsDamage=1 | obj(0,0) | jysg02/05、yqq01、shl04/07/08、gxfhj03/06*、chz03、tjq08 |
+
+\* gxfhj06 三发仅一发受理（另两发被拒），该发 aim=38b 与 msg20 一致——按发对齐后非反例。
+wuji_CS_jh_hyjf08（武技换名）五发均带各自 aim，同锁定族语义。
+
+**实现**：`CombatSkill.isDamage`（skill_static.IsDamage 编译）+ `lockSkill()`；
+`SkillCastHandler.resolveActionTarget`（aim 对象校验战斗 NPC → 回落选中目标 → 空对象；
+非锁定 IsDamage=0 → 自己）；`FightMessages.skillAction` 增目标参数。修复前恒发空对象，
+客户端不冲锋——即「伤害出了人没过去」根因。非锁定 SkillNormal 伤害技保持空对象不动
+（chz03 抓包反例保护，圈定中心/朝向由客户端本地圈指示提供）。
+
+## 14. 打坐技能 zs_default_01（2026-11-04，bug.txt「打坐」）
+
+客户端把 zs_default_01 识别为**原生动作**（Go 真机捕获注释：按已学快捷键走 custom 240
+而非 211——240 路径 LoginFlow.handleSitcross 已对齐 Go：1 进/0、2 停、重复幂等、死亡拒）。
+但技能面板等路径仍可能走 211，修复前三断点：
+
+1. **动作缺节拒编译**：打坐动画客户端原生，zhaoshi_player*（4 表）无 zs_default_01 节
+   → `missing_player_action` SkipException → definition null → 静默拒。修复：白名单放行
+   （`CombatSkillCatalog.SITCROSS_SKILL_ID`），合成 1s 动作时长仅供收尾调度。
+2. **SELECTED 要求选中目标**：HitShape=0 → SELECTED，但 IsDamage=0——无伤害技（气/架招/
+   打坐族）**免选中目标**（52795 抓包 jysg06 短格式无目标照样受理同族实证）。
+   `CombatSkill.requiresTarget` 收紧为 `isDamage && (SELECTED|SELECTED_AREA)`。
+3. **无切态逻辑**：受理即 toggle `applySitcross(!sitting())`（LogicState 102/0 随出招面板
+   下发，CAST_PANEL_NAMES 含 LogicState）；回复走 LoginFlow 1s ticker 的 sitcrossTick
+   （10s 回满 HP/MP）。msg20 动作目标=自己（§13 自增益规则）。
+
+**战斗中拒**：UseLimit=9 = `r=1,LogicState,1,!=`（「无法在战斗状态使用」）——LogicState=
+Fighting 时静默拒（CD/超距族同语义）。个人 CD 5s（varprop 421 L1）= 两次 toggle 最小间隔。

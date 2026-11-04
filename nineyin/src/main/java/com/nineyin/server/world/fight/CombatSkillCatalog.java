@@ -37,6 +37,14 @@ public final class CombatSkillCatalog {
     public static final long RED_ARMOR_STATIC_DATA = 8682;
     public static final String RED_ARMOR_BUFF_CONFIG = "buf_fixed_red";
 
+    /**
+     * 打坐技能（Ctrl+0 快捷/技能面板同 id）：动作客户端原生（zhaoshi_player* 无节，
+     * 缺节不按 missing_player_action 拒）；UseLimit=9 战斗中禁用；受理即切
+     * LogicState=102/0（toggle）。Go 真机捕获：按已学快捷键客户端走 custom 240
+     * 而非 211——但技能面板/他路 211 仍须受理（bug.txt「打坐」项）。
+     */
+    public static final String SITCROSS_SKILL_ID = "zs_default_01";
+
     /** ini 节（键小写、保留重复键序：damage_calculate 的多 r 字段依赖全序列）。 */
     static final class Section {
 
@@ -363,7 +371,11 @@ public final class CombatSkillCatalog {
         TargetShape shape = compileTargetMode(hitShape, isDamage);
         Actions actions = compileSkillActions(tables.actions.get(skillId), skillId);
         if (actions.actionName().isEmpty()) {
-            throw new SkipException("missing_player_action");
+            if (!SITCROSS_SKILL_ID.equals(skillId)) {
+                throw new SkipException("missing_player_action");
+            }
+            // 打坐动作客户端原生（zhaoshi 无节）：合成 1s 时长仅供收尾调度（0x12 删行）
+            actions = new Actions(SITCROSS_SKILL_ID, 1000, List.of(), List.of());
         }
 
         long publicCd = varProp.int32("AddCoolDownTime");
@@ -424,7 +436,7 @@ public final class CombatSkillCatalog {
                 damage[0], damage[1],
                 shape.mode(), shape.radius(), varProp.f32("HeightDiff"),
                 shape.angle(), shape.width(),
-                staticFields.int32("CanRush") != 0, staticFields.f32("RushRange"),
+                staticFields.int32("CanRush") != 0, staticFields.f32("RushRange"), isDamage,
                 actions.actionName(), actions.durationMs(), actions.followups(), actions.hitFrameMs(),
                 effects, weaponItemTypes);
     }

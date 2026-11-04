@@ -36,6 +36,9 @@ import io.netty.channel.embedded.EmbeddedChannel;
  *    冲锋射程（无 RushRange 回落 15 米）——12 米受理/25 米拒绝，同距非冲锋技能仍拒绝。
  * ③ 怒招怒气闭环（wx_wd_tjj08 = 扣剑平抹杀，AConsumeSP=10）：SP &lt; 消耗静默拒且不扣；
  *    受理扣 SP；每次落血命中 +2 回怒并发单属性 SP 帧（msg24 计数做确定性校验）。
+ * ④ 冲锋位移（bug.txt:50「伤害出了，但人没过去」）：官服 57378/52795 抓包实证 msg20
+ *    动作帧第三参——锁定/冲锋技=211 目标对象（客户端本地执行冲锋，服务端无位移帧）、
+ *    自增益招（IsDamage=0）=施法者自己、其余伤害技=空对象 obj(0,0)。
  */
 class GroundChargeAndRageTest {
 
@@ -225,6 +228,90 @@ class GroundChargeAndRageTest {
     // ------------------------------------------------------------------ 辅助
 
     /**
+     * 冲锋位移闭环（官服 57378/52795 抓包）：冲锋招受理时 msg20 动作帧第三参=
+     * 目标对象——客户端据此本地执行冲锋（修复前恒空对象 → 「伤害出了人没过去」）；
+     * 同距非冲锋单体技仍空对象；自增益招（IsDamage=0）目标=施法者自己。
+     */
+    @Test
+    void chargeSkillMsg20CarriesTargetObject() {
+        CombatSkill rush = firstCompiled(List.of("CS_jh_cqgf01", "CS_wd_tjj01", "CS_sl_djgq07"));
+        assumeTrue(rush != null, "无 CanRush 技能可测");
+        assertTrue(rush.lockSkill(), "CanRush 编译进 lockSkill");
+
+        CombatSkill plain = null;
+        for (String id : List.of("CS_jh_yydf04_hide", "CS_wd_tjq08", "wx_tm_fg06")) {
+            CombatSkill candidate = CombatSkillCatalog.load().definition(id, 1);
+            // 官服形态三分：锁定族（含非冲锋 SkillLock 如 gxfhj02/05）带目标、
+            // IsDamage=0 带自己、其余 SkillNormal 伤害技空对象——对照组取第三类
+            if (candidate != null && candidate.requiresTarget() && !candidate.lockSkill()
+                    && candidate.isDamage()) {
+                plain = candidate;
+                break;
+            }
+        }
+        CombatSkill self = firstCompiled(List.of("CS_jh_yydf05", "CS_jhgp_gxfhj04", "CS_jh_jysg06"));
+
+        long npcKey = (2 & 0xFFFFFFFFL) | (1L << 32);
+        int weapon = rush.weaponItemTypes().isEmpty() ? 0 : rush.weaponItemTypes().iterator().next();
+
+        // 冲锋技 12m 受理：msg20 目标=选中 NPC（无 211 目标对象时回落选中目标）
+        Harness rushIn = new Harness(1000, 12f, 0f);
+        rushIn.player.noteEquippedWeaponItemType(weapon);
+        rushIn.learned.put(rush.id(), 1);
+        rushIn.cast(rush.id(), 0f, 20f, 0f);
+        assertEquals(npcKey, msg20Target(rushIn.drain(), rush.id()),
+                "冲锋招 msg20 第三参=目标对象");
+
+        // 211 长格式带目标对象：msg20 动作目标随 aim 对象（官服每发均带）
+        Harness aim = new Harness(1000, 12f, 0f);
+        aim.player.noteEquippedWeaponItemType(weapon);
+        aim.learned.put(rush.id(), 1);
+        assertTrue(aim.fight.selectTarget(aim.world, 2, 1), "combat NPC selectable");
+        aim.handle(useSkillAimMessage(rush.id(), 0f, 20f, 0f, 1.0f, 2, 1, 12f, 20f, 0f));
+        assertEquals(npcKey, msg20Target(aim.drain(), rush.id()),
+                "211 目标对象作为 msg20 动作目标");
+
+        if (plain != null) {
+            int plainWeapon = plain.weaponItemTypes().isEmpty() ? 0
+                    : plain.weaponItemTypes().iterator().next();
+            Harness plainIn = new Harness(1000, 5f, 0f);
+            plainIn.player.noteEquippedWeaponItemType(plainWeapon);
+            plainIn.learned.put(plain.id(), 1);
+            plainIn.cast(plain.id(), 0f, 20f, 0f);
+            assertEquals(0L, msg20Target(plainIn.drain(), plain.id()),
+                    "非锁定伤害技 msg20 目标仍为空对象");
+        }
+
+        assumeTrue(self != null && !self.isDamage(), "无自增益招（IsDamage=0）可测");
+        int selfWeapon = self.weaponItemTypes().isEmpty() ? 0
+                : self.weaponItemTypes().iterator().next();
+        Harness selfIn = new Harness(1000, 5f, 0f);
+        selfIn.player.noteEquippedWeaponItemType(selfWeapon);
+        selfIn.learned.put(self.id(), 1);
+        selfIn.cast(self.id(), 0f, 20f, 0f);
+        assertEquals((PlayerActor.PLAYER_OBJECT_ID & 0xFFFFFFFFL)
+                        | ((long) PlayerActor.PLAYER_OWNER_ID << 32),
+                msg20Target(selfIn.drain(), self.id()),
+                "自增益招 msg20 目标=施法者自己");
+    }
+
+    /** msg20 动作帧目标对象（tag8 int64；无匹配帧返回 null，空对象=0）。 */
+    private static Long msg20Target(List<byte[]> frames, String skillId) {
+        for (byte[] frame : frames) {
+            CustomC2S.Message parsed = CustomC2S.parseDirect(frame);
+            if (parsed == null || parsed.values.isEmpty()
+                    || parsed.values.get(0).exactInt32() != 20 || parsed.values.size() < 4) {
+                continue;
+            }
+            if (skillId.equals(parsed.values.get(2).textOrNull())) {
+                CustomC2S.Value target = parsed.values.get(3);
+                return target.tag == 8 ? target.int64 : null;
+            }
+        }
+        return null;
+    }
+
+    /**
      * 官方 CanUse 语义（52795 取证：11730 帧中仅 QGP 门控行出 0，怒招行 SP=26
      * 低于消耗 50 仍恒推 1；SP 跨阈值无任何行帧）：出招置 0、个人 CD 尽置 1
      * （不看 SP）；SP 变化（消耗/回怒）不推兄弟行——资源灰由客户端按 SP+行内
@@ -336,6 +423,33 @@ class GroundChargeAndRageTest {
         writer.writeU8(4).writeU32(0);
         writer.writeU8(6).writeU32(1).writeU8(0);
         writer.writeU8(8).writeU32(0).writeU32(0);
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(ax));
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(ay));
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(az));
+        return CustomC2S.parseDirect(writer.toBytes());
+    }
+
+    /**
+     * 0x1E 直达 211 长格式带目标对象（idx 10 = obj(aimObjId,aimOwner)，idx 11-13 =
+     * 目标坐标）：冲锋招客户端实发形态（官服抓包每发均携带）。
+     */
+    static CustomC2S.Message useSkillAimMessage(String skillId, float x, float y, float z,
+                                                float orient, int aimObjId, int aimOwner,
+                                                float ax, float ay, float az) {
+        PacketWriter writer = PacketWriter.ofCapacity(128);
+        writer.writeU8(0x1E).writeU16(14);
+        writer.writeU8(2).writeU32(211);
+        byte[] id = skillId.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        writer.writeU8(6).writeU32(id.length + 1).writeBytes(id).writeU8(0);
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(x));
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(y));
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(z));
+        writer.writeU8(4).writeU32(Float.floatToRawIntBits(orient));
+        writer.writeU8(4).writeU32(0);
+        writer.writeU8(4).writeU32(0);
+        writer.writeU8(4).writeU32(0);
+        writer.writeU8(6).writeU32(1).writeU8(0);
+        writer.writeU8(8).writeU32(aimObjId).writeU32(aimOwner);
         writer.writeU8(4).writeU32(Float.floatToRawIntBits(ax));
         writer.writeU8(4).writeU32(Float.floatToRawIntBits(ay));
         writer.writeU8(4).writeU32(Float.floatToRawIntBits(az));

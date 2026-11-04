@@ -72,14 +72,18 @@ public final class FightMessages {
     }
 
     /**
-     * msg20：技能动作。[obj(施法者), 技能串, obj(0,0), 0, 0.0]——
-     * 玩家出招目标恒空对象（抓包实证，含已选中目标的单体技能）。
+     * msg20：技能动作。[obj(施法者), 技能串, obj(动作目标), 0, 0.0]。动作目标
+     * （57378/52795 官服抓包实证）：锁定/冲锋技（SkillLock/CanRush）=211 目标对象
+     * ——客户端据此本地执行冲锋位移，服务端无位移帧；自增益招（IsDamage=0）=施法者
+     * 自己；其余伤害技恒空对象 obj(0,0)。目标缺席（id=0）即空对象。
      */
-    public static byte[] skillAction(int casterId, int casterOwner, String skillId) {
+    public static byte[] skillAction(int casterId, int casterOwner, String skillId,
+                                     int targetId, int targetOwner) {
         return CustomMessages.customIntMessage(20,
                 CustomMessages.Value.ofObject(casterId, casterOwner),
                 CustomMessages.Value.ofString(skillId),
-                CustomMessages.Value.ofEmptyObject(),
+                targetId != 0 ? CustomMessages.Value.ofObject(targetId, targetOwner)
+                        : CustomMessages.Value.ofEmptyObject(),
                 CustomMessages.Value.ofInt32(0),
                 CustomMessages.Value.ofFloat32(0));
     }

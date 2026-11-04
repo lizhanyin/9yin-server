@@ -26,6 +26,7 @@ import java.util.List;
  * @param areaWidth       矩形宽度（HitShapePara1）
  * @param canRush         skill_static.CanRush（冲锋招：射程闸放宽到 rushRangeM）
  * @param rushRangeM      skill_static.RushRange（冲锋射程米；0=无值）
+ * @param isDamage        skill_static.IsDamage（自增益招=false：msg20 动作目标=自己）
  * @param actionName      zhaoshi 时间线首段动作名（当前仅用于总时长；S2C 动作走 msg20）
  * @param actionDurationMs 首段动作时长（endFrame/30fps）
  * @param followups       后续动作段（编译保留；抓包显示 F exe 不下发 followup State 帧）
@@ -43,7 +44,7 @@ public record CombatSkill(
         int mpCost, int spCost, int qgCost,
         int baseDamage, int damageWaves,
         TargetMode targetMode, float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
-        boolean canRush, float rushRangeM,
+        boolean canRush, float rushRangeM, boolean isDamage,
         String actionName, long actionDurationMs, List<ActionSegment> followups,
         List<Long> hitFrameMs,
         List<Effect> effects,
@@ -95,8 +96,14 @@ public record CombatSkill(
         return duration;
     }
 
+    /**
+     * 是否要求选中目标：单体/以目标为中心的**伤害技**才要求。无伤害技（气/架招/
+     * 打坐族，IsDamage=0）免选中——52795 抓包 jysg06 短格式（无目标对象）照样受理
+     * 全套出招帧；打坐登录后无选中也须可出（bug.txt「打坐」）。
+     */
     public boolean requiresTarget() {
-        return targetMode == TargetMode.SELECTED || targetMode == TargetMode.SELECTED_AREA;
+        return isDamage && (targetMode == TargetMode.SELECTED
+                || targetMode == TargetMode.SELECTED_AREA);
     }
 
     /** 武器门控：空集=无限制（拳/腿套路）；否则已穿武器 ItemType 须在允许集内（0=空手必拒）。 */
@@ -107,6 +114,15 @@ public record CombatSkill(
     /** 冲锋射程（米）：CanRush 且 RushRange&gt;0 才有效，缺省 0=非冲锋。 */
     public float rushRange() {
         return canRush && rushRangeM > 0 ? rushRangeM : 0;
+    }
+
+    /**
+     * 锁定技（SkillLock 脚本，含全部 CanRush 冲锋招）：msg20 动作帧携带目标对象，
+     * 客户端据此本地执行冲锋/锁定位移（官服抓包 57378/52795：jysg03/yqq02/shl03/
+     * gxfhj02/05 msg20 第三参=211 目标对象；服务端全程不下发玩家位移帧）。
+     */
+    public boolean lockSkill() {
+        return "skilllock".equalsIgnoreCase(script) || canRush;
     }
 
     /** 伤害倍率（formula.lua 的 ratio；<=0 由公式按 1.0 处理）。 */

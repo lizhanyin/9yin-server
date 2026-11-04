@@ -129,6 +129,13 @@ public final class SkillCastHandler {
         // 冲锋射程（CanRush 且 RushRange>0；无值回落 15 米）——单体/圈定冲锋放宽 8 米身位闸
         double rushRange = skill.canRush()
                 ? Math.max(skill.rushRangeM(), RUSH_RANGE_FALLBACK_METERS) : 0;
+        // 打坐（zs_default_01）：UseLimit=9「无法在战斗状态使用」——战斗中静默拒
+        // （与 CD/超距族同语义）；受理后切打坐态（下方 toggle）。
+        boolean sitcrossSkill = CombatSkillCatalog.SITCROSS_SKILL_ID.equals(skill.id());
+        if (sitcrossSkill && context.player().actorState().logicState() == Actor.LOGIC_STATE_FIGHTING) {
+            LOG.info("reject sitcross skill id=" + skill.id() + " while fighting");
+            return;
+        }
         FightState.SelectedTarget selected = null;
         CastPoint castPoint = null;
         if (skill.requiresTarget()) {
@@ -191,6 +198,13 @@ public final class SkillCastHandler {
         Connection connection = context.connection();
         PlayerActor player = context.player();
         String playerName = player.snapshotName();
+        // 打坐受理：切 LogicState=102/0（toggle，出招面板 LogicState 随帧下发；回复由
+        // LoginFlow 1s ticker 的 sitcrossTick 结算）。动作客户端原生（msg20 自带 id 即可）。
+        if (sitcrossSkill) {
+            boolean sitting = player.sitting();
+            player.applySitcross(!sitting);
+            LOG.info("sitcross skill accepted -> LogicState=" + (sitting ? 0 : 102));
+        }
 
         // buff 先入租约再写全量面板（参考服 exe 形态：出招 buff 只随 0x10 面板的
         // BufferInfoN 下发，无独立 msg169/槽帧——127-0-0-1-50768 三招 customs 无 169、
@@ -227,11 +241,14 @@ public final class SkillCastHandler {
         // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
         // 外观属性官方不随出招重发，重推 Mount='' 等会把空中人物打回地面）。
         connection.writeFrame(player.castVitalUpdate());
-        // msg337 施法者位置/朝向回显（值取 211 请求，官方每招恒发 62433）。
+        // msg337 施法者位置/朝向回显（值取 211 请求，官方每招恒发 62433；冲锋位移
+        // 客户端本地执行，337 仍回显出招原地——官服抓包全程无玩家位移帧）。
         connection.writeFrame(FightMessages.casterTransformSync(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
+        ActionTarget actionTarget = resolveActionTarget(context, skill, selected, aimObjId, aimOwnerId);
         connection.writeFrame(FightMessages.skillAction(
-                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id()));
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id(),
+                actionTarget.objectId(), actionTarget.ownerId()));
 
         List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient, castPoint);
         if (skill.hitFrameMs().isEmpty()) {
@@ -408,6 +425,41 @@ public final class SkillCastHandler {
         boolean present() {
             return x != 0f || y != 0f || z != 0f;
         }
+    }
+
+    /** msg20 动作目标（0,0=空对象）。 */
+    private record ActionTarget(int objectId, int ownerId) {
+
+        static final ActionTarget NONE = new ActionTarget(0, 0);
+    }
+
+    /**
+     * msg20 动作帧的目标对象（57378/52795 官服抓包实证）：锁定/冲锋技（SkillLock
+     * /CanRush，单体与圈定同规）=211 目标对象（校验战斗 NPC，失效回落选中目标）——
+     * 客户端收到目标对象才本地执行冲锋位移（「伤害出了人没过去」根因即此参数恒空）；
+     * 自增益招（IsDamage=0，气/架招族）=施法者自己；其余伤害技=空对象。
+     */
+    private static ActionTarget resolveActionTarget(CastContext context, CombatSkill skill,
+                                                    FightState.SelectedTarget selected,
+                                                    int aimObjId, int aimOwnerId) {
+        if (skill.lockSkill()) {
+            if (aimObjId != 0) {
+                SceneLifecycle.CombatNpcInfo info = context.world().combatNpcInfo(aimObjId);
+                if (info != null && info.combat() && info.ownerId() == aimOwnerId) {
+                    return new ActionTarget(aimObjId, aimOwnerId);
+                }
+            }
+            FightState.SelectedTarget fallback = selected != null ? selected
+                    : context.fight().livingSelectedTarget(context.world());
+            if (fallback != null) {
+                return new ActionTarget(fallback.objectId(), fallback.ownerId());
+            }
+            return ActionTarget.NONE;
+        }
+        if (!skill.isDamage()) {
+            return new ActionTarget(PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID);
+        }
+        return ActionTarget.NONE;
     }
 
     /**

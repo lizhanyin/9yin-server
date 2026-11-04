@@ -99,13 +99,13 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 
 ## 5. 动作清单（2026-11-04）
 
-已实现（白名单+case 双接线，27 个）：
+已实现（白名单+case 双接线，31 个）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
-reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, wear_title,
-cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
+reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, set_five_attributes,
+wear_title, cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
 add_livepoint, set_hold_faculty, set_live_speed_power,
 set_act_day_limit, clear_team_fatigue, set_team_faculty_last,
-switch_scene_preset, switch_scene, teleport`
+switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here`
 
 修为三动作参数：
 
@@ -192,6 +192,43 @@ switch_scene_preset, switch_scene, teleport`
 配套修复：`EquipAffixCatalog.loadAll` 此前丢弃 `loadIni` 返回值导致 `load()` 恒空表
 （recast_add_affix 包号校验与装备词缀加成累积全链失效），已修（解析结果并入实例）。
 
+物品发放一动作（2026-11-04，面板「所有道具与换装」区块；`add_item` 为别名）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `grant_item` | `itemConfig` + `amount` 1..9999 + `wearNow` 可选 0/1 | wearNow=1 穿戴 → role_equip_items；否则/降级 → role_bag_items |
+
+- wearNow=1 且 EquipType 可穿戴 → 直接穿戴（upsertEquip + pushWearFrames 纸娃娃行/外观 0x10/vital）。
+  **目标槽被占 → 旧装备让位**（freeBagSlot 装备页首空格 + swapEquipSlot 回收进背包并推
+  0x19/0x18 行帧；满包整单拒绝、数据零改动——旧版直接覆盖丢旧装已修）。
+  **双槽饰品（耳环 11/12、戒指 14/15）优先空槽**（equipSlotFor，与 wearFromBag 同语义）。
+  不可穿戴（EquipType 空/未知槽 0）自动降级入包，回执「已发放」。
+
+礼包与物品两动作（2026-11-04，面板「礼包与物品」区块收尾）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `send_test_mail` | `itemConfig` + `amount` 1..9999（与 add_item 同域） | data/letters.json + role_letters 快照 |
+| `giftbox_merchant_here` | 无参（人形商人拉到身前，重复拉先摘旧；切图随 world.begin 清空） | 无（会话内实体） |
+
+- **邮件域速查**：邮箱=玩家记录表 **RecvLetterRec（官方 447 表 idx 319，16 列）**，
+  行帧走 `letterRowFrame` 全 16 格。列型：0/3/4 宽串、1/5/6/7/10/11 窄串（金/银/交易金
+  是数字**窄串**，客户端按串比较 "0"）、2/9/12/14 i32、8/13 i64（DATE=unix 秒）、15 f64。
+  系统信 type=101..199（发件人空串 → 客户端显示「系统邮件」）；附件=窄串 XML
+  `<Root><Object Config="id"><Prop Amount="n" ColorLevel="0"/></Object></Root>`。
+  C2S：350 开邮箱/358 关窗/357 勾选（零服务端动作，列表=data_binder 绑记录行）、
+  353 读信置已读、359 领附件（grantBagItem + 清附件）。行更新=0x12 删行+0x11 尾插
+  重推（信件跳列表底部，不碰未验证的 0x13 单格帧）。重登/切图重放走
+  `grantOncePerConnectionRows`（lettersGranted 标志，与快捷栏同口径）。
+- **列型取证补全**（bin64 `fxnet2.dll` RecvRecordRow @0x1060BC40 跳表九分支）：
+  type6=f64、**type8=宽串（u32 字节长含尾宽 NUL + UTF-16LE + 0x0000）**、type9=u64
+  object；`RecordMessages.recordAddCells` 已支持全 1..8 型。
+- **礼包商人**：CommonNpc 模板 `citywar03_npc_010`（monsternpc_commonnpc.txt 人形）
+  克隆改名「礼包测试商人」，点击（0x07 → openNpcDialog gmSpawns.merchant 分支）直达
+  **合成商店节 `gm_giftbox`**（shop.ini 之外；商品=ItemUseCatalog BOX 语义且 DropID
+  ∈ drops_mvp.json 的真正可开礼包，按 configId 排序，SellPrice2=0 免费领，msg70 购买
+  链零改动复用）。
+
 切图链（`applySceneSwitch`）：0x0C 退场 → `world.begin` 世代重置 → **750ms 调度延迟**
 （旧场景 on_exit_scene 的 ClearAll 收尾；Go 在会话 goroutine 睡，Java 在 faculty ticker
 上不能睡改 `scheduler.schedule`，`LoginFlow.reentryFrameDelayMillis` 测试可注入）→
@@ -212,20 +249,56 @@ faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
 `learn_all_neigong, learn_all_taolu, forget_all_taolu, grant_all_cards, unequip_card,
-set_faction, set_five_attributes, set_jingmai_tier,
-add_item, worldboss_*, bot_*, equip_card, ninjiuzhi_*, set_pk_mode,
-set_weather, story, custom_probe, keybind` 等。
+set_faction, set_jingmai_tier,
+worldboss_*, bot_*, equip_card, ninjiuzhi_*, set_pk_mode,
+set_weather, story(剧情族剩余), custom_probe, keybind` 等。
+（add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线。）
+
+五维属性一动作（2026-11-04，面板「五维属性」区块）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_five_attributes` | `attrStr/attrSta/attrDex/attrIng/attrSpi` 各 0..1e6（**0/缺省=跳过该维**，覆盖式非累加） | role_faculty 快照（`base_str..base_spi`） |
+
+- 基值落点 = `PlayerProgress.attributes`（create 种子全 30）；0x10 帧的 Str/Sta/Dex/Ing/Spi
+  与 HP/MP 换算族（7×体魄+2×臂力、4×内息+罡气）都从基值派生，改值即 `vitalUpdate()` 全量刷新。
+- 快照新增五字段（`base_str/sta/dex/ing/spi`）走 FacultyStore 双源；**旧档缺省 0 不覆盖运行时值**
+  （restore 守卫 >0，上限钳 1e6），26 参旧契约构造保留。
+- 测试：`LoginFlowGmCommandTest.fiveAttributesApplySkipZeroAndPersistSnapshot`（0 跳过/0x10 派生值
+  =基值+书加成/全 0 拒绝）+ `FacultyProgressTest.baseFiveAttributesRoundTripAndLegacySnapshotKeepsSeeds`
+  （快照回环/旧档不动基值）。
+
+生存属性一动作（menu2 setVitals，2026-11-04 补落库闭环）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_vitals` | `ene/maxEne/resumeEne/sat/maxSat/pkValue/drunkLevel` 各 ≥0（**均可选**，缺省不动；面板的 maxEneAdd/maxSatAdd 本服表无此名忽略） | role_faculty 快照（嵌套 `vitals` 节） |
+
+- 体力/饱食/杀戮/酒量 = PanelState 身份块七字段；改值 → 0x10 单帧（按名走官方表：
+  Ene@705/MaxEne@706/ResumeEne@707/Sat@708/MaxSat@709/PKValue@427/DrunkLevel@723）。
+- **2026-11-04 前不落库**（重登回 0）已修：`PlayerActor.facultySnapshot` 把 `panel.vitalsSnapshot()`
+  并入快照（`Snapshot.withVitals`），`applyVitals` 改完即 `persistFaculty`；重登
+  `restoreFaculty` → `panel.restoreVitals` 回填。旧档无 `vitals` 节 = null 不动 0 种子
+  （新角色仍 0/0，官服种子值无抓包证据不臆造）。
+- gmHub lastAction 回显「体力 a/b 饱食 c/d 杀戮 e 酒量 f 已更新并落库」。
+- 杀戮红名渲染/酒量效果均客户端按 PKValue/DrunkLevel 本地处理，服务端无附加逻辑。
 
 ## 6. 测试
 
 - 回环门禁：`nineyin/src/test/java/com/nineyin/server/gm/GmRemoteRoundTripTest.java`
   ——进程内起真实 summer（main+minor.gm），**Summer.hot 整个 JVM 只允许一次**，
   所有断言必须合在单个测试方法内；consumer 线程 tryPop + succeed 模拟游戏侧回执。
-- 分发单测：`LoginFlowGmCommandTest`；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分）；
+- 分发单测：`LoginFlowGmCommandTest`（含 set_vitals 落快照/回填断言）；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分/生存属性 vitals 回环+JSON 落盘回读）；
   演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）；
   传送域：`LoginFlowSceneSwitchTest`（0x0C 重入帧序/残余包忽略/0x09 收尾/瞬移单帧/加载中拒绝，
   ManualScheduler 驱动 750ms 延迟任务）+ `GmScenePresetsTest`（107 键/抽样值/免费格式解析）。
   模板生成域：`GenerateEquipFlowTest`（真实 MySQL+参考服 share：60501 家族/官方池词条/
   固定红词条/护腕臂力+招式/饰品穿戴帧序；临时角色 990033 测后清理）。
+  邮件域：`MailFlowTest`（真实 MySQL+go-server1 share：发信帧字节/353 已读/359 领附件
+  入包/落盘回读；临时角色 990034）+ `RecordMessagesTest`（type8 宽串/6 f64 字节级，
+  载体 RecvLetterRec 319 全 16 列）；礼包货架域：`GiftShopFlowTest`（合成节只列可开
+  礼包/排序/免费、View61 头+行帧、msg70 零价购买入包；临时角色 990035）；
+  物品发放域：`GrantItemFlowTest`（入包行+成对帧/wearNow 穿戴帧序/换装让位旧装回收
+  装备页/双槽耳环 11+12 不覆盖/不可穿戴降级入包；临时角色 990036）。
 - 已知存量失败 7 个（View40 CD 显示修复遗留，与 GM 链路无关）：PlayerActorGoldenTest 2、
   LoginFlowTest 1、SkillCastHandlerFlowTest 3、RoleInventoryStoreIntegrationTest 1（需 MySQL）。

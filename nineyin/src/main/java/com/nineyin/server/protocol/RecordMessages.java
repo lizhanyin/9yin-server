@@ -6,7 +6,9 @@ package com.nineyin.server.protocol;
  * shortcut_records.go 的 serverRecordDelRow。
  *
  * <p>行归属 scene object（第二字节 0）；+0x0C/+0x0E 是源行起始/数量而非列号，
- * 每帧恰一整行。列类型码：1=byte、2=u16、3=int32、4=int64、7=窄字符串、9=object。
+ * 每帧恰一整行。列类型码：1=byte、2=u16、3=int32、4=int64、6=f64、7=窄字符串、
+ * 8=宽字符串（u32 字节长含尾宽 NUL + UTF-16LE + 0x0000，bin64 fxnet2.dll
+ * RecvRecordRow case8 取证）、9=object。
  *
  * <p>记录索引 = 官方 447 schema 方言的帧内下标（{@link RecordSchemas}），
  * 不再使用本服自协商下标——客户端 C++ 原生消费者（CoolLogicManager 等）对
@@ -29,29 +31,37 @@ public final class RecordMessages {
     public static final int RECORD_ACTIVE_SKILL = RecordSchemas.indexByName("active_skill_rec");
     /** 经脉系统：已激活经脉（单字符串列，F 盘抓包行 'jm_dantian' 实证）。 */
     public static final int RECORD_ACTIVE_JINGMAI = RecordSchemas.indexByName("active_jingmai_rec");
+    /** 邮箱收件列表（官方 16 列：0/3/4 宽串，5-7/10/11 窄串，8/13 int64，15 f64）。 */
+    public static final int RECORD_RECV_LETTER = RecordSchemas.indexByName("RecvLetterRec");
 
     /** 记录格：与 Go recordCell 一致，同一时间至多一种值。 */
     public static final class Cell {
         final Long int32;
         final Long int64;
         final String text;
+        final Double real;
 
-        private Cell(Long int32, Long int64, String text) {
+        private Cell(Long int32, Long int64, String text, Double real) {
             this.int32 = int32;
             this.int64 = int64;
             this.text = text;
+            this.real = real;
         }
 
         public static Cell ofInt(long value) {
-            return new Cell(value, null, null);
+            return new Cell(value, null, null, null);
         }
 
         public static Cell ofInt64(long value) {
-            return new Cell(null, value, null);
+            return new Cell(null, value, null, null);
         }
 
         public static Cell ofString(String value) {
-            return new Cell(null, null, value);
+            return new Cell(null, null, value, null);
+        }
+
+        public static Cell ofDouble(double value) {
+            return new Cell(null, null, null, value);
         }
     }
 
@@ -142,9 +152,27 @@ public final class RecordMessages {
                     writer.writeU32(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 1);
                     writer.writeUtf8(text).writeU8(0);
                 }
+                case 6 -> {
+                    // f64 列（RecvLetterRec 末列等）：8 字节 IEEE-754。
+                    if (cell != null) {
+                        requireDouble(cell, recordIndex, column);
+                    }
+                    writer.writeF64(cell == null ? 0.0 : cell.real);
+                }
+                case 8 -> {
+                    // 宽字符串（bin64 fxnet2.dll RecvRecordRow 0x1060BC40 case8 取证）：
+                    // u32 字节长（含尾宽 NUL，按字节计）+ UTF-16LE + 0x0000，与 case7 窄串对称。
+                    if (cell != null) {
+                        requireString(cell, recordIndex, column);
+                    }
+                    String text = cell == null || cell.text == null ? "" : cell.text;
+                    byte[] wide = text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+                    writer.writeU32(wide.length + 2);
+                    writer.writeBytes(wide).writeU16(0);
+                }
                 default -> throw new IllegalArgumentException(
                         "record " + schema.name() + " column " + column
-                                + " has unsupported official type " + columnTypes[column]);
+                        + " has unsupported official type " + columnTypes[column]);
             }
         }
         return writer.toBytes();
@@ -161,20 +189,26 @@ public final class RecordMessages {
     }
 
     private static void requireInt32(Cell cell, int recordIndex, int column) {
-        if (cell.int32 == null || cell.int64 != null || cell.text != null) {
+        if (cell.int32 == null || cell.int64 != null || cell.text != null || cell.real != null) {
             throw new IllegalArgumentException("record " + recordIndex + " column " + column + " requires int32");
         }
     }
 
     private static void requireInt64(Cell cell, int recordIndex, int column) {
-        if (cell.int64 == null || cell.int32 != null || cell.text != null) {
+        if (cell.int64 == null || cell.int32 != null || cell.text != null || cell.real != null) {
             throw new IllegalArgumentException("record " + recordIndex + " column " + column + " requires int64");
         }
     }
 
     private static void requireString(Cell cell, int recordIndex, int column) {
-        if (cell.text == null || cell.int32 != null || cell.int64 != null) {
+        if (cell.text == null || cell.int32 != null || cell.int64 != null || cell.real != null) {
             throw new IllegalArgumentException("record " + recordIndex + " column " + column + " requires string");
+        }
+    }
+
+    private static void requireDouble(Cell cell, int recordIndex, int column) {
+        if (cell.real == null || cell.int32 != null || cell.int64 != null || cell.text != null) {
+            throw new IllegalArgumentException("record " + recordIndex + " column " + column + " requires double");
         }
     }
 

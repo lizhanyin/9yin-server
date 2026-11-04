@@ -47,6 +47,11 @@ public final class LoginSession {
     /** 时装页签：已激活套装（role_fashion_suits；选角时装载，ClientReady 推 FashionSuitRec 行）。 */
     java.util.List<String> fashionSuits = java.util.List.of();
     boolean fashionPushed;
+    /**
+     * 功能开关批量同步（0x1E 414 "sync"）：连接级一次——引擎 SwitchManager 是
+     * 客户端全局，0x0C 切图后仍在，参考服同会话不重推（与 705 个性配置同口径）。
+     */
+    boolean switchSyncPushed;
     /** V4 外观偏好：ShowEquipType 存档（0=江湖装 1=身份装 2=时装；null=无存档，保持默认）。 */
     Integer showEquipTypePref;
     /** 二期 NPC：场景目录/活跃下标集/生命周期；lastPositionSave 是 2s 节流基准。 */
@@ -78,9 +83,22 @@ public final class LoginSession {
     /** View40 行号表（id → 行，CanUse 行帧寻址，授予时与 View40 行同序固化）。 */
     java.util.Map<String, Integer> skillRows = new java.util.HashMap<>();
     java.util.Random combatRandom = new java.util.Random();
+    /** 道具使用节流基准（msg31 useItemEffect 800ms 防连点；0=未使用过）。 */
+    long lastItemUseMs;
+    /** 240(2) 坐姿回执上次重推面板时刻（LoginFlow SITCROSS_RESYNC_GATE_MS 限频；坐/起迁移清零）。 */
+    volatile long lastSitcrossResyncMs;
 
     /**
-     * GM 运行时摆放（训练木桩/世界宝箱）：对象号 900000 起递增（目录 NPC 是
+     * 邮件域（RecvLetterRec 记录行服务端镜像）：letters 行序=客户端记录行序
+     * （变更走删行+尾插重推，服务端同步重排保持 1:1）；lettersGranted 为
+     * 场景代一次性下发标志（0x0C ExitScene 清挂接行，切图收尾复位重放）。
+     */
+    java.util.List<com.nineyin.server.game.avatar.mail.LetterStore.Letter> letters =
+            new java.util.ArrayList<>();
+    boolean lettersGranted;
+
+    /**
+     * GM 运行时摆放（训练木桩/世界宝箱/礼包商人）：对象号 900000 起递增（目录 NPC 是
      * 下标+2 的小号段，永不冲突）；切图随 world.begin 整体清空。
      */
     static final class GmSpawn {
@@ -88,16 +106,25 @@ public final class LoginSession {
         final NpcSpawn npc;
         /** true=世界宝箱（点击开箱拾取后消失）；false=训练木桩（战斗对象）。 */
         final boolean chest;
+        /** true=礼包测试商人（点击开 gm_giftbox 商店，可反复拉到身边）。 */
+        final boolean merchant;
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest) {
+            this(objectId, npc, chest, false);
+        }
+
+        GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant) {
             this.objectId = objectId;
             this.npc = npc;
             this.chest = chest;
+            this.merchant = merchant;
         }
     }
 
     java.util.Map<Integer, GmSpawn> gmSpawns = new java.util.LinkedHashMap<>();
     int nextGmObjectId = 900_000;
+    /** 礼包商人对象号（重复拉人时先摘旧再放新，身边至多一名）。 */
+    Integer giftMerchantObjectId;
 
     public LoginSession() {
     }

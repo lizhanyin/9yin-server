@@ -147,6 +147,18 @@ public class GmRemote {
             // 四期面板动作（LoginFlow.applyGmCommand 已实现，此前漏挂白名单——
             // 面板按钮一直被入口拒绝，补齐透传；数值域由游戏侧分支自校验）。
             case "set_power_level" -> nonNegative(params, "value");
+            // 基础五维（面板"五维属性"区块）：五参均可选（缺省/0=跳过该维），到位时 0..1e6。
+            case "set_five_attributes" -> {
+                String bad = null;
+                for (String key : new String[]{"attrStr", "attrSta", "attrDex", "attrIng", "attrSpi"}) {
+                    Integer value = params != null ? params.getInteger(key) : null;
+                    if (value != null && (value < 0 || value > 1_000_000)) {
+                        bad = key + " must be between 0 and 1000000";
+                        break;
+                    }
+                }
+                yield bad;
+            }
             case "set_alignment", "set_vitals", "cancel_title" -> null;
             case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
             // V2 装备外观挂载：物品发放（wearNow 可选 0/1；不可穿戴由游戏侧降级入背包）。
@@ -157,6 +169,16 @@ public class GmRemote {
                 }
                 yield intRange(params, "amount", 1, 9999);
             }
+            // 礼包与物品区块：系统邮件附件发送（send_test_mail 同参数域）+
+            // 礼包测试商人拉到身边（无参）。
+            case "send_test_mail" -> {
+                String configBad = nonEmpty(params, "itemConfig");
+                if (configBad != null) {
+                    yield configBad;
+                }
+                yield intRange(params, "amount", 1, 9999);
+            }
+            case "giftbox_merchant_here" -> null;
             // V3 风物志：卡牌挂载/卸下/全量收录（GM 网页直接驱动）。
             case "equip_card" -> intRange(params, "cardId", 1, Integer.MAX_VALUE);
             case "unequip_card", "grant_all_cards", "grant_all_fashion" -> null;

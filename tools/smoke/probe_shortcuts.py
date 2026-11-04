@@ -85,21 +85,31 @@ def find_del_rows(frames):
 
 
 def drag_out_and_restore(sock, rows):
-    """真机拖拽出栏验证：201(索引) 应回 0x12(行号=该索引所在行)；
-    重复 201 静默；200(索引,kind,id) 恢复应回 0x11。"""
+    """真机拖拽出栏验证（menu2 rebuildShortcutRecord 重建方言）：
+    201(索引) 应回 0x12 降序清空 [preCount-1..0] + 0x11 全量重推（少该索引一行）；
+    重复 201 静默；200(索引,kind,id) 恢复 = 清空 + 全量重推（多该行）。"""
     if not rows:
         print("SKIP drag-out probe (no shortcut rows)")
         return
     index, kind, sid = rows[0][0], rows[0][1], rows[0][2]
-    row_pos = next(i for i, c in enumerate(rows) if c[0] == index)
-    print("drag-out probe: index=%s kind=%s id=%s (row=%d)" % (index, kind, sid, row_pos))
+    pre_count = len(rows)
+    expect_dels = list(range(pre_count - 1, -1, -1))
+    expect_after_remove = [c for c in rows if c[0] != index]
+    print("drag-out probe: index=%s kind=%s id=%s (preCount=%d)"
+          % (index, kind, sid, pre_count))
 
     sock.sendall(encode_frame(custom([_SC.ci(201), _SC.ci(index)])))
-    frames = recv_frames(sock, 4, timeout=6, quiet=1.0)
+    frames = recv_frames(sock, max(8, pre_count * 2), timeout=8, quiet=2.0)
     dels = find_del_rows(frames)
-    ok = dels == [row_pos]
-    print("%s drag-out 201(%s) -> 0x12 rows=%s (expect [%d])"
-          % ("OK  " if ok else "FAIL", index, dels, row_pos))
+    added = [parse_record_row(f) for f in frames if op(f) == 0x11]
+    added = [p for p in added if p and p[0] == RECORD_SHORTCUT and p[1]]
+    ok = dels == expect_dels
+    ok2 = len(added) == len(expect_after_remove)
+    print("%s drag-out 201(%s) -> 0x12 rows=%s (expect %s..0)"
+          % ("OK  " if ok else "FAIL", index, dels[:3] + ['...'] if len(dels) > 3 else dels,
+             expect_dels[0]))
+    print("%s drag-out re-add rows=%d (expect %d)" % ("OK  " if ok2 else "FAIL", len(added), len(expect_after_remove)))
+    rows = expect_after_remove
 
     sock.sendall(encode_frame(custom([_SC.ci(201), _SC.ci(index)])))
     frames = recv_frames(sock, 2, timeout=4, quiet=1.0)
@@ -108,11 +118,13 @@ def drag_out_and_restore(sock, rows):
     print("%s repeat 201(%s) silent -> 0x12 rows=%s" % ("OK  " if ok else "FAIL", index, dels))
 
     sock.sendall(encode_frame(custom([_SC.ci(200), _SC.ci(index), cs(kind), cs(sid)])))
-    frames = recv_frames(sock, 4, timeout=6, quiet=1.0)
+    frames = recv_frames(sock, max(8, pre_count * 2), timeout=8, quiet=2.0)
     added = [parse_record_row(f) for f in frames if op(f) == 0x11]
     added = [p for p in added if p and p[0] == RECORD_SHORTCUT and p[1]]
-    ok = len(added) == 1 and added[0][1][0] == index and added[0][1][2] == sid
-    print("%s restore 200(%s) -> 0x11 %s" % ("OK  " if ok else "FAIL", index, added[:1]))
+    hit = [a for a in added if a[1][0] == index and a[1][2] == sid]
+    ok = len(added) == pre_count and len(hit) == 1
+    print("%s restore 200(%s) -> 0x11 rows=%d (expect %d, contains target=%s)"
+          % ("OK  " if ok else "FAIL", index, len(added), pre_count, bool(hit)))
 
 
 def main():

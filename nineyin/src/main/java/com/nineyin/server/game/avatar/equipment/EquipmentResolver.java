@@ -21,7 +21,7 @@ import java.util.Map;
  */
 public final class EquipmentResolver {
 
-    public record Models(String male, String female) {
+    public record Models(String male, String female, String actionSet) {
     }
 
     /** 套装四件 ArtPack（下标 0=主 ArtPack 1=Hat 2=Plants(裤) 3=Shoes）。 */
@@ -56,11 +56,16 @@ public final class EquipmentResolver {
         Map<String, Models> models = new HashMap<>();
         ResourceCache.ini(itemRoot.resolve("itemartstatic.ini"), StandardCharsets.ISO_8859_1,
                 (section, key, value) -> {
-                    Models current = models.getOrDefault(section, new Models("", ""));
-                    if (key.equals("MaleModel")) {
-                        models.put(section, new Models(value, current.female()));
-                    } else if (key.equals("FemaleModel")) {
-                        models.put(section, new Models(current.male(), value));
+                    Models current = models.getOrDefault(section, new Models("", "", ""));
+                    switch (key) {
+                        case "MaleModel" -> models.put(section,
+                                new Models(value, current.female(), current.actionSet()));
+                        case "FemaleModel" -> models.put(section,
+                                new Models(current.male(), value, current.actionSet()));
+                        case "ActionSet" -> models.put(section,
+                                new Models(current.male(), current.female(), value));
+                        default -> {
+                        }
                     }
                 });
         return new EquipmentResolver(packs, models);
@@ -109,6 +114,20 @@ public final class EquipmentResolver {
     /** 套装鞋部件模型（ShoesArtPack；无该件/-1/未知配置返回空串）。 */
     public String resolveShoes(String config, int sex) {
         return resolvePack(config, sex, Packs::shoes);
+    }
+
+    /** 武器动作组（itemartstatic [ArtPack].ActionSet，如 2h/7h；空=表未配置，调用方按 ItemType 回退）。 */
+    public String resolveActionSet(String config) {
+        if (config == null || config.isEmpty() || config.contains("\\")) {
+            return "";
+        }
+        Packs itemPacks = packs.get(config);
+        String art = itemPacks == null ? "" : itemPacks.cloth();
+        if (art.isEmpty() || art.equals("-1")) {
+            return "";
+        }
+        Models item = models.get(art);
+        return item == null ? "" : item.actionSet();
     }
 
     private String resolvePack(String config, int sex, java.util.function.Function<Packs, String> pick) {

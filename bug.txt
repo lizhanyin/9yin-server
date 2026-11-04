@@ -47,14 +47,16 @@ V3  修复怪打不死的BUG
 
 待验证
 
-打坐
+~~打坐~~（已完成 2026-11-04：打坐中出任意武法=先起立再出招——63296 实证客户端不发 240/2 本地打断，服务端受理即退坐并回 188 属性全量 vital（参考服 52905 抓包同款帧形）+ 出招面板 LogicState=0；240 链全量面板回复/重复 2 零帧已与参考服对拍一致。重启后真机验证）
 
 套路 武器限制
 快捷栏拖拽
 
 游戏有默认分类 “基础武学”  
 下有细分类 “三脚猫招式” 
-带有3个技能
+带有5个技能
+  剑普攻 （其它武器，拳脚普攻？根据选择的门派决定？）
+  飞刀普攻
   打坐调息
   自断经脉
   骑术精通
@@ -69,9 +71,12 @@ V3  修复怪打不死的BUG
 腾空 圈定范围的技能
 
 
+物品使用没有生效
+
+
 npc
 后续值得接 Lua 的交互点（按框架“纯函数 + Java 兜底”哲学）
-item/*.lua（框架已规划）：giveitem 发的 Box_qycdu_009 这类宝箱的使用效果——现在只入包，右键开启还没有效果层。
+~~item/*.lua（框架已规划）：giveitem 发的 Box_qycdu_009 这类宝箱的使用效果——现在只入包，右键开启还没有效果层。~~（已完成 2026-11-04：msg31 useItemEffect 五步链，Lua on_use 优先→ItemUseCatalog INI 回退→DropPacks 开包；CompensateItem 多 ref 全发简化；qy_chengdu_009/box_qycdu_009 MVP 包已 authored；已部署 9yin_server_new 待真机验证）
 对话条件判定：optiontalk 选项的 ConditionSet（如 9833/10596）和 IsKarma——目前统一日志放行，接 Lua 可做条件脚本决定置灰/隐藏。
 头顶气泡/杂谈：NpcTalkRule + custom 43 on_npc_talk、gossiptalk_* 表——彩蛋对话适合脚本化。
 若真机验证后切 custom 4..8 路由，菜单组装（mark→动作映射）可下沉到 scripts/npc/<id>.lua，Java 只留路由壳。

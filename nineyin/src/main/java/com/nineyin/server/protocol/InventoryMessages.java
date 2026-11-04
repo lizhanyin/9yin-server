@@ -145,7 +145,7 @@ public final class InventoryMessages {
         return (int) Math.max(hours, 0);
     }
 
-    /** 登录背包/纸娃娃整推（bak inventoryFrames 序）：纸娃娃行 → 背包成对行 → WeaponMode。 */
+    /** 登录背包/纸娃娃整推（bak inventoryFrames 序）：纸娃娃行 → 背包成对行 → 武器外观。 */
     public static List<byte[]> inventoryFrames(long roleId, int sex,
                                                List<RoleInventoryStore.Equip> equips,
                                                List<RoleInventoryStore.BagItem> items,
@@ -165,27 +165,82 @@ public final class InventoryMessages {
             frames.add(bagViewAdd(roleId, item, resolver));
             frames.add(SceneMessages.viewRemove(mirror, item.slot()));
         }
-        String weaponMode = weaponModeOf(sex, equips, resolver);
-        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
-        Props.add(properties, "WeaponMode", PropertyValues.Value.ofString(weaponMode));
-        frames.add(SceneMessages.objectProperties(SceneMessages.PLAYER_OBJECT_ID,
-                SceneMessages.PLAYER_OWNER_ID, 0, properties));
+        WeaponVisual weapon = weaponVisualOf(sex, equips, resolver);
+        if (weapon.armed()) {
+            List<PropertyValues.Indexed> properties = new ArrayList<>(3);
+            Props.add(properties, "Weapon", PropertyValues.Value.ofString(weapon.weapon()));
+            Props.add(properties, "ShotWeapon", PropertyValues.Value.ofString(weapon.shotWeapon()));
+            Props.add(properties, "ActionSet", PropertyValues.Value.ofString(weapon.actionSet()));
+            frames.add(SceneMessages.objectProperties(SceneMessages.PLAYER_OBJECT_ID,
+                    SceneMessages.PLAYER_OWNER_ID, 0, properties));
+        }
         return frames;
     }
 
-    /** 已装备武器（Weapon/ShotWeapon/InnerWeapon 优先级取首个）的模型路径；空手=""。 */
-    public static String weaponModeOf(int sex, List<RoleInventoryStore.Equip> equips,
-                                      EquipmentResolver resolver) {
+    /**
+     * 武器外观三属性（玩家属性 Weapon/ShotWeapon/ActionSet）。官服真机 0x10 帧实证
+     * （capture-fxgame-op：Weapon="gun_017"/ActionSet="7h"/收武器推空串）：引擎按
+     * Weapon 裸模型名挂 obj\weapon\<名>\<名>.xmod，ActionSet 驱动持械动画组。
+     *
+     * <ul>
+     *   <li>weapon：主手（Weapon/InnerWeapon 首件）模型名；空手 = ""。</li>
+     *   <li>shotWeapon：副手（ShotWeapon 首件，弓/箭匣类）模型名；无 = ""。</li>
+     *   <li>actionSet：itemartstatic [ArtPack].ActionSet（如 2h）优先，表缺配置回退
+     *       ItemType-100+"h"（数据面实证 101→1h..108→8h；主手优先于副手）。</li>
+     * </ul>
+     */
+    public record WeaponVisual(String weapon, String shotWeapon, String actionSet) {
+        public boolean armed() {
+            return !weapon.isEmpty() || !shotWeapon.isEmpty();
+        }
+
+        public static WeaponVisual EMPTY = new WeaponVisual("", "", "");
+    }
+
+    /** 已穿武器 → Weapon/ShotWeapon 模型名 + ActionSet（空手全空串）。 */
+    public static WeaponVisual weaponVisualOf(int sex, List<RoleInventoryStore.Equip> equips,
+                                              EquipmentResolver resolver) {
+        String weaponConfig = null;
+        int weaponItemType = 0;
+        String shotConfig = null;
+        int shotItemType = 0;
         for (RoleInventoryStore.Equip equip : equips) {
             String type = equip.equipType() == null ? "" : equip.equipType();
-            if (type.equals("Weapon") || type.equals("ShotWeapon") || type.equals("InnerWeapon")) {
-                String config = equip.artPack() > 0
-                        ? resolver.resolve(equip.configId(), sex)
-                        : resolver.resolve(equip.configId(), sex);
-                return config == null ? "" : config;
+            if (type.equals("Weapon") || type.equals("InnerWeapon")) {
+                if (weaponConfig == null) {
+                    weaponConfig = equip.configId();
+                    weaponItemType = equip.itemType();
+                }
+            } else if (type.equals("ShotWeapon")) {
+                if (shotConfig == null) {
+                    shotConfig = equip.configId();
+                    shotItemType = equip.itemType();
+                }
             }
         }
-        return "";
+        String weapon = weaponConfig == null ? "" : orEmpty(resolver.resolve(weaponConfig, sex));
+        String shot = shotConfig == null ? "" : orEmpty(resolver.resolve(shotConfig, sex));
+        String actionSet = actionSetFor(weaponConfig, weaponItemType, resolver);
+        if (actionSet.isEmpty()) {
+            actionSet = actionSetFor(shotConfig, shotItemType, resolver);
+        }
+        return new WeaponVisual(weapon, shot, actionSet);
+    }
+
+    private static String orEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    /** ActionSet：表值优先；表缺（Weapon 101-108/ShotWeapon 110-117 无表值）回退 ItemType-100+"h"。 */
+    private static String actionSetFor(String config, int itemType, EquipmentResolver resolver) {
+        if (config == null) {
+            return "";
+        }
+        String fromTable = resolver.resolveActionSet(config);
+        if (!fromTable.isEmpty()) {
+            return fromTable;
+        }
+        return itemType >= 101 && itemType <= 108 ? (itemType - 100) + "h" : "";
     }
 
     /** View1 纸娃娃行（index=身体槽位）：ConfigID/数量/类型/EquipType(真值)/耐久/精炼/UniqueID/Photo。 */

@@ -391,6 +391,93 @@ class FacultyProgressTest {
     }
 
     @Test
+    void baseFiveAttributesRoundTripAndLegacySnapshotKeepsSeeds() {
+        try (Env env = new Env()) {
+            PlayerProgress progress = env.player.progress();
+            // GM 覆盖式：null/0/负值跳过该维（面板契约"留空或 0 不修改"）。
+            int[] current = progress.setBaseAttributes(666, 0, 128, null, -5);
+            assertEquals(666, current[0]);
+            assertEquals(30, current[1], "0 跳过体魄");
+            assertEquals(128, current[2]);
+            assertEquals(30, current[3], "null 跳过内息");
+            assertEquals(30, current[4], "负值跳过罡气");
+            assertEquals(711, intProp(progress, "Str"), "0x10 域 Str=基值666+ng_wd_001书45");
+            assertEquals(141, intProp(progress, "Dex"), "0x10 域 Dex=基值128+书13");
+            // 快照 → restore 回环：五维随 faculty 档存活（重登不丢 GM 改动）。
+            PlayerProgress.Snapshot snapshot = env.player.facultySnapshot();
+            assertEquals(666, snapshot.baseStr());
+            assertEquals(128, snapshot.baseDex());
+            env.player.restoreFaculty(snapshot, NOW);
+            assertEquals(711, intProp(progress, "Str"));
+            assertEquals(141, intProp(progress, "Dex"));
+            // 旧契约快照（无五维层）：缺省 0 不覆盖 GM 现值（书层随档切到 ng_yh_001：臂55/身70）。
+            PlayerProgress.Snapshot legacy = new PlayerProgress.Snapshot(
+                    "ng_yh_001", 1000, PlayerProgress.FACULTY_STATE_NONE, PlayerProgress.FACULTY_STYLE_NORMAL,
+                    "ng_yh_001", 0, NOW, List.of());
+            env.player.restoreFaculty(legacy, NOW);
+            assertEquals(721, intProp(progress, "Str"), "旧档缺省不动基值，书层换 ng_yh_001(+55)");
+            assertEquals(198, intProp(progress, "Dex"));
+        }
+    }
+
+    @Test
+    void vitalsRideSnapshotRoundTripAndLegacyKeepsZeroSeeds() {
+        try (Env env = new Env()) {
+            // GM set_vitals 域：体力/饱食/杀戮/酒量七字段随 faculty 快照携行。
+            var panel = env.player.panel();
+            panel.ene = 88;
+            panel.maxEne = 120;
+            panel.resumeEne = 2;
+            panel.sat = 66;
+            panel.maxSat = 100;
+            panel.pkValue = 9;
+            panel.drunkLevel = 4;
+            PlayerProgress.Snapshot snapshot = env.player.facultySnapshot();
+            assertEquals(88, snapshot.vitals().ene());
+            assertEquals(120, snapshot.vitals().maxEne());
+            assertEquals(9, snapshot.vitals().pkValue());
+            assertEquals(4, snapshot.vitals().drunkLevel());
+            // 归零后 restore 回填（重登语义）。
+            panel.ene = 0;
+            panel.maxEne = 0;
+            panel.sat = 0;
+            panel.pkValue = 0;
+            panel.drunkLevel = 0;
+            env.player.restoreFaculty(snapshot, NOW);
+            assertEquals(88, panel.ene);
+            assertEquals(120, panel.maxEne);
+            assertEquals(66, panel.sat);
+            assertEquals(9, panel.pkValue);
+            assertEquals(4, panel.drunkLevel);
+            // 旧契约快照（无 vitals 层）：null 不动 PanelState 现值。
+            PlayerProgress.Snapshot legacy = new PlayerProgress.Snapshot(
+                    "ng_yh_001", 1000, PlayerProgress.FACULTY_STATE_NONE, PlayerProgress.FACULTY_STYLE_NORMAL,
+                    "ng_yh_001", 0, NOW, List.of());
+            env.player.restoreFaculty(legacy, NOW);
+            assertEquals(88, panel.ene, "旧档 vitals 缺省不动 PanelState");
+        }
+    }
+
+    @Test
+    void vitalsSurviveFacultyStoreJsonRoundTrip(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws java.io.IOException {
+        java.nio.file.Path file = dir.resolve("faculty.json");
+        PlayerProgress.Vitals saved = new PlayerProgress.Vitals(80, 100, 1, 55, 100, 7, 3);
+        try (Env env = new Env()) {
+            PlayerProgress.Snapshot snapshot = env.player.facultySnapshot().withVitals(saved);
+            FacultyStore.open(file).save(42L, snapshot);
+        }
+        PlayerProgress.Vitals loaded = FacultyStore.open(file).load(42L).vitals();
+        assertEquals(80, loaded.ene());
+        assertEquals(100, loaded.maxEne());
+        assertEquals(1, loaded.resumeEne());
+        assertEquals(55, loaded.sat());
+        assertEquals(100, loaded.maxSat());
+        assertEquals(7, loaded.pkValue());
+        assertEquals(3, loaded.drunkLevel());
+    }
+
+    @Test
     void norFacultyAddFollowsBaseAndKeepsBaseInActStyle() {
         try (Env env = new Env()) {
             PlayerProgress progress = env.player.progress();

@@ -30,6 +30,24 @@ public final class CustomC2S {
             this.text = text;
         }
 
+        /** 合成消息用工厂（冲锋落地续招 212 → 重组 211 值列表；tag 语义同 TVarList）。 */
+        public static Value ofInt(int value) {
+            return new Value(2, value, 0, 0, 0, null);
+        }
+
+        public static Value ofText(String value) {
+            return new Value(6, 0, 0, 0, 0, value);
+        }
+
+        public static Value ofFloat(float value) {
+            return new Value(4, 0, 0, value, 0, null);
+        }
+
+        /** tag8 对象（objId | owner<<32，与 211 长格式 idx10 同构）。 */
+        public static Value ofObject(int objectId, int ownerId) {
+            return new Value(8, 0, (objectId & 0xFFFFFFFFL) | ((long) ownerId << 32), 0, 0, null);
+        }
+
         /** Go exactInt32：整值 int32/int64/float32/float64 皆可，越界/非整抛错。 */
         public int exactInt32() {
             double value = switch (tag) {
@@ -56,6 +74,11 @@ public final class CustomC2S {
 
         Message(List<Value> values) {
             this.values = values;
+        }
+
+        /** 合成消息工厂（测试/落地续招重组 211 用）。 */
+        public static Message of(List<Value> values) {
+            return new Message(values);
         }
 
         public int messageId() {

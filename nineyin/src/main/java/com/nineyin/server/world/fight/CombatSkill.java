@@ -27,6 +27,10 @@ import java.util.List;
  * @param canRush         skill_static.CanRush（冲锋招：射程闸放宽到 rushRangeM）
  * @param rushRangeM      skill_static.RushRange（冲锋射程米；0=无值）
  * @param isDamage        skill_static.IsDamage（自增益招=false：msg20 动作目标=自己）
+ * @param targetType      skill_static.TargetType（4=单体目标型——msg20 带目标对象的判据之一）
+ * @param damageType      skill_static.DamageType（0=无属性伤害；chz03=TT4+DT0 仍空目标的反例钉死项）
+ * @param levelupRelevance skill_static.LevelupRelevance（wuji_* 前缀=武技连击族，出招链有 169/连击段）
+ * @param packCategory    skill_new.PackCategory（2=怒招；wuji_* + 怒招才发武技连击段）
  * @param actionName      zhaoshi 时间线首段动作名（当前仅用于总时长；S2C 动作走 msg20）
  * @param actionDurationMs 首段动作时长（endFrame/30fps）
  * @param followups       后续动作段（编译保留；抓包显示 F exe 不下发 followup State 帧）
@@ -45,6 +49,7 @@ public record CombatSkill(
         int baseDamage, int damageWaves,
         TargetMode targetMode, float areaRadius, float areaHeight, float sectorAngle, float areaWidth,
         boolean canRush, float rushRangeM, boolean isDamage,
+        int targetType, int damageType, String levelupRelevance, int packCategory,
         String actionName, long actionDurationMs, List<ActionSegment> followups,
         List<Long> hitFrameMs,
         List<Effect> effects,
@@ -117,12 +122,31 @@ public record CombatSkill(
     }
 
     /**
-     * 锁定技（SkillLock 脚本，含全部 CanRush 冲锋招）：msg20 动作帧携带目标对象，
-     * 客户端据此本地执行冲锋/锁定位移（官服抓包 57378/52795：jysg03/yqq02/shl03/
-     * gxfhj02/05 msg20 第三参=211 目标对象；服务端全程不下发玩家位移帧）。
+     * 锁定技：msg20 动作帧携带目标对象，客户端据此本地执行冲锋/锁定位移
+     * （服务端全程不下发玩家位移帧）。判据（2026-11-04 双抓包对拍钉死，
+     * docs/combat-traffic-compare.md §D3）：script=SkillLock ∨ CanRush=1 ∨
+     * (TargetType==4 ∧ DamageType≠0)——第三支覆盖 myjf01/04/08（SkillNormal+
+     * CanRush=0+TT4，参考服 wire 判 SkillLock 且 msg20 带 aim）；chz03=TT4+DT0
+     * 仍空目标（§13 反例保护），故 DT=0 不入锁。
      */
     public boolean lockSkill() {
-        return "skilllock".equalsIgnoreCase(script) || canRush;
+        return "skilllock".equalsIgnoreCase(script) || canRush
+                || (targetType == 4 && damageType != 0);
+    }
+
+    /** msg24 飘字 script 标签：锁定族一律 "SkillLock"（参考服对 TT4 重分类同样改标签）。 */
+    public String scriptLabel() {
+        return lockSkill() ? "SkillLock" : script;
+    }
+
+    /** 武技族（LevelupRelevance=wuji_*）：出招链带 169 buff 段（如 myjf03 的 _01 移除）。 */
+    public boolean wujiRelevance() {
+        return levelupRelevance != null && levelupRelevance.toLowerCase().startsWith("wuji_");
+    }
+
+    /** 武技连击段（wuji_* + PackCategory=2 怒招）：每跳后发 c1=71 连击飘字 + NPC debuff 169。 */
+    public boolean wujiCombo() {
+        return wujiRelevance() && packCategory == 2;
     }
 
     /** 伤害倍率（formula.lua 的 ratio；<=0 由公式按 1.0 处理）。 */

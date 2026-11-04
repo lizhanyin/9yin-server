@@ -16,6 +16,8 @@ import com.nineyin.server.game.avatar.skin.SkinMessages;
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
 import com.nineyin.server.game.avatar.equipment.ToolItemCatalog;
 import com.nineyin.server.game.avatar.equipment.RecastCatalog;
+import com.nineyin.server.game.item.DropPacks;
+import com.nineyin.server.game.item.ItemUseCatalog;
 import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.world.fight.SkillCastHandler;
@@ -58,6 +60,7 @@ import com.nineyin.server.db.role.RoleStoreFacade;
 import com.nineyin.server.db.role.Roles;
 import com.nineyin.server.session.SessionException;
 import com.nineyin.server.session.SessionMachine;
+import com.nineyin.server.script.LuaScriptService;
 import com.nineyin.server.transport.Connection;
 
 /**
@@ -69,6 +72,9 @@ import com.nineyin.server.transport.Connection;
 public final class LoginFlow {
 
     private static final Logger log = LoggerFactory.getLogger(LoginFlow.class);
+
+    /** 240(2) 坐姿回执的重推闸：迁移后首条立即重推，之后 2s 内静默保坐（防重入动画风暴）。 */
+    private static final long SITCROSS_RESYNC_GATE_MS = 2_000L;
 
     static final int STARTER_SILVER = 99999;
     /** 选人界面实力档位种子（一期无实力持久化，固定 151=title027 返璞归真）。 */
@@ -84,6 +90,8 @@ public final class LoginFlow {
     static final int SHOP_VIEW_CAPACITY = 100;
     /** View61 每页商品行数（F 服抓包 PageNum=10；shopconfig.ini 的 500 是另一口径）。 */
     static final int SHOP_ROWS_PER_PAGE = 10;
+    /** 礼包测试商人货架节（合成节，shop.ini 之外；商品=真正可开的礼包，免费领）。 */
+    static final String GIFT_SHOP_ID = "gm_giftbox";
     /** View61 协商属性号（§4.2 追加表 101-111）。 */
     static final int PROP_SHOP_ID = 101;
     static final int PROP_PAGE_NUM = 102;
@@ -112,6 +120,10 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.task.TaskStore taskStore =
             com.nineyin.server.game.avatar.task.TaskStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "tasks.json"));
+    /** 邮件存档（data/letters.json 主档；DB 经 {@link #attachLetterDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.mail.LetterStore letterStore =
+            com.nineyin.server.game.avatar.mail.LetterStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "letters.json"));
     /** 个性配置存档（data/customizing.json 主档；DB 经 {@link #attachCustomizingDatabase} 可选挂接）。 */
     private final com.nineyin.server.game.avatar.customizing.CustomizingStore customizingStore =
             com.nineyin.server.game.avatar.customizing.CustomizingStore.open(
@@ -134,6 +146,8 @@ public final class LoginFlow {
     private final PanelDataStore panelStore;
     /** 在线会话注册表（选角入世界 attachGmSnapshot 时登记）：优雅停机逐会话落盘依据。 */
     private final java.util.Set<LoginSession> activeSessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 礼包商人合成货架（懒构建；资源目录 reload_scripts 后进程内复用）。 */
+    private volatile ShopCatalog.ShopSection giftShopSection;
 
     public LoginFlow(RoleStoreFacade roleStore, FacultyStore facultyStore, GmHub gmHub, Clock clock,
                      SceneNpcRegistry npcRegistry, ScheduledExecutorService scheduler) {
@@ -176,6 +190,16 @@ public final class LoginFlow {
             log.info("task store attached to MySQL role_tasks");
         } catch (RuntimeException e) {
             log.warn("task store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
+    /** 邮件存档 DB 双源挂接（role_letters 快照；失败仅告警，JSON 仍为主档）。 */
+    public void attachLetterDatabase(String dsn) {
+        try {
+            letterStore.attachDatabase(dsn);
+            log.info("letter store attached to MySQL role_letters");
+        } catch (RuntimeException e) {
+            log.warn("letter store MySQL unavailable, JSON only: {}", e.getMessage());
         }
     }
 
@@ -443,6 +467,12 @@ public final class LoginFlow {
                 log.warn("seed task store: {}", e.getMessage());
             }
         }
+        // 邮件存档（RecvLetterRec 行镜像；无档=空邮箱不落种子档，首次发信才建）。
+        var savedLetters = letterStore.load(session.selected.id());
+        session.letters.clear();
+        if (savedLetters != null) {
+            session.letters.addAll(savedLetters);
+        }
 
         connection.writeFrame(SceneMessages.propertyTableFrame());
         connection.writeFrame(SceneMessages.recordTableFrame());
@@ -459,6 +489,7 @@ public final class LoginFlow {
         session.world = new SceneLifecycle(connection, scheduler);
         session.world.begin(location.scene().config(), location.scene().resource());
         session.gmSpawns.clear();
+        session.giftMerchantObjectId = null;
         // 战斗一期：战斗态随场景世代重建（NPC 每连接物化，血量/威胁从零开始）。
         session.fight = new com.nineyin.server.world.fight.FightState();
         connection.writeFrame(SceneMessages.entryScene(location.scene()));
@@ -471,7 +502,8 @@ public final class LoginFlow {
         applyEquipBonuses(session, equips);
         loadPanelData(session);
         connection.writeFrame(session.player.addObject(location.position(), session.visual,
-                new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session))));
+                new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session)),
+                weaponVisual(session, equips)));
         connection.writeFrame(SceneMessages.serverLocation(
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, location.position()));
         connection.writeFrame(session.player.vitalUpdate());
@@ -604,6 +636,14 @@ public final class LoginFlow {
         }
     }
 
+    /** 已穿武器 → Weapon/ShotWeapon/ActionSet 三属性（addObject 归档与 0x10 推送共用）。 */
+    private InventoryMessages.WeaponVisual weaponVisual(LoginSession session,
+                                                        List<RoleInventoryStore.Equip> equips) {
+        return InventoryMessages.weaponVisualOf(
+                session.visual == null ? 0 : session.visual.sex(), equips,
+                EquipmentResolver.loadDefault());
+    }
+
     /** 装备词缀（propBuilt）+ 武器特效（EffectPackID）整层重算并同步有效上限（幂等）。 */
     private void applyEquipBonuses(LoginSession session, List<RoleInventoryStore.Equip> equips) {
         if (session.player == null) {
@@ -688,8 +728,10 @@ public final class LoginFlow {
                 com.nineyin.server.world.fight.QingGongHandler.glideTick(connection, session.player);
                 com.nineyin.server.world.fight.QingGongHandler.driftTick(connection, session.player);
                 // 打坐回复（Go sitcrossTick：10s 回满 HP/MP，HPUpSpeed/MPHeartSpeed 同源展示）。
+                // 回帧走 6 值瘦帧（参考 52905 #5455）：坐姿中重发全量 LogicState 面板会
+                // 让客户端重入坐姿动画（2026-11-05 打坐动画不落定根因）。
                 if (session.player.sitcrossTick()) {
-                    connection.writeFrame(session.player.vitalUpdate());
+                    connection.writeFrame(session.player.sitcrossVitalFrame());
                     log.info("session={} settled sitcross HP={}/{} MP={}/{}",
                             session.machine.id(),
                             session.player.actorState().hp(), session.player.actorState().maxHp(),
@@ -763,6 +805,8 @@ public final class LoginFlow {
             case "set_power_level" -> applyPowerLevel(connection, session, command);
             case "set_alignment" -> applyAlignment(connection, session, command);
             case "set_vitals" -> applyVitals(connection, session, command);
+            // 基础五维覆盖式（0/缺省跳过该维）：0x10 全量随帧 + faculty 快照落库。
+            case "set_five_attributes" -> applyFiveAttributes(connection, session, command);
             case "wear_title" -> applyWearTitle(connection, session, command, true);
             case "cancel_title" -> applyWearTitle(connection, session, command, false);
             // 经脉：每日真气硬闸（是否开启 + 每日阈值，角色级持久化）。
@@ -807,6 +851,8 @@ public final class LoginFlow {
             // 场景生成：训练木桩（AttackNpc 木桩模板克隆，血量自定义）+ 世界宝箱（点击开箱拾取）。
             case "spawn_dummy" -> applySpawnDummy(connection, session, command);
             case "spawn_chest" -> applySpawnChest(connection, session, command);
+            case "giftbox_merchant_here" -> applyGiftboxMerchantHere(connection, session, command);
+            case "send_test_mail" -> applySendTestMail(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -898,6 +944,7 @@ public final class LoginFlow {
         session.fight = new com.nineyin.server.world.fight.FightState();
         session.activeNpcs.clear();
         session.gmSpawns.clear();
+        session.giftMerchantObjectId = null;
         try {
             NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
                     session.activeNpcs, destination.position(), NPC_RADIUS);
@@ -913,7 +960,8 @@ public final class LoginFlow {
             try {
                 connection.writeFrame(SceneMessages.entryScene(target.scene()));
                 connection.writeFrame(session.player.addObject(target.position(), session.visual,
-                        new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session))));
+                        new PlayerActor.KeybindArchive(loadKeybind(session), loadOperateMode(session)),
+                        weaponVisual(session, loadEquips(session))));
                 session.reentryFramesSent = true;
             } catch (RuntimeException e) {
                 log.warn("session={} write scene re-entry frames: {}",
@@ -1235,6 +1283,9 @@ public final class LoginFlow {
     /** 世界宝箱模板（worldnpc/monsternpc_commonnpc.txt「特殊财宝箱」，CommonNpc → 可点击）。 */
     private static final String CHEST_TABLE = "worldnpc/monsternpc_commonnpc.txt";
     private static final String CHEST_TEMPLATE = "stormbox_10";
+    /** 礼包测试商人模板（同表「难民-江湖郎中」，人形 CommonNpc → 可点击开 gm_giftbox 商店）。 */
+    private static final String MERCHANT_TABLE = "worldnpc/monsternpc_commonnpc.txt";
+    private static final String MERCHANT_TEMPLATE = "citywar03_npc_010";
     /** GM 摆放对象号基（目录 NPC = 下标+2 的小号段；900000+ 永不冲突）。 */
     private static final int GM_OBJECT_ID_BASE = 900_000;
     /** 生成点距玩家距离（身前 2.5 米，朝向按 0x26 motion 的 orient）。 */
@@ -1313,10 +1364,70 @@ public final class LoginFlow {
 
     /** 注册 GM 摆放并返回对象号（0x0D+0x1F 由随后的 reconcileViewport 物化）。 */
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest) {
+        return registerGmSpawn(session, npc, chest, false);
+    }
+
+    private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest, boolean merchant) {
         int objectId = session.nextGmObjectId++;
         session.world.registerNpc(objectId, npc);
-        session.gmSpawns.put(objectId, new LoginSession.GmSpawn(objectId, npc, chest));
+        session.gmSpawns.put(objectId, new LoginSession.GmSpawn(objectId, npc, chest, merchant));
         return objectId;
+    }
+
+    /**
+     * 礼包测试商人（giftbox_merchant_here）：人形 CommonNpc 克隆拉到玩家身前；
+     * 点击（0x07）直达 gm_giftbox 商店（真正可开的礼包货架，免费领）。重复
+     * 拉人先摘旧商人再放新（身边至多一名）；切图随 world.begin 清空同宝箱口径。
+     */
+    private void applyGiftboxMerchantHere(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        int goods = shopSection(GIFT_SHOP_ID) != null
+                ? shopSection(GIFT_SHOP_ID).goods().size() : 0;
+        if (goods == 0) {
+            command.fail("礼包货架为空（drops_mvp.json 缺失或无可开礼包）");
+            return;
+        }
+        if (session.giftMerchantObjectId != null) {
+            removeGmSpawn(session, session.giftMerchantObjectId);
+        }
+        float[] at = gmSpawnPosition(session);
+        NpcSpawn merchant;
+        try {
+            merchant = com.nineyin.server.world.npc.GmNpcFactory.spawnFromTemplate(
+                    MERCHANT_TABLE, MERCHANT_TEMPLATE, at[0], at[1], at[2], at[3],
+                    Map.of("Name", "礼包测试商人"));
+        } catch (IOException e) {
+            command.fail("商人模板加载失败: " + e.getMessage());
+            return;
+        }
+        int objectId;
+        try {
+            objectId = registerGmSpawn(session, merchant, false, true);
+        } catch (RuntimeException e) {
+            command.fail("商人注册失败: " + e.getMessage());
+            return;
+        }
+        session.giftMerchantObjectId = objectId;
+        session.world.reconcileViewport();
+        String message = "礼包测试商人已拉到身前（对象 " + objectId + "，货架 " + goods + " 件），点击打开";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM gift merchant {} at ({},{},{}) goods={}",
+                session.machine.id(), objectId, at[0], at[1], at[2], goods);
+    }
+
+    /** 摘除 GM 摆放（unregister + gmSpawns 移除 + reconcile → 0x0E 消失）。 */
+    private void removeGmSpawn(LoginSession session, int objectId) {
+        session.gmSpawns.remove(objectId);
+        if (session.giftMerchantObjectId != null
+                && session.giftMerchantObjectId == objectId) {
+            session.giftMerchantObjectId = null;
+        }
+        session.world.unregister(objectId);
+        session.world.reconcileViewport();
     }
 
     /** 生成点：玩家当前位置（motion 实时位优先）+ 朝向前方 GM_SPAWN_AHEAD 米。 */
@@ -1749,7 +1860,8 @@ public final class LoginFlow {
                 panel.justice, panel.evil, panel.freeBase);
     }
 
-    /** menu2 setVitals：体力/饱食/杀戮/酒量族（均可选；本服表无 maxEneAdd/maxSatAdd 忽略）。 */
+    /** menu2 setVitals：体力/饱食/杀戮/酒量族（均可选；本服表无 maxEneAdd/maxSatAdd 忽略）。
+     * 改值即 0x10 推面板并随 role_faculty 快照落库（嵌套 vitals 节，重登回填）。 */
     private void applyVitals(Connection connection, LoginSession session, GmCommand command) {
         PanelState panel = session.player.panel();
         List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(7);
@@ -1765,12 +1877,50 @@ public final class LoginFlow {
             return;
         }
         pushPanelProperties(connection, properties);
-        command.succeed("生存属性已更新 " + properties.size() + " 项");
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT,
+                "体力 %d/%d 饱食 %d/%d 杀戮 %d 酒量 %d 已更新并落库",
+                panel.ene, panel.maxEne, panel.sat, panel.maxSat, panel.pkValue, panel.drunkLevel);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
         log.info("session={} GM set_vitals {} items", session.machine.id(), properties.size());
     }
 
     private interface VitalSetter {
         void set(int value);
+    }
+
+    /**
+     * GM set_five_attributes：基础五维（臂力/体魄/身法/内息/罡气）覆盖式写入，0/缺省跳过该维。
+     * Str/Sta/Dex/Ing/Spi 与 HP/MP 换算族（7×体魄+2×臂力、4×内息+罡气）均由基值派生，
+     * 改值 → 0x10 全量 → faculty 快照落库。
+     */
+    private void applyFiveAttributes(Connection connection, LoginSession session, GmCommand command) {
+        Integer str = command.intParam("attrStr");
+        Integer sta = command.intParam("attrSta");
+        Integer dex = command.intParam("attrDex");
+        Integer ing = command.intParam("attrIng");
+        Integer spi = command.intParam("attrSpi");
+        int provided = 0;
+        for (Integer value : new Integer[]{str, sta, dex, ing, spi}) {
+            if (value != null && value > 0) {
+                provided++;
+            }
+        }
+        if (provided == 0) {
+            command.fail("五维均未提供（attrStr/attrSta/attrDex/attrIng/attrSpi，0=不修改）");
+            return;
+        }
+        int[] current = session.player.progress().setBaseAttributes(str, sta, dex, ing, spi);
+        connection.writeFrame(session.player.vitalUpdate());
+        persistFaculty(session);
+        String action = String.format(java.util.Locale.ROOT,
+                "五维已更新：臂力 %d 体魄 %d 身法 %d 内息 %d 罡气 %d（改 %d 维）",
+                current[0], current[1], current[2], current[3], current[4], provided);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_five_attributes -> str={} sta={} dex={} ing={} spi={}",
+                session.machine.id(), current[0], current[1], current[2], current[3], current[4]);
     }
 
     private static void applyVital(List<PropertyValues.Indexed> properties, GmCommand command,
@@ -1838,7 +1988,9 @@ public final class LoginFlow {
     /**
      * grant_item/add_item：发放物品。wearNow=1 且 EquipType 可穿戴 → 写
      * role_equip_items + 纸娃娃行（时装/身份装镜像新面板 40-43）+ 外观 0x10 +
-     * 词缀重算 + vital；否则入背包（role_bag_items + 成对 0x19/0x18 帧）。
+     * 词缀重算 + vital；目标槽被占时旧装备让位回背包（swapEquipSlot，同
+     * wearFromBag 语义，不再覆盖丢失），双槽饰品（耳环/戒指）优先第二空槽；
+     * 否则入背包（role_bag_items + 成对 0x19/0x18 帧）。
      */
     private void applyGrantItem(Connection connection, LoginSession session, GmCommand command) {
         if (session.selected == null) {
@@ -1861,12 +2013,35 @@ public final class LoginFlow {
             command.fail("物品不存在: " + configId + "（equipment.ini/tool_item.ini 均未命中）");
             return;
         }
-        int slot = AppearanceSync.slotOfEquipType(info.equipType());
-        if (wearNow && slot == 0) {
-            wearNow = false; // 不可穿戴（道具/饰品）降级入背包
-        }
         long roleId = session.selected.id();
+        List<RoleInventoryStore.Equip> equips = wearNow ? loadEquips(session) : List.of();
+        // 双槽饰品（耳环 11/12、戒指 14/15）优先空槽，全占用替换首槽（wearFromBag 同语义）。
+        int slot = AppearanceSync.equipSlotFor(info.equipType(), equips);
+        if (wearNow && slot == 0) {
+            wearNow = false; // 不可穿戴（道具/材料）降级入背包
+        }
         if (wearNow) {
+            // 目标槽被占 → 旧装备让位回背包（wearFromBag 同款回收），不再覆盖丢失。
+            RoleInventoryStore.Equip old = equipAt(equips, slot);
+            int oldSlot = 0;
+            if (old != null) {
+                List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+                oldSlot = freeBagSlot(bagItems == null ? List.of() : bagItems, 2);
+                if (oldSlot <= 0) {
+                    command.fail("背包已满，无法回收槽位 " + slot + " 上的旧装备 "
+                            + old.configId() + "；请先清理装备背包");
+                    return;
+                }
+                try {
+                    if (!inventoryStore.swapEquipSlot(roleId, slot, oldSlot)) {
+                        command.fail("旧装备让位落库失败（详见服务端日志）");
+                        return;
+                    }
+                } catch (RuntimeException e) {
+                    command.fail("旧装备让位落库失败: " + e.getMessage());
+                    return;
+                }
+            }
             RoleInventoryStore.Equip equip = new RoleInventoryStore.Equip(
                     info.configId(), info.itemType(), info.equipType(), slot,
                     100, 100, info.artPack(), "");
@@ -1876,13 +2051,21 @@ public final class LoginFlow {
                 command.fail("穿戴落库失败: " + e.getMessage());
                 return;
             }
+            if (old != null) {
+                RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
+                        oldSlot, old.configId(), old.itemType(), 1, 2, "",
+                        old.equipType(), 0, "", null, null, old.artPack(),
+                        old.hardiness(), old.maxHardiness());
+                pushBagItemFrames(connection, session, landed);
+            }
             pushWearFrames(connection, session, equip);
             command.succeed("已穿戴 " + (info.name().isEmpty() ? info.configId() : info.name())
-                    + "（" + info.configId() + "，槽位 " + slot + "）外观已同步");
+                    + "（" + info.configId() + "，槽位 " + slot + "）外观已同步"
+                    + (old == null ? "" : "；旧装备 " + old.configId() + " 已回收至背包第 " + oldSlot + " 格"));
         } else {
             Integer bagSlot = grantBagItem(connection, session, info, amount);
             if (bagSlot == null) {
-                command.fail("入包失败（物品 DB 写入异常，详见服务端日志）");
+                command.fail("入包失败（背包 90 格已满或物品 DB 写入异常，详见服务端日志）");
                 return;
             }
             command.succeed("已发放 " + (info.name().isEmpty() ? info.configId() : info.name())
@@ -1918,6 +2101,185 @@ public final class LoginFlow {
                 item.hardiness(), item.maxHardiness());
         pushBagItemFrames(connection, session, item);
         return bagSlot;
+    }
+
+    // ===================== 邮件域（RecvLetterRec 319） =====================
+
+    /** 系统信类型（客户端 form_mail.lua LETTER_SYSTEM_POST_USER=101；系统页签 101..199，发件人空串显示「系统邮件」）。 */
+    private static final int LETTER_TYPE_SYSTEM_POST = 101;
+
+    /** RecvLetterRec 行帧：16 列全宽（0/3/4 宽串、1/5/6/7/10/11 窄串、8/13 int64、15 f64）。 */
+    static byte[] letterRowFrame(com.nineyin.server.game.avatar.mail.LetterStore.Letter letter) {
+        return RecordMessages.recordAddCells(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                RecordMessages.RECORD_RECV_LETTER,
+                RecordMessages.Cell.ofString(letter.sender()),          // 0 发件人（宽）
+                RecordMessages.Cell.ofString(letter.senderUid()),       // 1 发件人 uid
+                RecordMessages.Cell.ofInt(letter.type()),               // 2 类型
+                RecordMessages.Cell.ofString(letter.title()),           // 3 标题（宽）
+                RecordMessages.Cell.ofString(letter.content()),         // 4 正文（宽）
+                RecordMessages.Cell.ofString(letter.gold()),            // 5 金（数字串）
+                RecordMessages.Cell.ofString(letter.silver()),          // 6 银（数字串）
+                RecordMessages.Cell.ofString(letter.appendixXml()),     // 7 附件 XML
+                RecordMessages.Cell.ofInt64(letter.dateUnixSeconds()),  // 8 时间（unix 秒）
+                RecordMessages.Cell.ofInt(letter.readFlag() ? 1 : 0),   // 9 已读
+                RecordMessages.Cell.ofString(letter.serial()),          // 10 序列号
+                RecordMessages.Cell.ofString("0"),                      // 11 交易金（数字串）
+                RecordMessages.Cell.ofInt(0),                           // 12 勾选
+                RecordMessages.Cell.ofInt64(0),                         // 13 剩余时间
+                RecordMessages.Cell.ofInt(0),                           // 14 交易完成
+                RecordMessages.Cell.ofDouble(0.0));                     // 15 保留 f64
+    }
+
+    /** 附件 XML（form_mail_read.lua ParseXmlData 口径：root 首子 Object@Config、其首子 Prop@Amount/ColorLevel）。 */
+    static String letterAppendixXml(String configId, int amount) {
+        return "<Root><Object Config=\"" + configId + "\"><Prop Amount=\"" + amount
+                + "\" ColorLevel=\"0\"/></Object></Root>";
+    }
+
+    /** GM send_test_mail：任意物品按系统邮件附件发送（主界面邮件按钮查收，359 领取入包）。 */
+    private void applySendTestMail(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null) {
+            command.fail("角色尚未选定");
+            return;
+        }
+        String configId = command.strParam("itemConfig").trim();
+        int amount = Math.max(1, command.intParam("amount", 1));
+        if (configId.isEmpty()) {
+            command.fail("itemConfig 必填");
+            return;
+        }
+        if (inventoryStore == null) {
+            command.fail("物品 DB 未接入（MySQL inventory 源缺失）");
+            return;
+        }
+        ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(configId);
+        if (info == null) {
+            command.fail("物品不存在: " + configId + "（equipment.ini/tool_item.ini 均未命中）");
+            return;
+        }
+        String serial = "gm" + clock.instant().toEpochMilli() + "-" + (session.letters.size() + 1);
+        com.nineyin.server.game.avatar.mail.LetterStore.Letter letter =
+                new com.nineyin.server.game.avatar.mail.LetterStore.Letter(
+                        serial, LETTER_TYPE_SYSTEM_POST, "", "gm", "GM 测试邮件",
+                        "GM 面板「礼包与物品」发送的系统邮件，附件可直接领取。",
+                        "0", "0", letterAppendixXml(info.configId(), amount),
+                        clock.instant().getEpochSecond(), false);
+        session.letters.add(letter);
+        persistLetters(session);
+        if (session.lettersGranted) {
+            connection.writeFrame(letterRowFrame(letter));
+        }
+        String name = info.name().isEmpty() ? info.configId() : info.name();
+        String message = "系统邮件已发送（" + name + " x" + amount + "），主界面邮件按钮查收";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM send_test_mail {} x{} serial={}",
+                session.machine.id(), info.configId(), amount, serial);
+    }
+
+    private void persistLetters(LoginSession session) {
+        if (session.selected == null) {
+            return;
+        }
+        try {
+            letterStore.save(session.selected.id(), session.letters);
+        } catch (RuntimeException e) {
+            log.warn("session={} persist letters: {}", session.machine.id(), e.getMessage());
+        }
+    }
+
+    /**
+     * 邮件行变更（已读/领取）：0x12 删原行 + 0x11 尾插重推（快捷栏实证方言，
+     * 不碰未验证的 0x13 单格帧）；服务端列表同步移到尾部保持行序 1:1。
+     * 信件跳到列表底部是本方言的可接受代价。
+     */
+    private void reorderLetterRow(Connection connection, LoginSession session, int index,
+                                  com.nineyin.server.game.avatar.mail.LetterStore.Letter updated) {
+        connection.writeFrame(RecordMessages.recordDelRow(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                RecordMessages.RECORD_RECV_LETTER, index));
+        session.letters.remove(index);
+        session.letters.add(updated);
+        if (session.lettersGranted) {
+            connection.writeFrame(letterRowFrame(updated));
+        }
+        persistLetters(session);
+    }
+
+    /** C2S 353 custom_read_letter(serial)：置已读（READFLAG=1，行重推）。 */
+    void handleReadLetter(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || custom.values.size() < 2) {
+            return;
+        }
+        String serial = custom.values.get(1).textOrNull();
+        if (serial == null || serial.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < session.letters.size(); i++) {
+            var letter = session.letters.get(i);
+            if (serial.equals(letter.serial())) {
+                if (!letter.readFlag()) {
+                    reorderLetterRow(connection, session, i, letter.withRead(true));
+                }
+                return;
+            }
+        }
+        log.info("session={} read letter unknown serial={}", session.machine.id(), serial);
+    }
+
+    /** C2S 359 custom_get_appendix(serial)：附件物品入包 + 清附件 + 置已读。 */
+    void handleGetAppendix(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null || custom.values.size() < 2) {
+            return;
+        }
+        String serial = custom.values.get(1).textOrNull();
+        if (serial == null || serial.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < session.letters.size(); i++) {
+            var letter = session.letters.get(i);
+            if (!serial.equals(letter.serial())) {
+                continue;
+            }
+            String xml = letter.appendixXml();
+            if (xml == null || xml.isEmpty() || !xml.contains("Object")) {
+                log.info("session={} get appendix without content serial={}", session.machine.id(), serial);
+                return;
+            }
+            String configId = xmlAttr(xml, "Config");
+            String amountText = xmlAttr(xml, "Amount");
+            if (configId == null || configId.isEmpty()) {
+                return;
+            }
+            int amount = 1;
+            if (amountText != null && !amountText.isEmpty()) {
+                try {
+                    amount = Math.max(1, Integer.parseInt(amountText.trim()));
+                } catch (NumberFormatException ignored) {
+                    // 附件串服务端自产；异常回退 1 件
+                }
+            }
+            ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(configId);
+            if (info == null || inventoryStore == null
+                    || grantBagItem(connection, session, info, amount) == null) {
+                log.warn("session={} appendix grant failed serial={} item={}",
+                        session.machine.id(), serial, configId);
+                return;
+            }
+            reorderLetterRow(connection, session, i, letter.withAppendix("").withRead(true));
+            log.info("session={} appendix taken serial={} item={} x{}",
+                    session.machine.id(), serial, configId, amount);
+            return;
+        }
+        log.info("session={} get appendix unknown serial={}", session.machine.id(), serial);
+    }
+
+    /** 极简 XML 属性抽取（附件串服务端自产，格式受控；仅取首个命中属性值）。 */
+    private static String xmlAttr(String xml, String attr) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile(attr + "=\"([^\"]*)\"").matcher(xml);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     /** wearNow 参数（面板发 JSON 布尔，RPC 串化后可能是 0/1 整形）。 */
@@ -2284,6 +2646,63 @@ public final class LoginFlow {
      * 值数不符/count=0 拒绝。按物品类型分流：装备 → 右键穿（自动槽）；风物志卡片
      * （CardItem）→ 使用收录链；其余（食物/秘籍/坐骑等子链）记日志钩子。
      */
+    /**
+     * C2S 34 custom_delete_item(view,pos,amount)（道具丢弃/销毁）。客户端链
+     * （game_hand.lua 拖出道包 → 确认框 → CustomSend(34,viewid,pos,amount)）；
+     * CantDelete 静态表与重要道具（color_level≥4/内功书）仅本地弹窗拦截，
+     * 服务端按分类页+格子+数量权威扣减：非背包页/空格/超量拒绝。回包与
+     * msg31 消耗同链——剩余&gt;0 remove+add 堆叠刷新，=0 双 remove 清镜像
+     * 页，无专用回包。
+     */
+    void handleDeleteItem(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null || inventoryStore == null) {
+            return;
+        }
+        List<Integer> args = customIntArgs(custom);
+        if (args.size() != 3) {
+            log.info("session={} delete 34 malformed args={} (need view,pos,amount)",
+                    session.machine.id(), custom.values.size());
+            return;
+        }
+        int view = args.get(0);
+        int slot = args.get(1);
+        int amount = args.get(2);
+        int category = InventoryMessages.bagCategoryOf(view);
+        if (category == 0) {
+            log.info("session={} delete 34 reject: view={} not a bag page",
+                    session.machine.id(), view);
+            return;
+        }
+        // 扩展页归一主分类页（bagItemAt 按 bagViewOf 主 view 匹配，扩展镜像页会 miss）
+        view = InventoryMessages.bagViewOf(category);
+        if (amount < 1) {
+            log.info("session={} delete 34 reject: amount={}", session.machine.id(), amount);
+            return;
+        }
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems == null) {
+            return;
+        }
+        RoleInventoryStore.BagItem item = bagItemAt(bagItems, view, slot);
+        if (item == null) {
+            log.info("session={} delete 34 reject: bag[{}:{}] empty",
+                    session.machine.id(), view, slot);
+            return;
+        }
+        if (amount > item.amount()) {
+            log.info("session={} delete 34 reject: {} amount {} > stack {}",
+                    session.machine.id(), item.configId(), amount, item.amount());
+            return;
+        }
+        if (!consumeBagItemCount(connection, session, item, amount)) {
+            log.info("session={} delete 34 {}: consume failed (row missing/changed)",
+                    session.machine.id(), item.configId());
+            return;
+        }
+        log.info("session={} delete 34 bag[{}:{}] config={} amount={} discarded",
+                session.machine.id(), view, slot, item.configId(), amount);
+    }
+
     void handleBodyItemUse(Connection connection, LoginSession session, CustomC2S.Message custom) {
         if (session.player == null || session.selected == null) {
             return;
@@ -2326,8 +2745,119 @@ public final class LoginFlow {
             collectSkin(connection, session, item, true);
             return;
         }
-        log.info("session={} use item {} (view={} pos={}) use-chain not implemented",
-                session.machine.id(), item.configId(), view, slot);
+        useItemEffect(connection, session, item, view);
+    }
+
+    /**
+     * 道具使用效果核心（msg31 不可穿戴/非卡片分支，对齐 bak SceneFlow.useItem 五步）：
+     * scripts/item/&lt;configId&gt;.lua 的 on_use 优先 → INI 回退（{@link ItemUseCatalog}：
+     * giftbox/tool_item 箱类按 drops_mvp.json 开包、item_use_skill_static 回血阶梯）
+     * → 均无则维持 use-chain not implemented 口径。落账顺序：效果先行（给物品容量
+     * 感知、回血/回蓝），随后消耗 1 个（堆叠感知）并回背包帧对；会话级 800ms 节流
+     * 防连点；随机数 Java 预掷（会话 combatRandom，测试可换种子）。temp_stat 已解析
+     * 未接（面板限时属性二期）——仅剩 temp_stat 效果时不消耗防白吃。
+     */
+    private void useItemEffect(Connection connection, LoginSession session,
+                               RoleInventoryStore.BagItem item, int view) {
+        if (inventoryStore == null || session.selected == null || session.player == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - session.lastItemUseMs < 800) {
+            return;
+        }
+        var actorState = session.player.actorState();
+        java.util.Random random = session.combatRandom;
+        // ① 效果解析：Lua 脚本优先（无脚本/nil 返回 → null → INI 回退）
+        LuaScriptService.ItemUse instr = LuaScriptService.getInstance().itemUse(
+                item.configId(),
+                new LuaScriptService.ItemUseContext(item.amount(), now,
+                        actorState.hp(), actorState.maxHp(), actorState.mp(), actorState.maxMp(),
+                        session.player.silver(), random.nextDouble(), random.nextDouble()));
+        // ② INI 回退：礼包开包（CompensateItem 多 ref 各开一次，func-56 条件门控未接=全发）
+        // / 使用技能回血阶梯
+        List<DropPacks.GrantItem> grants = null;
+        int healHp = instr != null ? instr.healHp() : 0;
+        int healMp = instr != null ? instr.healMp() : 0;
+        if (instr != null) {
+            if (instr.openDropId() != null) {
+                grants = DropPacks.loadDefault().roll(
+                        instr.openDropId(), instr.rolls(), random::nextDouble);
+                if (grants.isEmpty()) {
+                    log.info("item use {}: drop pack {} empty/missing", item.configId(),
+                            instr.openDropId());
+                    return;
+                }
+            } else if (!instr.grants().isEmpty()) {
+                grants = instr.grants();
+            }
+        } else {
+            ItemUseCatalog.UseEntry entry = ItemUseCatalog.loadDefault()
+                    .resolve(item.configId(), item.itemType());
+            if (entry == null) {
+                log.info("session={} use item {} (view={} pos={}) use-chain not implemented",
+                        session.machine.id(), item.configId(), view, item.slot());
+                return;
+            }
+            switch (entry.kind()) {
+                case BOX -> {
+                    DropPacks packs = DropPacks.loadDefault();
+                    grants = new ArrayList<>();
+                    for (String dropId : entry.dropIds()) {
+                        grants.addAll(packs.roll(dropId, 1, random::nextDouble));
+                    }
+                    if (grants.isEmpty()) {
+                        log.info("item use {}: drop packs {} empty/missing", item.configId(),
+                                entry.dropIds());
+                        return;
+                    }
+                }
+                case USE_SKILL -> {
+                    healHp = ItemUseCatalog.fallbackHealHp(entry.skillLevel());
+                    healMp = ItemUseCatalog.fallbackHealMp(entry.skillLevel());
+                }
+            }
+        }
+        // 仅剩未实施的 temp_stat：不消耗防白吃（其余空效果维持 bak 口径）
+        var tempStat = instr != null ? instr.tempStat() : null;
+        if (tempStat != null && healHp <= 0 && healMp <= 0 && grants == null) {
+            log.info("item use {}: temp_stat 未接（面板限时属性二期），跳过消耗", item.configId());
+            return;
+        }
+        if (healHp <= 0 && healMp <= 0 && grants == null && tempStat == null) {
+            log.info("item use {}: instructions empty", item.configId());
+            return;
+        }
+        session.lastItemUseMs = now;
+        // ③ 效果落账：给物品（容量感知，失败即断；部分发放后仍走消耗，防重复刷取）
+        List<String> grantedIds = new ArrayList<>();
+        if (grants != null) {
+            for (DropPacks.GrantItem grant : grants) {
+                ToolItemCatalog.ItemInfo grantInfo = ToolItemCatalog.loadDefault()
+                        .lookup(grant.configId());
+                if (grantInfo == null) {
+                    log.info("item use {}: grant {} unknown config", item.configId(), grant.configId());
+                    break;
+                }
+                if (grantBagItem(connection, session, grantInfo, grant.amount()) == null) {
+                    log.info("item use {}: grant {} failed", item.configId(), grant.configId());
+                    break;
+                }
+                grantedIds.add(grant.configId() + "x" + grant.amount());
+            }
+        }
+        // ④ 回血/回蓝（死亡/满血在 Actor.restore 内闸掉）
+        boolean vitalChanged = session.player.restore(healHp, healMp);
+        if (vitalChanged) {
+            connection.writeFrame(session.player.vitalUpdate());
+        }
+        // ⑤ 消耗 1 个（脚本 consume=false 跳过）+ 背包帧对
+        boolean consume = instr == null || instr.consume();
+        if (consume && !consumeBagItemCount(connection, session, item, 1)) {
+            log.info("item use {}: consume failed (row missing/changed)", item.configId());
+        }
+        log.info("item use {} consumed={} healHp={} healMp={} granted={} tempStat={}",
+                item.configId(), consume, healHp, healMp, grantedIds, tempStat != null);
     }
 
     /**
@@ -2427,7 +2957,7 @@ public final class LoginFlow {
             return;
         }
         int skinId = info.cardId();
-        if (consume && !consumeBagCard(connection, session, item)) {
+        if (consume && !consumeBagItemCount(connection, session, item, 1)) {
             return; // 消耗失败（数量不足/DB 异常）不收录
         }
         var state = sessionSkinState(session);
@@ -2446,14 +2976,16 @@ public final class LoginFlow {
                 info.name().isEmpty() ? info.configId() : info.name(), skinId);
     }
 
-    /** 消耗背包卡片 1 张并同步客户端行（剩余>0 重推行，=0 删行+镜像清位）。 */
-    private boolean consumeBagCard(Connection connection, LoginSession session,
-                                   RoleInventoryStore.BagItem item) {
+    /** 消耗背包道具 count 个并同步客户端行（剩余>0 重推行，=0 删行+镜像清位）。 */
+    private boolean consumeBagItemCount(Connection connection, LoginSession session,
+                                   RoleInventoryStore.BagItem item, int count) {
         int remaining;
         try {
-            remaining = inventoryStore.consumeBagItem(session.selected.id(), item.slot(), 1);
+            remaining = inventoryStore.consumeBagItem(
+                    session.selected.id(), item.viewId(), item.slot(), count);
         } catch (RuntimeException e) {
-            log.warn("session={} consume card {}: {}", session.machine.id(), item.configId(), e.getMessage());
+            log.warn("session={} consume {} x{}: {}",
+                    session.machine.id(), item.configId(), count, e.getMessage());
             return false;
         }
         if (remaining < 0) {
@@ -2548,7 +3080,7 @@ public final class LoginFlow {
         }
         for (RoleInventoryStore.BagItem item : bagItems) {
             if (item.configId().equalsIgnoreCase(info.configId())) {
-                consumeBagCard(connection, session, item);
+                consumeBagItemCount(connection, session, item, 1);
                 return;
             }
         }
@@ -3368,18 +3900,86 @@ public final class LoginFlow {
      * SP+行内 AConsumeSP 自算，CD 灰由 cooldown_rec 扫描独立承担——官方 316 批
      * 11730 帧仅特殊行 QGP 不足出 0）。断连取消。
      */
+    /** CanUse 心跳批行数上限：参考服 52905 真机实证（207 技能角色恒只刷 17 行=快捷栏前 17 槽技能）。 */
+    private static final int CAN_USE_BATCH_MAX_ROWS = 17;
+
+    /**
+     * View40 行 CanUse 心跳批——**只刷快捷栏绑定的技能行（≤17，参考服 52905 同款）**：
+     * 参考服对 207 技能角色 234 批每 ~2s 恒只推 17 行且含 0 值（武器不匹配/怒气不足窗口）；
+     * 本服曾全量 193 行/批，真机把整个技能图标打成全灰（63296 实证客户端对持续视图行
+     * 更新爆发敏感；登录期一次性全量批不受影响，参考服 61114 登录批=190+6 全行）。
+     * 值=资源可用性：武器门控（skill_use_limit ItemType）∧ SP≥AConsumeSP；
+     * CD 灰由客户端 cooldown_rec 扫描独立承担（官方批对 CD 中的行也恒推可用）。
+     */
     private void startSkillCanUseTicker(Connection connection, LoginSession session) {
         if (session.skillCanUseTicker != null) {
             session.skillCanUseTicker.cancel(false);
         }
+        // 行集快照：快捷栏槽序去重后的前 17 个技能；空表回落 View40 行号前 17
+        java.util.TreeMap<Integer, String> slotSkills = new java.util.TreeMap<>();
+        if (session.player != null) {
+            for (PlayerActor.PlayerShortcut shortcut : session.player.shortcutSnapshot()) {
+                if ("skill".equals(shortcut.kind())) {
+                    slotSkills.putIfAbsent(shortcut.index(), shortcut.id());
+                }
+            }
+        }
+        java.util.Map<String, Integer> batchIds = new java.util.LinkedHashMap<>();
+        for (String id : slotSkills.values()) {
+            Integer row = session.skillRows.get(id);
+            if (row != null && row > 0) {
+                batchIds.putIfAbsent(id, row);
+                if (batchIds.size() >= CAN_USE_BATCH_MAX_ROWS) {
+                    break;
+                }
+            }
+        }
+        if (batchIds.isEmpty()) {
+            for (java.util.Map.Entry<String, Integer> e : session.skillRows.entrySet()) {
+                if (e.getValue() != null && e.getValue() > 0) {
+                    batchIds.putIfAbsent(e.getKey(), e.getValue());
+                    if (batchIds.size() >= CAN_USE_BATCH_MAX_ROWS) {
+                        break;
+                    }
+                }
+            }
+        }
+        com.nineyin.server.world.fight.CombatSkillCatalog catalog =
+                com.nineyin.server.world.fight.CombatSkillCatalog.load();
+        java.util.Map<String, Integer> costs = new java.util.HashMap<>();
+        for (String id : batchIds.keySet()) {
+            com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
+                    catalog.skillRowData(id, session.learnedSkills.getOrDefault(id, 1));
+            if (rowData != null && rowData.aConsumeSP() > 0) {
+                costs.put(id, rowData.aConsumeSP());
+            }
+        }
+        java.util.Map<String, Integer> rows = java.util.Map.copyOf(batchIds);
         session.skillCanUseTicker = scheduler.scheduleWithFixedDelay(() -> {
             try {
-                if (session.player == null) {
+                PlayerActor player = session.player;
+                if (player == null) {
                     return;
                 }
-                for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+                if (player.sitting()) {
+                    // 打坐期间整批静默（参考服 52905 坐姿窗口零 CanUse 行帧实证）：
+                    // 坐姿动画进行中收到 CanUse 行推送会被客户端当状态事件处理，
+                    // 中止坐姿动作并回发 240(2)——重推面板再触发=动画永不落定的
+                    // 自持风暴（2026-11-05 真机「完全没有打坐动画」根因）。
+                    return;
+                }
+                int sp = player.sp();
+                int weapon = player.equippedWeaponItemType();
+                for (java.util.Map.Entry<String, Integer> e : rows.entrySet()) {
+                    Integer cost = costs.get(e.getKey());
+                    boolean usable = cost == null || sp >= cost;
+                    if (usable) {
+                        com.nineyin.server.world.fight.CombatSkill def = catalog.definition(
+                                e.getKey(), session.learnedSkills.getOrDefault(e.getKey(), 1));
+                        usable = def == null || def.weaponAllowed(weapon);
+                    }
                     connection.writeFrame(FightMessages.skillRowCanUse(
-                            SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
+                            SkillCastHandler.SKILL_VIEW_ID, e.getValue(), usable));
                 }
             } catch (RuntimeException e) {
                 log.warn("skill CanUse ticker session={}: {}", session.machine.id(), e.getMessage());
@@ -3420,6 +4020,18 @@ public final class LoginFlow {
             }
             StarterGrants.grantShortcutRows(connection, session.player);
             session.shortcutRowsSent = true;
+        }
+        if (session.player != null && !session.lettersGranted) {
+            // 邮件行（RecvLetterRec 319，玩家对象 1-1 挂接）：ExitScene 清挂接行，
+            // 与快捷栏同口径按内存列表整表重放；空邮箱零帧。
+            session.lettersGranted = true;
+            for (com.nineyin.server.game.avatar.mail.LetterStore.Letter letter : session.letters) {
+                connection.writeFrame(letterRowFrame(letter));
+            }
+            if (!session.letters.isEmpty()) {
+                log.info("session={} replayed {} RecvLetterRec rows",
+                        session.machine.id(), session.letters.size());
+            }
         }
         if (session.player != null) {
             boolean granted = StarterGrants.grantSitcrossShortcut(connection, session.player);
@@ -3500,6 +4112,15 @@ public final class LoginFlow {
                 connection.writeFrame(frame);
             }
         }
+        if (session.player != null && !session.switchSyncPushed) {
+            // 参考服 pushSwitchSync：登录收尾一次性 0x1E 414("sync", id×203) 批量开
+            // 客户端 SwitchManager。2919 = 装备栏"新旧界面切换"门槛（真机 2026-11-05
+            // 确认 Java 端缺此帧 → 按钮不出现）。连接级一次，0x0C 后不重放。
+            session.switchSyncPushed = true;
+            StarterGrants.pushSwitchSync(connection);
+            log.info("session={} switch sync pushed switches={}",
+                    session.machine.id(), StarterGrants.SWITCH_SYNC_IDS.length);
+        }
         if (session.player != null) {
             // 重复 0x09（活动场景内的后期 UI 回调）也会重发开关，Go 同此。
             StarterGrants.enableSkillActionSwitch(connection);
@@ -3552,6 +4173,7 @@ public final class LoginFlow {
         session.keybindPushed = false;
         // 快捷栏记录行同属玩家对象挂接行，ExitScene 后必须按内存快照整表重放。
         session.shortcutRowsSent = false;
+        session.lettersGranted = false;
         grantOncePerConnectionRows(connection, session);
         session.awaitingReentryReady = false;
         session.reentryFramesSent = false;
@@ -3655,6 +4277,20 @@ public final class LoginFlow {
                 persistMeridian(session);
             }
             case 211 -> handleUseSkill(connection, session, custom);
+            // 冲锋落地（IDA handleCastDashLanding）：[212, f32 x/y/z, (f32 朝向)] ——清冲锋
+            // 态回显 337，取 30s 内暂存的出招重组 211 续招（超程冲锋“先冲后放”的回执半段）。
+            case 212 -> {
+                if (session.player != null && session.world != null && session.fight != null) {
+                    SkillCastHandler.handleDashLanding(new SkillCastHandler.CastContext(
+                            connection, session.player, session.world, session.fight,
+                            session.learnedSkills, session.skillRows, scheduler, clock,
+                            session.combatRandom), custom);
+                }
+            }
+            // msg15 移动上报（9 值：[15, state, moveType, f32 x/y/z, f32 orient, (会话哈希),
+            // tick]；高频，其余用途忽略不落日志）：冲锋暂存挂起时探测到位——玩家与目标
+            // 距离进入技能射程即服务端主动落地续招（客户端不必然发 212，61653 实证）。
+            case 15 -> handleMovementUpload(connection, session, custom);
             case 431 -> handleSelectTarget(connection, session, custom);
             case 216 -> {
                 if (session.player != null) {
@@ -3675,6 +4311,9 @@ public final class LoginFlow {
             // 886-889=一键穿 OnestepEquip（uid 认领）。
             case 30 -> handleMoveItem(connection, session, custom);
             case 31 -> handleBodyItemUse(connection, session, custom);
+            // 34=custom_delete_item(view,pos,amount) 道具丢弃（game_hand.lua 拖出
+            // 确认销毁；CantDelete 客户端拦，服务端按页/格/量权威扣减）。
+            case 34 -> handleDeleteItem(connection, session, custom);
             // 70=custom_buy_item(shop_id,page,pos,count) 商店购买（form_shop.lua 实证参数序）。
             case 70 -> handleBuyItem(connection, session, custom);
             case 886, 887, 888, 889 -> handleOnestepEquip(connection, session, custom);
@@ -3700,6 +4339,14 @@ public final class LoginFlow {
             // 任务消息（task_define.lua 子命令表：0 放弃/"complete_task" 提交，
             // 正常接/交走 0x07 对话菜单 mark 路由）。
             case 327 -> handleTaskMsg(connection, session, custom);
+            // 邮件族（form_mail.lua，RecvLetterRec 记录表即邮箱列表）：350 开邮箱/
+            // 358 关读信窗/357 勾选均为客户端本地行为（列表=data_binder 绑定记录行，
+            // 无需回包）；353 读信置已读；359 领附件入包。
+            case 350, 357, 358 -> {
+                // 邮箱开合/勾选：零服务端动作
+            }
+            case 353 -> handleReadLetter(connection, session, custom);
+            case 359 -> handleGetAppendix(connection, session, custom);
             default -> log.info("session={} unrecognized custom msgId={} via {}",
                     session.machine.id(), messageId, route);
         }
@@ -3707,8 +4354,9 @@ public final class LoginFlow {
 
     /**
      * C2S 200 设置快捷栏（shortcut_game.lua set_shortcut：`[200, index, kind, id]`，
-     * kind∈skill/item/neigong/zhenfa）。帧序同 Go handleShortcutCustom：替换先 0x12 删
-     * 旧行再 0x11 增新行；幂等不变零帧。DB 模式同步写 role_shortcuts（重登回放）。
+     * kind∈skill/item/neigong/zhenfa）。变更后走 {@link #rebuildShortcutRecord} 清空重推
+     * （menu2 rebuildShortcutRecord 语义，非增量 del+add）；幂等不变零帧。DB 模式同步写
+     * role_shortcuts（重登回放）。
      */
     void handleSetShortcut(Connection connection, LoginSession session,
                                    CustomC2S.Message custom) {
@@ -3728,20 +4376,15 @@ public final class LoginFlow {
                     session.machine.id(), index, kind, id);
             return;
         }
+        int preCount = session.player.shortcutSnapshot().size();
         PlayerActor.ShortcutUpdate update = session.player.setShortcut(index, kind, id);
         if (update.unchanged()) {
             return;
         }
-        if (update.existed()) {
-            connection.writeFrame(RecordMessages.recordDelRow(
-                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
-                    RecordMessages.RECORD_SHORTCUT, update.oldRow()));
-        }
-        connection.writeFrame(StarterGrants.shortcutAddFrame(
-                new PlayerActor.PlayerShortcut(index, kind, id)));
+        rebuildShortcutRecord(connection, session.player, preCount);
         persistShortcut(() -> inventoryStore.upsertShortcut(session.selected.id(), index, kind, id));
-        log.info("session={} shortcut set index={} kind={} id={} replaced={}",
-                session.machine.id(), index, kind, id, update.existed());
+        log.info("session={} shortcut set index={} kind={} id={} replaced={} rebuilt={}",
+                session.machine.id(), index, kind, id, update.existed(), preCount);
     }
 
     /**
@@ -3761,17 +4404,16 @@ public final class LoginFlow {
             log.info("session={} remove shortcut invalid index={}", session.machine.id(), index);
             return;
         }
+        int preCount = session.player.shortcutSnapshot().size();
         PlayerActor.RemovedShortcut removed = session.player.removeShortcutIndex(index);
         if (removed == null) {
             return;
         }
-        connection.writeFrame(RecordMessages.recordDelRow(
-                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
-                RecordMessages.RECORD_SHORTCUT, removed.row()));
+        rebuildShortcutRecord(connection, session.player, preCount);
         persistShortcut(() -> inventoryStore.deleteShortcut(session.selected.id(), index));
-        log.info("session={} shortcut removed index={} row={} kind={} id={}",
+        log.info("session={} shortcut removed index={} row={} kind={} id={} rebuilt={}",
                 session.machine.id(), index, removed.row(),
-                removed.shortcut().kind(), removed.shortcut().id());
+                removed.shortcut().kind(), removed.shortcut().id(), preCount);
     }
 
 
@@ -3796,6 +4438,30 @@ public final class LoginFlow {
         }
     }
 
+    /**
+     * 快捷栏变更全量重建（menu2 9yin-game-native-menu.exe rebuildShortcutRecord 逐指令
+     * 移植）：先按变更前行数从 preCount-1 递减到 0 逐行 0x12 清空客户端 shortcut_rec，
+     * 再按内存快照全量重推 0x11。
+     *
+     * <p>为何不做增量 del：真机客户端对记录表中段删行的方言不可靠——按服务端行号发
+     * 0x12 会出现拖拽后图标残留（幽灵）/同槽双行（重叠）/拖出无法删除（2026-11-04
+     * 19:06-19:10 session=1 实录：服务端状态机自洽但客户端记录漂移，用户在 203/204/209
+     * 反复拖拽 15 次）。menu2（唯一与真实客户端长期配套的参考服）在 200/201 的所有
+     * 变更路径都调用 rebuildShortcutRecord 整表重建，不依赖删行方言；官服抓包
+     * （61114）中 shortcut_rec 也只有 0x11 追加、从未出现中段 0x12。递减序保证每个
+     * 0x12 行号在删行收缩后仍指向有效行。
+     */
+    private void rebuildShortcutRecord(Connection connection, PlayerActor player, int preCount) {
+        for (int row = preCount - 1; row >= 0; row--) {
+            connection.writeFrame(RecordMessages.recordDelRow(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                    RecordMessages.RECORD_SHORTCUT, row));
+        }
+        for (PlayerActor.PlayerShortcut shortcut : player.shortcutSnapshot()) {
+            connection.writeFrame(StarterGrants.shortcutAddFrame(shortcut));
+        }
+    }
+
     /** msg211 USE_SKILL → 战斗编排（拒绝路径静默记日志，抓包实证不回帧）。 */
     private void handleUseSkill(Connection connection, LoginSession session, CustomC2S.Message custom) {
         if (session.player == null || session.world == null || session.fight == null) {
@@ -3806,6 +4472,29 @@ public final class LoginFlow {
                 connection, session.player, session.world, session.fight,
                 session.learnedSkills, session.skillRows, scheduler, clock,
                 session.combatRandom), custom);
+    }
+
+    /**
+     * C2S msg15 移动上报（高频）：非冲锋态静默忽略；冲锋暂存挂起（rushInFlight）时
+     * 取 idx 3-6 的 f32 x/y/z/orient 交 {@link SkillCastHandler#tryRushArrival} 做
+     * 到位探测——进入技能射程即服务端主动续招（msg20 攻击目标帧簇）。
+     */
+    private void handleMovementUpload(Connection connection, LoginSession session,
+                                      CustomC2S.Message custom) {
+        if (session.player == null || !session.player.rushInFlight()) {
+            return;
+        }
+        List<CustomC2S.Value> values = custom.values;
+        if (values.size() < 6 || values.get(3).tag != 4 || values.get(4).tag != 4
+                || values.get(5).tag != 4) {
+            return;
+        }
+        float orient = values.size() > 6 && values.get(6).tag == 4 ? values.get(6).float32 : 0f;
+        SkillCastHandler.tryRushArrival(new SkillCastHandler.CastContext(
+                connection, session.player, session.world, session.fight,
+                session.learnedSkills, session.skillRows, scheduler, clock,
+                session.combatRandom), values.get(3).float32, values.get(4).float32,
+                values.get(5).float32, orient);
     }
 
     /** msg431 选中目标（与 0x07 等价，62433 抓包成对出现；仅 combat NPC 落选）。 */
@@ -3881,8 +4570,15 @@ public final class LoginFlow {
         if (gmSpawn != null) {
             if (gmSpawn.chest) {
                 openGmChest(connection, session, gmSpawn);
+            } else if (gmSpawn.merchant) {
+                List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+                Props.add(properties, "LastObject",
+                        PropertyValues.Value.ofObject(objectId, ownerId));
+                connection.writeFrame(SceneMessages.objectProperties(
+                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, 0, properties));
+                openShop(connection, session, GIFT_SHOP_ID);
             }
-            return; // 非宝箱的 GM 摆放（木桩为战斗对象，走不到这里）无对话
+            return; // 其余 GM 摆放（木桩为战斗对象，走不到这里）无对话
         }
         NpcSpawn npc = npcByObjectId(session, objectId);
         if (npc == null) {
@@ -4365,8 +5061,8 @@ public final class LoginFlow {
      * 104 ShopType=0）→ 逐行 0x18（105 ConfigID/106 Amount/107-109 SellPrice0-2/
      * 110 MaxAmount=物品堆叠上限）。f2/f4-f8 语义未证不下发。
      */
-    private void openShop(Connection connection, LoginSession session, String shopId) {
-        ShopCatalog.ShopSection section = shopCatalog().section(shopId);
+    void openShop(Connection connection, LoginSession session, String shopId) {
+        ShopCatalog.ShopSection section = shopSection(shopId);
         if (section == null) {
             log.info("session={} shop {} not in shop.ini", session.machine.id(), shopId);
             return;
@@ -4402,7 +5098,7 @@ public final class LoginFlow {
      * 实证参数序）：View61 行号 = page*10+pos（pos 客户端已 +1）。碎银（CapitalType1）
      * 扣款 → 入包（复用 GM 发放链路）→ 碎银单帧刷新。
      */
-    private void handleBuyItem(Connection connection, LoginSession session,
+    void handleBuyItem(Connection connection, LoginSession session,
                                CustomC2S.Message custom) {
         if (session.player == null || session.selected == null) {
             return;
@@ -4434,7 +5130,7 @@ public final class LoginFlow {
                     session.machine.id(), clientShopId, openShopId);
             return;
         }
-        ShopCatalog.ShopSection section = shopCatalog().section(openShopId);
+        ShopCatalog.ShopSection section = shopSection(openShopId);
         int rowIndex = page * SHOP_ROWS_PER_PAGE + pos;
         if (section == null || rowIndex < 1 || rowIndex > section.goods().size()) {
             log.info("session={} buy row {} out of shop {}", session.machine.id(), rowIndex, openShopId);
@@ -4520,6 +5216,52 @@ public final class LoginFlow {
 
     private ShopCatalog shopCatalog() {
         return ShopCatalog.loadDefault();
+    }
+
+    /** 商店节查找：gm_giftbox=合成货架（真正可开的礼包免费领），其余走 shop.ini 目录。 */
+    ShopCatalog.ShopSection shopSection(String shopId) {
+        if (GIFT_SHOP_ID.equals(shopId)) {
+            return giftBoxShopSection();
+        }
+        return shopCatalog().section(shopId);
+    }
+
+    /** 礼包货架合成节（懒构建缓存）：BOX 语义且至少一个 DropID 在 drops_mvp 可解析的礼包，按 configId 排序。 */
+    private ShopCatalog.ShopSection giftBoxShopSection() {
+        ShopCatalog.ShopSection cached = giftShopSection;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (this) {
+            if (giftShopSection == null) {
+                ItemUseCatalog uses = ItemUseCatalog.loadDefault();
+                DropPacks packs = DropPacks.loadDefault();
+                List<ToolItemCatalog.ItemInfo> items = new ArrayList<>(ToolItemCatalog.loadDefault().all());
+                items.sort(java.util.Comparator.comparing(ToolItemCatalog.ItemInfo::configId));
+                List<ShopCatalog.GoodsRow> goods = new ArrayList<>();
+                for (ToolItemCatalog.ItemInfo info : items) {
+                    ItemUseCatalog.UseEntry entry = uses.resolve(info.configId(), info.itemType());
+                    if (entry == null || entry.kind() != ItemUseCatalog.UseKind.BOX) {
+                        continue;
+                    }
+                    boolean openable = false;
+                    for (String dropId : entry.dropIds()) {
+                        if (packs.has(dropId)) {
+                            openable = true;
+                            break;
+                        }
+                    }
+                    if (openable) {
+                        goods.add(new ShopCatalog.GoodsRow(goods.size(), info.configId(), 1, 0));
+                    }
+                }
+                int pageCount = Math.max(1, (goods.size() + SHOP_ROWS_PER_PAGE - 1) / SHOP_ROWS_PER_PAGE);
+                giftShopSection = new ShopCatalog.ShopSection(GIFT_SHOP_ID, "", pageCount, 0,
+                        List.copyOf(goods));
+                log.info("gift box shop section ready: {} goods", goods.size());
+            }
+            return giftShopSection;
+        }
     }
 
     private static int readU32(byte[] plain, int offset) {
@@ -4621,11 +5363,13 @@ public final class LoginFlow {
     }
 
     /**
-     * C2S 240 打坐开关（Go handleSitcrossCustom 同语义，2026-11-03）：`(int 1 开始 /
-     * 0 停止 / 2 被打断)`。2 必须当正常停处理（客户端本地打断形态，含受击/移动/出招，
-     * 拒掉会在战斗打断瞬间断链）。重复 1=按住不是切换（幂等零帧）；死亡拒绝。
-     * 回普通 0x10 vital（LogicState=102/0），回复由 1s ticker 的 sitcrossTick 结算
-     * （10s 回满 HP/MP，HPUpSpeed/MPUpSpeed 面板值同源=客户端显示的每秒 +N 数字）。
+     * C2S 240 打坐开关：`(int 1 开始 / 0 停止 / 2 动作完结回执)`。**2 不是停坐**
+     * （2026-11-04 修正，Go handleSitcrossCustom 的「2=打断当停」是误读——三服抓包
+     * 12141/52905/63296 同现 [1→2×n] 且 0 从未出现；把 2 当停=坐下即被拉起，真机
+     * 「打坐后人立马站起来」三服同症）。重复 1=按住非切换，但重推 102 面板 resync
+     * 客户端动画态；死亡拒绝。回普通 0x10 vital（LogicState=102/0），回复由 1s
+     * ticker 的 sitcrossTick 结算（10s 回满 HP/MP，HPUpSpeed/MPUpSpeed 面板值同源
+     * =客户端显示的每秒 +N 数字）。
      */
     private void handleSitcross(Connection connection, LoginSession session, CustomC2S.Message custom) {
         if (session.player == null) {
@@ -4653,13 +5397,44 @@ public final class LoginFlow {
             return;
         }
         boolean wasSitting = player.sitting();
+        if (startOrStop == 2) {
+            // 2026-11-04 打坐秒起定案：三服抓包（官方时代 12141 / 参考服 52905 / 本服
+            // 63296）同现 [240(1) → 240(2)×n]，真停坐形态 0 从未出现——2 是坐姿动作
+            // 完结/本地取消回执，不是起立指令。把 2 当停=坐下即被服务端面板拉起。
+            // 2026-11-05 修正：重推全量面板本身会重入客户端坐姿动画（重推→再完结→
+            // 再 2 的自持风暴，一轮坐 63 条），改为限频重推：坐/起迁移后首条 2 立即
+            // 重推兜底，之后 ≥2s 闸内静默保坐。真打断由出招起立/死亡路径接管。
+            if (wasSitting) {
+                long now = clock.millis();
+                if (now - session.lastSitcrossResyncMs >= SITCROSS_RESYNC_GATE_MS) {
+                    session.lastSitcrossResyncMs = now;
+                    connection.writeFrame(player.castVitalUpdate());
+                    log.info("session={} sitcross keep seated on 240(2) completion ack (resync 102)",
+                            session.machine.id());
+                } else {
+                    log.info("session={} sitcross keep seated on 240(2) (resync gated, silent)",
+                            session.machine.id());
+                }
+            }
+            return;
+        }
         if (wasSitting == engage) {
-            log.info("session={} sitcross state already {}; duplicate ignored",
+            // 重复 240(1)：按住非切换，但改零帧为重推面板——客户端坐姿动画被本地取消
+            // 后用户重点，重推 102 让客户端回落坐姿（desync 陷阱：零帧会让重点无效）。
+            if (engage) {
+                connection.writeFrame(player.castVitalUpdate());
+            }
+            log.info("session={} sitcross state already {} (resync panel)",
                     session.machine.id(), engage ? 102 : 0);
             return;
         }
+        session.lastSitcrossResyncMs = 0L;
         player.applySitcross(engage);
-        connection.writeFrame(player.vitalUpdate());
+        // 2026-11-05 根因修复：坐/起迁移面板必须走 188 名瘦集（castVitalUpdate＝参考服
+        // 52905 #5451 坐姿面板逐名相等）。此前全量 vitalUpdate 夹带 Mount/CurRideMount
+        // 等 36 个登录域属性——重推 Mount 族会让客户端清动作/移动态（同 11-03 空中
+        // 位置重置根因），坐姿动画每帧被打断＝真机「完全没有打坐动画」+240(2) 风暴。
+        connection.writeFrame(player.castVitalUpdate());
         log.info("session={} sitcross state {} -> {} via normal 0x10", session.machine.id(),
                 wasSitting ? 102 : 0, engage ? 102 : 0);
     }
@@ -4675,7 +5450,9 @@ public final class LoginFlow {
             if (tick[0] > 0) {
                 connection.writeFrame(session.player.progress().bookFrame(tick[0]));
             }
-            connection.writeFrame(session.player.vitalUpdate());
+            // 188 名瘦集面板（打坐中整分钟结算也走此帧——全量 vitalUpdate 夹带 Mount
+            // 族会打断坐姿动画，2026-11-05 根因）。
+            connection.writeFrame(session.player.castVitalUpdate());
             persistFaculty(session);
         }
         livepointTickOnce(connection, session);
@@ -4694,7 +5471,7 @@ public final class LoginFlow {
         if (!progress.livepointTick(clock.instant(), progress.livepointVip())) {
             return;
         }
-        connection.writeFrame(session.player.vitalUpdate());
+        connection.writeFrame(session.player.livepointVitalUpdate());
         persistFaculty(session);
     }
 

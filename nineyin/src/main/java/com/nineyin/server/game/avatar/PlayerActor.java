@@ -11,6 +11,7 @@ import com.nineyin.server.game.avatar.neigong.PlayerProgress;
 import com.nineyin.server.game.avatar.panel.EquipAffixCatalog;
 import com.nineyin.server.game.avatar.panel.EquipEffectCatalog;
 import com.nineyin.server.game.avatar.panel.PanelState;
+import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.protocol.NpcSchema;
 import com.nineyin.server.protocol.PacketWriter;
 import com.nineyin.server.protocol.PropertyValues;
@@ -327,7 +328,7 @@ public final class PlayerActor {
     // ------------------------------------------------------------------ faculty
 
     public PlayerProgress.Snapshot facultySnapshot() {
-        return progress.snapshot();
+        return progress.snapshot().withVitals(panel.vitalsSnapshot());
     }
 
     // ------------------------------------------------------------------ jingmai/qinggong
@@ -533,6 +534,22 @@ public final class PlayerActor {
                 sitcrossRecoveryPerSecond(state.maxMp()));
     }
 
+    /**
+     * 药品即时回复（msg31 使用物 heal_hp/heal_mp；{@link Actor#restore} 不限坐姿），
+     * 调用方据返回值补发 vitalUpdate。
+     */
+    public boolean restore(int hpAmount, int mpAmount) {
+        return actor.restore(hpAmount, mpAmount);
+    }
+
+    /**
+     * NPC 反击伤害落地（NpcCombatAi；参考服口径实伤 1）。返回 false=已死不结算。
+     * 血条推送由调用方走 0x2D 的 HPRatio（参考服 NPC 命中不发玩家 HP 面板）。
+     */
+    public synchronized boolean applyNpcDamage(int amount) {
+        return actor.applyDamage(amount);
+    }
+
     // ------------------------------------------------------------------ parry value
 
     /** 当前格挡值（动态）。 */
@@ -584,6 +601,8 @@ public final class PlayerActor {
     public void restoreFaculty(PlayerProgress.Snapshot value, Instant now) {
         int previousParryMax = parryValueMax();
         progress.restore(value, now);
+        // 生存属性层（GM set_vitals 档案）：旧档 null 不动 PanelState 的 0 种子。
+        panel.restoreVitals(value.vitals());
         if (progress.facultyState == PlayerProgress.FACULTY_STATE_CONVERT
                 && progress.facultyStyle == PlayerProgress.FACULTY_STYLE_ACT) {
             logicStateOverride = PlayerProgress.LOGIC_STATE_FACULTY;
@@ -634,8 +653,14 @@ public final class PlayerActor {
         // totalResourceAdds（IDA 钉死）：有效上限 = 基础 + MaxHP/MPAdd 各层 + 五维换算项
         int[] adds = progress.totalResourceAdds(panel.equipBonus());
         Actor.State base = actor.snapshot();
-        int totalMaxHp = Math.max(1, base.baseMaxHp() + adds[0] + 7 * adds[3] + 2 * adds[2]);
-        int totalMaxMp = Math.max(1, base.baseMaxMp() + adds[1] + 4 * adds[4] + adds[5]);
+        // 客户端校准覆盖（vitals.max_hp_override）：血条上限由客户端按装备/内功自算，
+        // 服务端公式缺层时用覆盖对齐（2026-11-05 真机 3496/1442 vs 客户端 5366/2007）。
+        int hpOverride = panel.maxHpOverride();
+        int mpOverride = panel.maxMpOverride();
+        int totalMaxHp = hpOverride > 0 ? hpOverride
+                : Math.max(1, base.baseMaxHp() + adds[0] + 7 * adds[3] + 2 * adds[2]);
+        int totalMaxMp = mpOverride > 0 ? mpOverride
+                : Math.max(1, base.baseMaxMp() + adds[1] + 4 * adds[4] + adds[5]);
         actor.setDerivedMaxima(totalMaxHp, totalMaxMp);
     }
 
@@ -785,6 +810,70 @@ public final class PlayerActor {
     private String currentSkillEffectId = "";
     private int currentSkillLevel;
     private long currentSkillTarget;
+    /** 出招代次：每次 beginSkillUse 成功自增——收尾定时器按 (id, epoch) 防误删后续招
+     * （GCD 不硬闸下 1-3s 连招会把上一招的收尾顶掉；同技能快速复读时 id 相同须靠代次区分）。 */
+    private long currentSkillEpoch;
+    /**
+     * 冲锋暂存出招（IDA stagePreCast/handleCastDashLanding 取证）：超 RushRange 的
+     * SkillLock+CanRush 技能先暂存 30s 窗口并让客户端起跑，落地 212 后重组 211 续招。
+     */
+    private String pendingSkillId = "";
+    private int pendingTargetObj;
+    private int pendingTargetOwner;
+    private java.time.Instant pendingCastExpiresAt;
+    private volatile boolean rushInFlight;
+
+    /** 暂存出招（冲锋起跑时；IDA stagePendingCast）。 */
+    public synchronized void stagePendingCast(String skillId, int targetObj, int targetOwner,
+                                              java.time.Instant expiresAt) {
+        pendingSkillId = skillId;
+        pendingTargetObj = targetObj;
+        pendingTargetOwner = targetOwner;
+        pendingCastExpiresAt = expiresAt;
+    }
+
+    /** 暂存出招快照（落地续招重组 211 用）。 */
+    public record PendingCast(String skillId, int targetObj, int targetOwner) {
+    }
+
+    /** 取出暂存出招（过期/为空返回 empty 并清空，IDA consumePendingCast）。 */
+    public synchronized java.util.Optional<PendingCast> consumePendingCast(java.time.Instant now) {
+        if (pendingSkillId.isEmpty() || pendingCastExpiresAt == null
+                || now.isAfter(pendingCastExpiresAt)) {
+            pendingSkillId = "";
+            pendingTargetObj = 0;
+            pendingTargetOwner = 0;
+            pendingCastExpiresAt = null;
+            return java.util.Optional.empty();
+        }
+        PendingCast pending = new PendingCast(pendingSkillId, pendingTargetObj, pendingTargetOwner);
+        pendingSkillId = "";
+        pendingTargetObj = 0;
+        pendingTargetOwner = 0;
+        pendingCastExpiresAt = null;
+        return java.util.Optional.of(pending);
+    }
+
+    public void markRushInFlight() {
+        rushInFlight = true;
+    }
+
+    public void clearRushInFlight() {
+        rushInFlight = false;
+    }
+
+    public boolean rushInFlight() {
+        return rushInFlight;
+    }
+
+    /** 暂存出招只读查看（msg15 到位探测用；过期/为空返回 null，不消费不清空）。 */
+    public synchronized PendingCast peekPendingCast(java.time.Instant now) {
+        if (pendingSkillId.isEmpty() || pendingCastExpiresAt == null
+                || now.isAfter(pendingCastExpiresAt)) {
+            return null;
+        }
+        return new PendingCast(pendingSkillId, pendingTargetObj, pendingTargetOwner);
+    }
     /** 架势轮换相位（stance 槽当前 staticData → 下一变体）。 */
     private final java.util.Map<Integer, Long> stanceSlotStatic = new java.util.HashMap<>();
     /** 最近一次命中敌人的时刻（战斗退出计时基准；62433 抓包：命中才进 Fighting）。 */
@@ -822,6 +911,13 @@ public final class PlayerActor {
         }
         actor.setLogicState(Actor.LOGIC_STATE_NORMAL);
         return true;
+    }
+
+    /** 单属性 CurSkillID 帧（冲锋暂存时随 msg25 下发，IDA castSkillIDFrame）。 */
+    public byte[] curSkillIdFrame(String skillId) {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "CurSkillID", PropertyValues.Value.ofString(skillId));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
     }
 
     /** 单属性 LogicState 帧（进/退战斗的即时推送，62433 抓包 n=6 小帧的精简形态）。 */
@@ -887,6 +983,7 @@ public final class PlayerActor {
         currentSkillEffectId = skill.id();
         currentSkillLevel = skill.level();
         currentSkillTarget = targetKey;
+        currentSkillEpoch++;
         // 62433 抓包实证：出招不切 Fighting——命中敌人才进战斗（enterCombat）。
         return new SkillGate(true, "");
     }
@@ -901,6 +998,23 @@ public final class PlayerActor {
         currentSkillLevel = 0;
         currentSkillTarget = 0;
         return true;
+    }
+
+    /**
+     * 收尾定时器版：额外校验出招代次——上一招被新招顶掉（GCD 不硬闸下 1-3s 连招）
+     * 或同技能快速复读时，旧定时器不得删掉新招的 active_skill 行
+     * （2026-11-04 对拍：Java 29 加 18 删、参考服 8/8 恒配对）。
+     */
+    public synchronized boolean clearCurrentSkill(String skillId, long epoch) {
+        if (currentSkillEpoch != epoch || !currentSkillId.equals(skillId)) {
+            return false;
+        }
+        return clearCurrentSkill(skillId);
+    }
+
+    /** 当前出招代次（受理后读取，供收尾定时器配对）。 */
+    public synchronized long currentSkillEpoch() {
+        return currentSkillEpoch;
     }
 
     public synchronized String currentSkillId() {
@@ -1037,13 +1151,24 @@ public final class PlayerActor {
         return addObject(location, visual, KeybindArchive.EMPTY);
     }
 
+    public byte[] addObject(Roles.Position location, RoleVisual visual, KeybindArchive keybind) {
+        return addObject(location, visual, keybind, InventoryMessages.WeaponVisual.EMPTY);
+    }
+
     /**
      * 带键位域的 addObject：0x0D 属性档内嵌 ShortcutKey（198，无尾空格——官服
      * 抓包归档形态 641 串+NUL=642）与 OperateMode（223，int32）。引擎在玩家对象
      * 创建时读模式，post-ready 的 0x10 补推太晚不生效（2026-11-04 真机"模式没推"
      * 根因）；官服两处都发（归档 frame#16 + 单属性帧 frame#26），Java 同款双发。
+     *
+     * <p>武器域（2026-11-04 武器不显示根因修复）：Weapon/ShotWeapon（396/398，裸
+     * 模型名→客户端挂 obj\weapon\<名>）随归档下发，ActionSet（406）有械时覆盖
+     * 创角默认（空手保持 visual.actionSet()="0h"）。引擎按玩家属性 Weapon 挂武器
+     * （lua64 role_composite PlayerVisPropChange 实证），此前值误发在
+     * WeaponMode@1599（NPC 域语义）故模型不显示。
      */
-    public byte[] addObject(Roles.Position location, RoleVisual visual, KeybindArchive keybind) {
+    public byte[] addObject(Roles.Position location, RoleVisual visual, KeybindArchive keybind,
+                            InventoryMessages.WeaponVisual weapon) {
         Actor.State state = actor.snapshot();
         Motion currentMotion = motionSnapshot();
         Instant now = clock.instant();
@@ -1074,7 +1199,16 @@ public final class PlayerActor {
         prop(writer, "Cloth", PropertyValues.Value.ofString(visual.cloth()), bump);
         prop(writer, "Pants", PropertyValues.Value.ofString(visual.pants()), bump);
         prop(writer, "Shoes", PropertyValues.Value.ofString(visual.shoes()), bump);
-        prop(writer, "ActionSet", PropertyValues.Value.ofString(visual.actionSet()), bump);
+        // 武器域（官方表序 395 Shoes→396 Weapon→398 ShotWeapon→406 ActionSet）：空手省行。
+        if (!weapon.weapon().isEmpty()) {
+            prop(writer, "Weapon", PropertyValues.Value.ofString(weapon.weapon()), bump);
+        }
+        if (!weapon.shotWeapon().isEmpty()) {
+            prop(writer, "ShotWeapon", PropertyValues.Value.ofString(weapon.shotWeapon()), bump);
+        }
+        prop(writer, "ActionSet", PropertyValues.Value.ofString(
+                weapon.armed() && !weapon.actionSet().isEmpty()
+                        ? weapon.actionSet() : visual.actionSet()), bump);
         prop(writer, "State", PropertyValues.Value.ofString("stand"), bump);
         prop(writer, "FloatingState", PropertyValues.Value.ofInt32(0), bump);
         prop(writer, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)), bump);
@@ -1086,8 +1220,11 @@ public final class PlayerActor {
         prop(writer, "CantJump", PropertyValues.Value.ofByte(0), bump);
         prop(writer, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())), bump);
         prop(writer, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())), bump);
-        prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.maxHp()), bump);   // 有效上限（base+Add层+五维换算）
-        prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.maxMp()), bump);
+        // 2026-11-05 IDA 参考服方言（totalResourceAdds 0x14040b880 + GO 抓包 MaxHP=1000/MaxHPAdd=301/HP=1495）：
+        // MaxHP 推 base 基础值，Add 层与五维换算由客户端自行叠加（HP 允许 > MaxHP+Add）。
+        // 推有效值=客户端把 7×Sta+2×Str 再叠一遍（真机 3496 被叠成 5366）。
+        prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()), bump);
+        prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()), bump);
         prop(writer, "HP", PropertyValues.Value.ofInt32(state.hp()), bump);
         prop(writer, "MP", PropertyValues.Value.ofInt32(state.mp()), bump);
         prop(writer, "HitHP", PropertyValues.Value.ofInt32(state.hitHp()), bump);
@@ -1166,6 +1303,29 @@ public final class PlayerActor {
     }
 
     /**
+     * 打坐回复瘦帧（参考服 52905 #5455/#5459、12141 #9892/#9895 实证）：坐姿期间每秒
+     * 变化时只发 {HP,MP,HPRatio,MPRatio,HitHP,HitHPRatio} 六值，绝不含 LogicState——
+     * 坐姿中重推带 LogicState 的面板会让客户端重入坐姿动画（动画永不落定 +
+     * 240(2) 风暴，2026-11-05 真机「完全没有打坐动画」根因）。
+     */
+    public byte[] sitcrossVitalFrame() {
+        Actor.State state = actor.snapshot();
+        List<PropertyValues.Indexed> properties = new ArrayList<>(6);
+        Props.add(properties, "HP", PropertyValues.Value.ofInt32(state.hp()));
+        Props.add(properties, "MP", PropertyValues.Value.ofInt32(state.mp()));
+        Props.add(properties, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())));
+        Props.add(properties, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())));
+        Props.add(properties, "HitHP", PropertyValues.Value.ofInt32(state.hitHp()));
+        Props.add(properties, "HitHPRatio", PropertyValues.Value.ofInt32(ratio(state.hitHp(), state.maxHp())));
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /** 历练步进帧附加集（castVitalUpdate 之外随帧的历练域属性）。 */
+    private static final java.util.Set<String> LIVEPOINT_PANEL_EXTRA = java.util.Set.of(
+            "LiveGroove_1", "LiveGroove_2", "LiveGroove_3", "LiveGroove_4", "LiveGroove_5",
+            "HoldFaculty", "ResumeEne");
+
+    /**
      * 参考服出招面板白名单（抓包 127-0-0-1-50768 #2007 的 186 名瘦集）：出招时的
      * 全量 0x10 只重发这批。登录面板里的移动模式/外观/身份属性（Mount、CurRiderType、
      * NewRideID、Mount*Speed、WalkSpeed、CantMove、State、ActionSet 等 78 项）官方
@@ -1224,6 +1384,21 @@ public final class PlayerActor {
     }
 
     /**
+     * 历练步进面板：188 名瘦集 + LiveGroove_1..5/HoldFaculty 七项（该帧本来就要
+     * 更新的历练域属性）。Mount/CurRideMount 等登录域属性绝不能随打坐中的
+     * 周期帧重推（清客户端动作态，2026-11-05 打坐动画根因）。
+     */
+    public byte[] livepointVitalUpdate() {
+        List<PropertyValues.Indexed> properties = new ArrayList<>(CAST_PANEL_NAMES.size() + 8);
+        for (PropertyValues.Indexed property : stateProperties()) {
+            if (CAST_PANEL_NAMES.contains(property.name()) || LIVEPOINT_PANEL_EXTRA.contains(property.name())) {
+                properties.add(property);
+            }
+        }
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, properties);
+    }
+
+    /**
      * 收招技能状态清除帧（参考服 exe 127-0-0-1-50768 #2014 六项形态）：
      * LogicState(回显当前，62433 战斗态跨招持续实证非硬编 0) + CurSkillID/Target 清空
      * + CurSkillCanNoLimit/CantBeSkillLocked/CantBeSkillMustLocked 归零。
@@ -1251,8 +1426,9 @@ public final class PlayerActor {
         Props.add(properties, "LogicState", PropertyValues.Value.ofByte(effectiveLogicState(state)));
         Props.add(properties, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())));
         Props.add(properties, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())));
-        Props.add(properties, "MaxHP", PropertyValues.Value.ofInt32(state.maxHp()));  // 有效上限（base+Add层+五维换算）
-        Props.add(properties, "MaxMP", PropertyValues.Value.ofInt32(state.maxMp()));
+        // base 方言（同登录面板，IDA 参考服实证）：客户端自行叠 Add+五维，勿推有效值。
+        Props.add(properties, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()));
+        Props.add(properties, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()));
         Props.add(properties, "HP", PropertyValues.Value.ofInt32(state.hp()));
         Props.add(properties, "MP", PropertyValues.Value.ofInt32(state.mp()));
         Props.add(properties, "SpeedRatio", PropertyValues.Value.ofInt32(state.speedRatio()));

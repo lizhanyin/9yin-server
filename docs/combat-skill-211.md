@@ -222,12 +222,77 @@ State/ActionSet 等移动模式与外观属性官方**不随出招重发**；Jav
 | VarPropNo | 2239 | 匹配 varprop 行号（=客户端 varpkg） | 原恒 0 |
 | UseLimit | 2238 | skill_new.UseLimit | 原恒 9；缺省回落 9 |
 | AConsumeHP/MP/SP/QGP | 2245/2246/2252/2254 | varprop→Consume→skill_consume | 仅 >0 才发（官方稀疏风格）；**怒招由此带出 AConsumeSP → 客户端显示怒气消耗并在怒气不足灰图标** |
-| TargetShapePara1/2 | 2259/2260 | varprop→TargetShapePkg→attack_targetshape | f32；新装载该表 |
-| HitShapePara1/2 | 2261/2262 | varprop→HitShapePkg→attack_hitshape | f32；地面圈指示/射程提示 |
+| TargetShapePara2 | 2260 | varprop→TargetShapePkg→attack_targetshape | f32；**即技能最大射程**，仅 >0 才发（154/207） |
+| HitShapePara1 | 2261 | varprop→HitShapePkg→attack_hitshape | f32；仅扇形族（HitShape 类型 3/9/10）发（=角度）；矩形宽度不发 |
+| HitShapePara2 | 2262 | varprop→HitShapePkg→attack_hitshape | f32；仅 HitShape 类型 >0 发（htype=0 无形状 124 例全不发）；地面圈指示/射程提示 |
 
 官方行的 `Type(0)` 跳过（属名在 0x09 表多处出现，玩家域解析到 idx181 语义不明）。
+TargetShapePara1 官方 207 行从不发，不下发。
 服务端 SP 闸门本就存在（`PlayerActor.beginSkillUse`：SP&lt;AConsumeSP 拒 + 扣减），
 此前体感「没检查」= 客户端看不到消耗 + 怒气无获得途径单向扣。
+
+### 11.1b 最大射程 50 根因与 DB 技能行对齐（2026-11-05，view40_range_probe.py）
+
+真机「技能最大射程全是 50」：登录技能行走 `StarterGrants.dbSkillViewAdd`（DB 行，
+bak roleSkillViewAdd 十属性），其中 `TargetShapePara2=50.0f`/`PrepareTime=1000`/
+`LeadTime/LeadSepTime` 为 bak 硬编码——§11.1 的补集只接了 `StarterSkills` 初始授予路。
+对拍（参考服 127-0-0-1-63125 s2c 207 行 vs Java 51482 s2c 193 行）实锤：官方
+TargetShapePara2=3~25m 真值稀疏发、Java 193 行恒 50。
+
+修复：`dbSkillViewAdd` 与 `StarterSkills` 同走 `skillRowData`——删四个 bak 硬编码
+（PrepareTime/TargetShapePara2=50/LeadTime/LeadSepTime，官方均不发），补
+VarPropNo/CanUse（官方 207/207 每行必发）+ AConsume 族/TargetShapePara2/HitShape1/2/
+UseLimit（>0 稀疏）；顺带修 WuXing 双发（0+目录值各一行）。形状族规则见上表。
+
+已知表版本出入孤例（官方行为 vs 本地表推值，4/207）：chz03 官方发 H2=15 而本地
+hitshape[1] 类型 0（规则不发）；chz06/sfgp07×2 官方不发 H2 而本地 hitshape 圆有值
+（规则发）。判定为参考服 exe 运行表与 resources 目录表版本不同步，按规则取值。
+
+对拍工具：`tools/smoke/view40_range_probe.py <s2c.bin>`（View40 行形状族+分布）。
+
+### 11.1c 出招射程闸接入真实射程 + 冲锋超距暂存链默认开（2026-11-05 二轮，61653 抓包）
+
+用户反馈「射程值没参与服务端释放判定；超距参考服会下发指令（冲锋场景）」。参考服
+127-0-0-1-61653 抓包钉死链路：玩家出招 `CS_jh_myjf02`（skilllock+CanRush=1 无
+RushRange，TSP2=6），目标 6.73m → `msg25[30000,'skill_pause']`（**int 前、串后**，
+Java 旧实现串在前已同批修正）+ `msg24[玩家,61,目标位置,2,'qg_fastruning_s_2h_01']`
+疾跑起跑；玩家未抵达（无 C2S 212），30s 窗口作废。
+
+**射程闸模型**（`SkillCastHandler`，替代旧 max(HitShape 半径, 8m 兜底)）：
+
+| 条件 | 判定值 |
+|---|---|
+| CanRush 且 RushRange>0 | RushRange（冲锋位移上限） |
+| 否则 TargetShapePara2>0 | **TSP2（技能真实射程）** |
+| 全无值 | max(HitShape 半径, 近战身位 8m) 兜底 |
+
+- 超距冲锋（skilllock+CanRush）→ **暂存链**（msg25+msg24，客户端播疾跑=有反馈），
+  30s 内 C2S 212 落地续招——**默认开**（用户拍板对齐参考服 exe）；
+  `-Dnineyin.rush.stage=false` 关回官服语义（锁定/冲锋族 60m 兜底直接受理+337 终点）。
+- 其余单体超距静默拒（客户端本地按 TSP2 面板变红，参考服同）。
+- 旧「锁定族 60m 兜底」只在官服语义保留（stage 关时）。
+- 测试：`RushStageFlowTest.myjf02OutOfRangeStagesByTargetShapePara2`（61653 场景
+  复刻：6.7m 触发 / 5m 直接受理 / msg25 值序断言）；注意 myjf02 UseLimit=2 →
+  单手剑 102，Harness 须 `noteEquippedWeaponItemType(102)` 过武器闸。
+
+### 11.1d 冲锋到位自动续招（2026-11-05 三轮：客户端不必然发 212，服务端主动探测）
+
+落地续招（「冲到目标范围内后下发帧数据攻击目标」）的依据链：
+- IDA `main.handleCastDashLanding`（menu2 exe）：337 回显 → msg26 → 重组 10 值 211 →
+  `handleSkillCustom`（正式出招链=msg20 动作三分/CD/伤害段官服受理簇同款）——Java 已对齐。
+- **客户端 212 发送不必然**：lua64 仅 `CLIENT_CUSTOMMSG_RESUME_SKILL = 212` 定义、
+  无 lua 发送方（C++ 引擎侧）；61653 实证玩家到过目标 1m 内仍未发 212（msg24 c61
+  后玩家自由态徘徊）。msg25「skill_pause」客户端语义也只是进度条 UI
+  （custom_effect.lua star_fight_progress）。
+- 官服（op2）无暂存链（受理即攻击），pcapng 里 212 零出现——落地续招帧无官方抓包
+  可抄，按 exe 逆向 + 官服受理簇标准实现。
+
+**实现**：msg15 移动上报（9 值 `[15, state, moveType, f32 x/y/z, f32 orient,
+(会话哈希), tick]`，此前 default 分支仅 log）→ `LoginFlow.handleMovementUpload`：
+冲锋暂存挂起（rushInFlight）时取 idx 3-6 坐标交 `SkillCastHandler.tryRushArrival`
+——玩家与暂存目标距离 ≤ 技能射程（闸模型同 §11.1c）即调 `resumePendingCastAt`
+（与 212 共用本体：337+msg26+重组 211 出招）。`consumePendingCast` 幂等，双触发
+只生效一次。msg15 高频：非冲锋态直接 return 不落日志。
 
 ### 11.2 怒气获得（官方机制，用户 2026-11-03 确认）
 

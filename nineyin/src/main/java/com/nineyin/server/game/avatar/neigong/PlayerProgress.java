@@ -74,6 +74,23 @@ public final class PlayerProgress {
     public record BookSnapshot(String configId, int level, int fill, int total, int power, int maxPower) {
     }
 
+    /**
+     * 生存属性快照（体力/饱食/杀戮/酒量，GM set_vitals 域）。
+     * 档案形态寄居 role_faculty 快照的嵌套 vitals 节；null = 旧档/从未 GM 设置。
+     * maxHp/maxMpOverride：血蓝上限客户端校准值（血条上限由客户端按装备/内功自行
+     * 换算，服务端公式复刻前用覆盖对齐；0=不覆盖走公式）。
+     */
+    public record Vitals(int ene, int maxEne, int resumeEne, int sat, int maxSat,
+                         int pkValue, int drunkLevel,
+                         int maxHpOverride, int maxMpOverride) {
+
+        /** 兼容构造（无上限校准，override=0）。 */
+        public Vitals(int ene, int maxEne, int resumeEne, int sat, int maxSat,
+                      int pkValue, int drunkLevel) {
+            this(ene, maxEne, resumeEne, sat, maxSat, pkValue, drunkLevel, 0, 0);
+        }
+    }
+
     public record Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
                            String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
                            Instant lastAdvanceUtc, List<BookSnapshot> books,
@@ -81,7 +98,55 @@ public final class PlayerProgress {
                            int holdFaculty, int liveSpeedPower, Instant lastLivepointUtc,
                            int actDayValue, int actCostSuiYin, int actDayValueMax,
                            int actDayValueUsed, int actDayValueLast,
-                           int teamFacultyValue, int teamFacultyLast) {
+                           int teamFacultyValue, int teamFacultyLast,
+                           int baseStr, int baseSta, int baseDex, int baseIng, int baseSpi,
+                           Vitals vitals) {
+
+        /** 全量契约构造（无生存属性层）：旧档缺 vitals 节 → null（restore 不动 PanelState）。 */
+        public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
+                        String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
+                        Instant lastAdvanceUtc, List<BookSnapshot> books,
+                        int liveGroove1, int liveGroove2, int liveGroove3, int liveGroove4, int liveGroove5,
+                        int holdFaculty, int liveSpeedPower, Instant lastLivepointUtc,
+                        int actDayValue, int actCostSuiYin, int actDayValueMax,
+                        int actDayValueUsed, int actDayValueLast,
+                        int teamFacultyValue, int teamFacultyLast,
+                        int baseStr, int baseSta, int baseDex, int baseIng, int baseSpi) {
+            this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
+                    fillSpeedBase, fillSpeedMultiplier, lastAdvanceUtc, books,
+                    liveGroove1, liveGroove2, liveGroove3, liveGroove4, liveGroove5,
+                    holdFaculty, liveSpeedPower, lastLivepointUtc,
+                    actDayValue, actCostSuiYin, actDayValueMax, actDayValueUsed, actDayValueLast,
+                    teamFacultyValue, teamFacultyLast, baseStr, baseSta, baseDex, baseIng, baseSpi, null);
+        }
+
+        /** 生存属性层注入（PlayerActor.facultySnapshot 把 PanelState 现值并入档案）。 */
+        public Snapshot withVitals(Vitals value) {
+            return new Snapshot(curNeiGong, faculty, facultyState, facultyStyle, facultyName,
+                    fillSpeed, fillSpeedBase, fillSpeedMultiplier, lastAdvanceUtc, books,
+                    liveGroove1, liveGroove2, liveGroove3, liveGroove4, liveGroove5,
+                    holdFaculty, liveSpeedPower, lastLivepointUtc,
+                    actDayValue, actCostSuiYin, actDayValueMax, actDayValueUsed, actDayValueLast,
+                    teamFacultyValue, teamFacultyLast,
+                    baseStr, baseSta, baseDex, baseIng, baseSpi, value);
+        }
+
+        /** 全量契约构造（无五维层）：旧档缺省 0 → restore 不覆盖运行时值（保留种子/GM 现值）。 */
+        public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
+                        String facultyName, int fillSpeed, int fillSpeedBase, float fillSpeedMultiplier,
+                        Instant lastAdvanceUtc, List<BookSnapshot> books,
+                        int liveGroove1, int liveGroove2, int liveGroove3, int liveGroove4, int liveGroove5,
+                        int holdFaculty, int liveSpeedPower, Instant lastLivepointUtc,
+                        int actDayValue, int actCostSuiYin, int actDayValueMax,
+                        int actDayValueUsed, int actDayValueLast,
+                        int teamFacultyValue, int teamFacultyLast) {
+            this(curNeiGong, faculty, facultyState, facultyStyle, facultyName, fillSpeed,
+                    fillSpeedBase, fillSpeedMultiplier, lastAdvanceUtc, books,
+                    liveGroove1, liveGroove2, liveGroove3, liveGroove4, liveGroove5,
+                    holdFaculty, liveSpeedPower, lastLivepointUtc,
+                    actDayValue, actCostSuiYin, actDayValueMax, actDayValueUsed, actDayValueLast,
+                    teamFacultyValue, teamFacultyLast, 0, 0, 0, 0, 0);
+        }
 
         /** 旧契约构造（快照无修速拆分层）：基础值/倍率取默认 200 × 1。 */
         public Snapshot(String curNeiGong, int faculty, int facultyState, int facultyStyle,
@@ -497,8 +562,15 @@ public final class PlayerProgress {
                 a.minMeleeDamage + bonus.minMelee + eff(equipped, "MinMeleeDamage")));
         Props.add(properties, "MaxMeleeDamage", PropertyValues.Value.ofInt32(
                 a.maxMeleeDamage + bonus.maxMelee + eff(equipped, "MaxMeleeDamage")));
-        Props.add(properties, "MaxHPAdd", PropertyValues.Value.ofInt32(a.maxHpAdd + bonus.maxHpAdd));
-        Props.add(properties, "MaxMPAdd", PropertyValues.Value.ofInt32(a.maxMpAdd + bonus.maxMpAdd));
+        // 2026-11-05 客户端血蓝条上限公式钉死（参考服 52905 三面板实证 1000+495=1495、
+        // 500+204=704=满值）：clientMax = MaxHP + MaxHPAdd——Add 须承载全部剩余层
+        // （五维换算+装备词缀+内功书），即 effective − base。只推书/词缀层=客户端
+        // 条上限停在 base（真机 2870/1065 事故）。
+        int[] resourceAdds = totalResourceAdds(bonus);
+        Props.add(properties, "MaxHPAdd", PropertyValues.Value.ofInt32(
+                resourceAdds[0] + 7 * resourceAdds[3] + 2 * resourceAdds[2]));
+        Props.add(properties, "MaxMPAdd", PropertyValues.Value.ofInt32(
+                resourceAdds[1] + 4 * resourceAdds[4] + resourceAdds[5]));
         Props.add(properties, "MaxParryAdd", PropertyValues.Value.ofInt32(maxParryAdd));
         Props.add(properties, "MinMagicDefAdd", PropertyValues.Value.ofInt32(minMagicDefAdd));
         Props.add(properties, "MaxLevel", PropertyValues.Value.ofInt32(maxLevel));
@@ -617,7 +689,8 @@ public final class PlayerProgress {
                 liveGroove[0], liveGroove[1], liveGroove[2], liveGroove[3], liveGroove[4],
                 holdFaculty, liveSpeedPower, lastLivepoint,
                 actDayValue, actCostSuiYin, actDayValueMax, actDayValueUsed, actDayValueLast,
-                teamFacultyValue, teamFacultyLast);
+                teamFacultyValue, teamFacultyLast,
+                attributes.str, attributes.sta, attributes.dex, attributes.ing, attributes.spi);
     }
 
     // ------------------------------------------------------------------- 怒气 SP
@@ -625,6 +698,36 @@ public final class PlayerProgress {
     /** 当前怒气（Go progress.attributes.sp，默认 100）。 */
     public int sp() {
         return attributes.sp;
+    }
+
+    /** 基础五维上限（GM set_five_attributes 入口同域；防脏档把 HP/MP 换算族爆 int）。 */
+    static final int BASE_ATTRIBUTE_CAP = 1_000_000;
+
+    /**
+     * GM set_five_attributes：覆盖式写基础五维（面板契约：null/≤0 跳过该维，非累加）。
+     * 0x10 帧的 Str/Sta/Dex/Ing/Spi 与 HP/MP 换算族（7×体魄+2×臂力、4×内息+罡气）
+     * 都从这五个基值派生，改完 vitalUpdate 全量即刷新。
+     *
+     * @return 写入后的 [臂力, 体魄, 身法, 内息, 罡气] 基值
+     */
+    public synchronized int[] setBaseAttributes(Integer str, Integer sta, Integer dex,
+                                                Integer ing, Integer spi) {
+        if (str != null && str > 0) {
+            attributes.str = Math.min(str, BASE_ATTRIBUTE_CAP);
+        }
+        if (sta != null && sta > 0) {
+            attributes.sta = Math.min(sta, BASE_ATTRIBUTE_CAP);
+        }
+        if (dex != null && dex > 0) {
+            attributes.dex = Math.min(dex, BASE_ATTRIBUTE_CAP);
+        }
+        if (ing != null && ing > 0) {
+            attributes.ing = Math.min(ing, BASE_ATTRIBUTE_CAP);
+        }
+        if (spi != null && spi > 0) {
+            attributes.spi = Math.min(spi, BASE_ATTRIBUTE_CAP);
+        }
+        return new int[]{attributes.str, attributes.sta, attributes.dex, attributes.ing, attributes.spi};
     }
 
     /** Go clampPlayerSP + setSP 状态部分：0..100 饱和，返回应用后的值。 */
@@ -661,6 +764,22 @@ public final class PlayerProgress {
         // 原样恢复不打折（恢复中的普通内修态由下方 advanceFaculty 按原速追结算）。
         fillSpeedBase = value.fillSpeedBase() > 0 ? value.fillSpeedBase() : NORMAL_FACULTY_FILL_PER_MINUTE;
         fillSpeedMultiplier = value.fillSpeedMultiplier() > 0f ? value.fillSpeedMultiplier() : 1.0f;
+        // 基础五维（GM set_five_attributes）：旧档缺省 0 不覆盖（保留 create 种子/GM 现值），上限钳制。
+        if (value.baseStr() > 0) {
+            attributes.str = Math.min(value.baseStr(), BASE_ATTRIBUTE_CAP);
+        }
+        if (value.baseSta() > 0) {
+            attributes.sta = Math.min(value.baseSta(), BASE_ATTRIBUTE_CAP);
+        }
+        if (value.baseDex() > 0) {
+            attributes.dex = Math.min(value.baseDex(), BASE_ATTRIBUTE_CAP);
+        }
+        if (value.baseIng() > 0) {
+            attributes.ing = Math.min(value.baseIng(), BASE_ATTRIBUTE_CAP);
+        }
+        if (value.baseSpi() > 0) {
+            attributes.spi = Math.min(value.baseSpi(), BASE_ATTRIBUTE_CAP);
+        }
         lastAdvance = value.lastAdvanceUtc();
         for (BookSnapshot saved : value.books()) {
             Book item = book(saved.configId());

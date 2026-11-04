@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import com.nineyin.server.game.avatar.RoleVisual;
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
+import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.world.db.RoleInventoryStore;
 
 /**
@@ -138,21 +139,85 @@ class AppearanceSyncTest {
                 List.of(equip("Weapon", AppearanceSync.SLOT_WEAPON),
                         equip("Necklace", 12)),
                 resolver());
-        assertTrue(models.isEmpty()); // 武器走 WeaponMode，饰品不覆盖模型
+        assertTrue(models.isEmpty()); // 武器走 Weapon/ActionSet 属性，饰品不覆盖模型
     }
 
     @Test
-    void appearanceFramePushesClothAndWeaponMode() {
+    void appearanceFramePushesClothAndWeaponProps() {
         RoleInventoryStore.Equip wornCloth = new RoleInventoryStore.Equip(
                 "cfg_cloth_worn", 0, "Cloth", AppearanceSync.SLOT_CLOTH, 100, 100, 9, "");
-        RoleInventoryStore.Equip weapon = equip("Weapon", AppearanceSync.SLOT_WEAPON);
+        RoleInventoryStore.Equip weapon = new RoleInventoryStore.Equip(
+                "cfg_weapon", 102, "Weapon", AppearanceSync.SLOT_WEAPON, 100, 100, 41, "");
         byte[] frame = AppearanceSync.appearanceFrame(1, 1, AppearanceSync.SHOW_EQUIP_GEAR, 0,
-                List.of(wornCloth, weapon), resolver());
+                List.of(wornCloth, weapon), weaponResolver());
         assertEquals(0x10, frame[0] & 0xFF);
-        // WeaponMode 非空时随帧下发（weaponModeOf 无 ArtPack 表回退原 configId）
         String text = new String(frame, java.nio.charset.StandardCharsets.ISO_8859_1);
         assertTrue(text.contains("obj\\worn\\cloth"));
-        assertTrue(text.contains("cfg_Weapon"));
+        // 武器三属性：Weapon=裸模型名（引擎挂 obj\weapon\<名>.xmod）+ ActionSet=表值 2h
+        assertTrue(text.contains("sword_art_001"));
+        assertTrue(text.contains("2h"));
+        // WeaponMode@1599（NPC 域语义）不再下发
+        assertFalse(text.contains("WeaponMode"));
+    }
+
+    @Test
+    void appearanceFrameClearsWeaponWithEmptyStrings() {
+        // 官服收武器 0x10 实证：Weapon=""/ActionSet="" 显式清除（衣裤鞋空值仍跳过）
+        RoleInventoryStore.Equip wornCloth = new RoleInventoryStore.Equip(
+                "cfg_cloth_worn", 0, "Cloth", AppearanceSync.SLOT_CLOTH, 100, 100, 9, "");
+        byte[] frame = AppearanceSync.appearanceFrame(1, 1, AppearanceSync.SHOW_EQUIP_GEAR, 0,
+                List.of(wornCloth), weaponResolver());
+        assertEquals(0x10, frame[0] & 0xFF);
+        List<PropertyValues.Indexed> rows = indexedRows(frame);
+        assertEquals(3, rows.stream().filter(r -> r.int16Index() == 396
+                || r.int16Index() == 398 || r.int16Index() == 406).count(),
+                "396 Weapon / 398 ShotWeapon / 406 ActionSet 三行都在（值空串）");
+    }
+
+    /** 0x10 帧粗解（只认 Cloth/Weapon/ShotWeapon/ActionSet/ShowEquipType 行）。 */
+    private static List<PropertyValues.Indexed> indexedRows(byte[] frame) {
+        List<PropertyValues.Indexed> rows = new java.util.ArrayList<>();
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(frame)) {
+            in.readNBytes(12); // 0x10 头：op+isView+objId+ownerId+count
+            while (in.available() > 0) {
+                int b1 = in.read();
+                int b2 = in.read();
+                if (b1 < 0 || b2 < 0) {
+                    break;
+                }
+                int index = b1 | (b2 << 8);
+                if (index == 408) { // ShowEquipType type1
+                    in.readNBytes(1);
+                    continue;
+                }
+                if (index == 393 || index == 396 || index == 398 || index == 406) { // type7 串行
+                    byte[] len = in.readNBytes(4);
+                    int n = (len[0] & 0xFF) | ((len[1] & 0xFF) << 8)
+                            | ((len[2] & 0xFF) << 16) | ((len[3] & 0xFF) << 24);
+                    String value = new String(in.readNBytes(n),
+                            java.nio.charset.StandardCharsets.ISO_8859_1);
+                    rows.add(PropertyValues.Indexed.of(index, "",
+                            PropertyValues.Value.ofString(value)));
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException(e);
+        }
+        return rows;
+    }
+
+    /** 武器桩表：江湖装衣（9）+ ArtPack 41 → 模型 sword_art_001 / ActionSet 2h（ItemType 102 剑）。 */
+    private EquipmentResolver weaponResolver() {
+        try {
+            java.nio.file.Files.writeString(tempDir.resolve("equipment.ini"),
+                    "[cfg_cloth_worn]\r\nArtPack=9\r\n\r\n[cfg_weapon]\r\nArtPack=41\r\n\r\n");
+            java.nio.file.Files.writeString(tempDir.resolve("itemartstatic.ini"),
+                    "[9]\r\nMaleModel=obj\\worn\\cloth\r\n\r\n"
+                    + "[41]\r\nMaleModel=sword_art_001\r\nActionSet=2h\r\n\r\n");
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        return EquipmentResolver.load(tempDir);
     }
 
     @Test

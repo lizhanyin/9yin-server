@@ -60,6 +60,8 @@ public final class FightState {
     private final Map<Integer, NpcCombat> npcs = new HashMap<>();
     private int selectedObjectId;
     private int selectedOwner;
+    /** NPC 反击 AI（懒挂，玩家首次命中目标时创建；选角/切图随 FightState 重建）。 */
+    private volatile NpcCombatAi npcAi;
 
     /** 0x07/431 选中：须为 combat NPC 且存活（Go selectedCombatTarget 语义）。 */
     public synchronized boolean selectTarget(SceneLifecycle world, int objectId, int ownerId) {
@@ -190,5 +192,20 @@ public final class FightState {
             npcs.put(id, combat);
         }
         return combat;
+    }
+
+    /** NPC 战斗态查询（反击 AI 用；未物化返回 null）。 */
+    public synchronized NpcCombat npc(int id) {
+        return npcs.get(id);
+    }
+
+    /** 反击 AI 实例（无则 null）。 */
+    public NpcCombatAi npcAi() {
+        return npcAi;
+    }
+
+    /** 挂反击 AI（playerEngaged 换会话时重建）。 */
+    public void attachNpcAi(NpcCombatAi ai) {
+        this.npcAi = ai;
     }
 }

@@ -82,6 +82,7 @@ public final class AppearanceStore {
         try (java.sql.Connection connection = database.getConnection();
              java.sql.Statement statement = connection.createStatement()) {
             // 权威建表走 admin/sql/0007；此处兜底与 role_skins 同款（FK CASCADE）。
+            // FK 名须全库唯一：fk_appearance_role 已被基线表 role_appearances（纸娃娃 JSON）占用。
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS role_appearance ("
                     + "role_id BIGINT UNSIGNED NOT NULL,"
                     + "show_equip_type TINYINT UNSIGNED NOT NULL DEFAULT 0,"
@@ -89,7 +90,7 @@ public final class AppearanceStore {
                     + "updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
                     + " ON UPDATE CURRENT_TIMESTAMP(6),"
                     + "PRIMARY KEY (role_id),"
-                    + "CONSTRAINT fk_appearance_role FOREIGN KEY (role_id) REFERENCES roles(role_id)"
+                    + "CONSTRAINT fk_show_equip_role FOREIGN KEY (role_id) REFERENCES roles(role_id)"
                     + " ON DELETE CASCADE"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         } catch (Exception e) {

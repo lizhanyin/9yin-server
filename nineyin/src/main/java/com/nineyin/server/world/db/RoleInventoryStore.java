@@ -778,19 +778,23 @@ public final class RoleInventoryStore implements AutoCloseable {
     private static final int BAG_SLOTS = 90;
 
     /**
-     * 使用卡片道具消耗（风物志收录）：指定槽位数量减 count，减到 0 删行。
+     * 道具消耗（卡片收录/使用/丢弃）：指定分类页槽位数量减 count，减到 0 删行。
+     * slot 为页内编号（各页独立 1..90），须带 viewCategory（game_items view_id 分类
+     * 1-4）限定，否则跨页同 slot 会扣错行。
      *
      * @return 消耗后剩余数量（删行返回 0）；槽位无行/数量不足返回 -1
      */
-    public int consumeBagItem(long roleId, int slot, int count) {
+    public int consumeBagItem(long roleId, int viewCategory, int slot, int count) {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
                 Integer amount = null;
                 try (PreparedStatement find = connection.prepareStatement(
-                        "SELECT amount FROM role_bag_items WHERE role_id = ? AND slot = ?")) {
+                        "SELECT amount FROM role_bag_items WHERE role_id = ? AND slot = ?"
+                                + " AND view_id = ?")) {
                     find.setLong(1, roleId);
                     find.setInt(2, slot);
+                    find.setInt(3, viewCategory);
                     try (ResultSet result = find.executeQuery()) {
                         if (result.next()) {
                             amount = result.getInt(1);
@@ -803,19 +807,23 @@ public final class RoleInventoryStore implements AutoCloseable {
                 }
                 if (amount > count) {
                     try (PreparedStatement update = connection.prepareStatement(
-                            "UPDATE role_bag_items SET amount = ? WHERE role_id = ? AND slot = ?")) {
+                            "UPDATE role_bag_items SET amount = ? WHERE role_id = ? AND slot = ?"
+                                    + " AND view_id = ?")) {
                         update.setInt(1, amount - count);
                         update.setLong(2, roleId);
                         update.setInt(3, slot);
+                        update.setInt(4, viewCategory);
                         update.executeUpdate();
                     }
                     connection.commit();
                     return amount - count;
                 }
                 try (PreparedStatement delete = connection.prepareStatement(
-                        "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ?")) {
+                        "DELETE FROM role_bag_items WHERE role_id = ? AND slot = ?"
+                                + " AND view_id = ?")) {
                     delete.setLong(1, roleId);
                     delete.setInt(2, slot);
+                    delete.setInt(3, viewCategory);
                     delete.executeUpdate();
                 }
                 connection.commit();

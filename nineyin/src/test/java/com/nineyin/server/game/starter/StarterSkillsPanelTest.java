@@ -75,8 +75,9 @@ class StarterSkillsPanelTest {
         // 空目录 WuXing 缺省 5=太极）
         byte[] fallback = SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, 1,
                 StarterSkills.skillRowProperties(skill, null));
-        assertEquals(29, count(fallback), "24 原属性 + 补集 5（AConsumeMP+4 形状参数；"
-                + "hsqs01 无 AConsumeHP/SP/QGP 不发）");
+        assertEquals(26, count(fallback), "24 原属性 + 补集 2（AConsumeMP+TargetShapePara2；"
+                + "hsqs01 无 AConsumeHP/SP/QGP 不发；TargetShapePara1 官方从不发、"
+                + "HitShapePkg=1 类型 0 无形状 H1/H2 不发——2026-11-05 官方对拍规则）");
         assertEquals(12636, intValueOf(fallback, "StaticData"));
         assertEquals(11, intValueOf(fallback, "MaxLevel"));
         assertEquals(1, byteValueOf(fallback, "Level"), "等级走 Level(1465,BYTE)");

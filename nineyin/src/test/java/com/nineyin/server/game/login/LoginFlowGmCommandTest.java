@@ -192,6 +192,23 @@ class LoginFlowGmCommandTest {
         assertEquals(100, env.session.player.panel().maxEne);
         assertEquals(7, env.session.player.panel().pkValue);
         assertEquals(3, env.session.player.panel().drunkLevel);
+        // 生存属性随 faculty 快照携行（嵌套 vitals 节，重登 restoreFaculty 回填 PanelState）。
+        var vitals = env.session.player.facultySnapshot().vitals();
+        assertTrue(vitals != null, "facultySnapshot 应并入 PanelState 生存属性层");
+        assertEquals(80, vitals.ene());
+        assertEquals(100, vitals.maxEne());
+        assertEquals(7, vitals.pkValue());
+        assertEquals(3, vitals.drunkLevel());
+        assertEquals(0, vitals.sat(), "未提供的饱食保持 0");
+        // 快照回填：新 actor restore 后 PanelState 恢复同值（PlayerActor.restoreFaculty 链）。
+        PlayerActor restored = PlayerActor.create("赵灵儿", 99998, Clock.systemUTC());
+        restored.restoreFaculty(env.session.player.facultySnapshot(), java.time.Instant.now());
+        assertEquals(80, restored.panel().ene);
+        assertEquals(100, restored.panel().maxEne);
+        assertEquals(7, restored.panel().pkValue);
+        assertEquals(3, restored.panel().drunkLevel);
+        assertTrue(env.hub.get(env.session.machine.id()).lastAction.contains("杀戮 7"),
+                "lastAction 回显生存属性明细");
         byte[] frame = env.channel.readOutbound();
         assertTrue(frame != null && (frame[0] & 0xFF) == 0x10);
         int count = (frame[10] & 0xFF) | (frame[11] & 0xFF) << 8;
@@ -199,6 +216,38 @@ class LoginFlowGmCommandTest {
         GmCommand empty = env.enqueue("set_vitals", Map.of());
         env.flow.drainGmCommands(new Connection(env.channel), env.session);
         assertFalse(reply(empty).ok());
+    }
+
+    @Test
+    void fiveAttributesApplySkipZeroAndPersistSnapshot() {
+        Env env = new Env();
+        GmCommand command = env.enqueue("set_five_attributes",
+                Map.of("attrStr", 666, "attrSta", 555, "attrDex", 0, "attrIng", 444, "attrSpi", 0));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(command).ok(), reply(command).message());
+        // 覆盖式写入落快照；0=跳过该维（dex/spi 保持 create 种子 30）。
+        var snapshot = env.session.player.facultySnapshot();
+        assertEquals(666, snapshot.baseStr());
+        assertEquals(555, snapshot.baseSta());
+        assertEquals(30, snapshot.baseDex());
+        assertEquals(444, snapshot.baseIng());
+        assertEquals(30, snapshot.baseSpi());
+        // 0x10 全量：Str/Sta/Ing = 基值 + 运功内功书加成（ng_wd_001：臂45/体31/身13/内46/罡13；
+        // Env 无装备词缀）。0 维跳过的 Dex = 种子 30 + 书 13。
+        byte[] frame = env.channel.readOutbound();
+        assertTrue(frame != null && (frame[0] & 0xFF) == 0x10, "五维走 0x10 全量");
+        assertEquals(711, int32Property(frame, "Str"));
+        assertEquals(586, int32Property(frame, "Sta"));
+        assertEquals(490, int32Property(frame, "Ing"));
+        assertEquals(43, int32Property(frame, "Dex"), "0 维跳过，帧内=种子 30+书 13");
+        assertTrue(env.hub.get(env.session.machine.id()).lastAction.contains("五维已更新"));
+
+        GmCommand allZero = env.enqueue("set_five_attributes",
+                Map.of("attrStr", 0, "attrSta", 0, "attrDex", 0, "attrIng", 0, "attrSpi", 0));
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertFalse(reply(allZero).ok(), "五维全 0/缺省失败");
     }
 
     @Test

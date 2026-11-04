@@ -192,14 +192,20 @@ public final class StarterSkills {
             Props.addView(properties, "AConsumeQGP", PropertyValues.Value.ofInt32(rowData.aConsumeQGP()));
         }
         if (rowData != null) {
-            Props.addView(properties, "TargetShapePara1", PropertyValues.Value.ofFloat32(
-                    rowData.targetShapePara1()));
-            Props.addView(properties, "TargetShapePara2", PropertyValues.Value.ofFloat32(
-                    rowData.targetShapePara2()));
-            Props.addView(properties, "HitShapePara1", PropertyValues.Value.ofFloat32(
-                    rowData.hitShapePara1()));
-            Props.addView(properties, "HitShapePara2", PropertyValues.Value.ofFloat32(
-                    rowData.hitShapePara2()));
+            // TargetShapePara1 官方从不发（参考服 207 行 0 次，2026-11-05 对拍），不发；
+            // 其余形状/消耗族仅 >0 才发（官方稀疏风格）。
+            if (rowData.targetShapePara2() > 0) {
+                Props.addView(properties, "TargetShapePara2", PropertyValues.Value.ofFloat32(
+                        rowData.targetShapePara2()));
+            }
+            if (rowData.hitShapePara1() > 0) {
+                Props.addView(properties, "HitShapePara1", PropertyValues.Value.ofFloat32(
+                        rowData.hitShapePara1()));
+            }
+            if (rowData.hitShapePara2() > 0) {
+                Props.addView(properties, "HitShapePara2", PropertyValues.Value.ofFloat32(
+                        rowData.hitShapePara2()));
+            }
         }
         Props.addView(properties, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(properties, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));

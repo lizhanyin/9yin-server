@@ -158,16 +158,32 @@ class SitcrossStanceWiringTest {
         assertEquals(0x10, replies.get(0)[0] & 0xFF);
         assertTrue(wiring.session.player.sitting(), "LogicState=102 engaged");
 
-        // 重复 1（按住）幂等：零帧零迁移
+        // 重复 1（按住）非切换：重推 102 面板 resync 客户端动画态（零帧会让重点无效）
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session,
                 wiring.direct(240, Wiring.int32(1))));
-        assertEquals(0, wiring.drain().size(), "duplicate start ignored");
+        assertEquals(1, wiring.drain().size(), "duplicate start resyncs panel");
         assertTrue(wiring.session.player.sitting());
 
-        // 2（客户端本地打断形态）当正常停处理
+        // 2（坐姿动作完结回执，三服抓包 12141/52905/63296 同证）保持坐态并重推面板
         assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session,
                 wiring.direct(240, Wiring.int32(2))));
-        assertEquals(1, wiring.drain().size(), "interrupted form stops like 0");
+        assertEquals(1, wiring.drain().size(), "completion ack keeps seated + resync");
+        assertTrue(wiring.session.player.sitting(), "240(2) does NOT stand up");
+
+        // 未坐时 2 无操作（零帧零迁移）
+        wiring.session.player.applySitcross(false);
+        wiring.drain();
+        assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session,
+                wiring.direct(240, Wiring.int32(2))));
+        assertEquals(0, wiring.drain().size(), "stray 2 while standing is a no-op");
+        assertFalse(wiring.session.player.sitting());
+
+        // 0（真停坐形态）起立
+        wiring.session.player.applySitcross(true);
+        wiring.drain();
+        assertTrue(wiring.flow.dispatch(wiring.connection, wiring.session,
+                wiring.direct(240, Wiring.int32(0))));
+        assertEquals(1, wiring.drain().size(), "explicit 0 stands up");
         assertFalse(wiring.session.player.sitting());
 
         // 未知值忽略

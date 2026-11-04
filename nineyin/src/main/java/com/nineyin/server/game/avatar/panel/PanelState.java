@@ -226,4 +226,39 @@ public final class PanelState {
         Props.add(properties, "PrestigeExp", PropertyValues.Value.ofInt32(prestigeExp));
         return properties;
     }
+
+    /** 生存属性快照（GM set_vitals 落 role_faculty 档案的嵌套 vitals 节）。 */
+    public PlayerProgress.Vitals vitalsSnapshot() {
+        return new PlayerProgress.Vitals(ene, maxEne, resumeEne, sat, maxSat, pkValue, drunkLevel,
+                maxHpOverride, maxMpOverride);
+    }
+
+    /** 登录回填生存属性（旧档无 vitals 节 = 从未 GM 设置，保持 0 种子不动）。 */
+    public void restoreVitals(PlayerProgress.Vitals value) {
+        if (value == null) {
+            return;
+        }
+        ene = Math.max(0, value.ene());
+        maxEne = Math.max(0, value.maxEne());
+        resumeEne = Math.max(0, value.resumeEne());
+        sat = Math.max(0, value.sat());
+        maxSat = Math.max(0, value.maxSat());
+        pkValue = Math.max(0, value.pkValue());
+        drunkLevel = Math.max(0, value.drunkLevel());
+        maxHpOverride = Math.max(0, value.maxHpOverride());
+        maxMpOverride = Math.max(0, value.maxMpOverride());
+    }
+
+    /** 血蓝上限客户端校准值（血条上限由客户端按装备/内功自算，服务端公式复刻前覆盖对齐；0=走公式）。 */
+    public int maxHpOverride;
+
+    public int maxHpOverride() {
+        return maxHpOverride;
+    }
+
+    public int maxMpOverride;
+
+    public int maxMpOverride() {
+        return maxMpOverride;
+    }
 }

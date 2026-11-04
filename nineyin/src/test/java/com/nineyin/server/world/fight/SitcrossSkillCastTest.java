@@ -139,6 +139,33 @@ class SitcrossSkillCastTest {
         assertFalse(harness.player.sitting(), "再出打坐=退出（LogicState 回 0）");
     }
 
+    /**
+     * 真机 63296 实证场景（2026-11-04）：打坐中出任意武法必须先起立——客户端此路
+     * 不发 240/2，服务端不退坐则 LogicState=102 随出招面板回发、sitcrossTick 继续
+     * 结算，武法被坐姿压住不出招。起立回全量 vital（参考服 52905 抓包：坐/立迁移
+     * 恒走 188 属性全量面板，LogicState 为首属性）。
+     */
+    @Test
+    void castingMartialSkillWhileSittingStandsUp() {
+        Harness harness = new Harness();
+        harness.learned.put("CS_jh_sfgp01", 1);
+        assertTrue(harness.player.applySitcross(true), "先进入打坐态");
+
+        SkillCastHandler.handle(harness.context(),
+                SkillCastHandlerFlowTest.useSkillMessage("CS_jh_sfgp01", 100f, 20f, 100f, 1.0f));
+        assertFalse(harness.player.sitting(), "武法受理即退出打坐态（LogicState 回 0）");
+        List<byte[]> frames = harness.drain();
+        assertTrue(frames.stream().anyMatch(f -> f.length >= 2 && (f[0] & 0xFF) == 0x10 && f[1] == 0
+                        && Integer.valueOf(Actor.LOGIC_STATE_NORMAL).equals(
+                        SkillCastHandlerFlowTest.properties(f).get("LogicState"))
+                        && SkillCastHandlerFlowTest.properties(f).containsKey("Mount")),
+                "起立全量 vital（含 Mount 等登录域属性）携带 LogicState=0");
+        assertTrue(frames.stream().anyMatch(f -> f.length >= 2 && (f[0] & 0xFF) == 0x10 && f[1] == 0
+                        && Integer.valueOf(Actor.LOGIC_STATE_NORMAL).equals(
+                        SkillCastHandlerFlowTest.properties(f).get("LogicState"))),
+                "出招面板携带起立后的 LogicState=0");
+    }
+
     @Test
     void castRejectedWhileFighting() {
         Harness harness = new Harness();

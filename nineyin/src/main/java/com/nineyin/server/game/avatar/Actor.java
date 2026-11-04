@@ -213,4 +213,29 @@ public final class Actor {
         }
         return changed;
     }
+
+    /**
+     * 药品即时回复（msg31 使用物 heal_hp/heal_mp）：不限坐姿，死亡不恢复；
+     * 淤血条（HitHP）随回复抬起（同 restoreWhileSit 口径）。
+     *
+     * @return 资源是否发生变化（调用方据此发 0x10）
+     */
+    public boolean restore(int hpAmount, int mpAmount) {
+        if (hpAmount < 0 || mpAmount < 0 || hp <= 0) {
+            return false;
+        }
+        boolean changed = false;
+        if (hpAmount > 0 && hp < maxHp) {
+            hp = Math.min(maxHp, hp + hpAmount);
+            if (hitHp < hp) {
+                hitHp = hp;
+            }
+            changed = true;
+        }
+        if (mpAmount > 0 && mp < maxMp) {
+            mp = Math.min(maxMp, mp + mpAmount);
+            changed = true;
+        }
+        return changed;
+    }
 }

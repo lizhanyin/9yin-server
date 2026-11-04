@@ -13,6 +13,7 @@ import party.iroiro.luajava.Lua;
 import party.iroiro.luajava.LuaException;
 import party.iroiro.luajava.lua55.Lua55;
 
+import com.nineyin.server.game.item.DropPacks;
 import com.nineyin.util.ServerPaths;
 
 /**
@@ -56,11 +57,35 @@ public final class LuaScriptService {
     public record ExactBuff(String configId, long staticData, int level, long lifetimeMs) {
     }
 
+    /** M.on_use(ctx) 的 ctx 输入快照（随机数 Java 预掷：rand.r_drop/r_proc）。 */
+    public record ItemUseContext(int amount, long now, int hp, int maxHp, int mp, int maxMp,
+                                 long silver, double rDrop, double rProc) {
+    }
+
+    /** 限时属性指令（同 configId 源替换，life_ms &gt; 0；面板限时属性未接，先解析占位）。 */
+    public record TempStat(int attackAdd, int defenseAdd, int maxHpAdd, long lifeMs) {
+    }
+
+    /**
+     * M.on_use 输出指令（字段白名单 + 强校验，非法条目丢弃 + WARNING）：
+     * heal_hp/heal_mp 回资源、open_drop_id+rolls 按 drops_mvp.json 权重开包
+     * （Java 解析）、grants 确定性给物品、temp_stat 限时属性、consume 是否消耗 1 个。
+     */
+    public record ItemUse(int healHp, int healMp, String openDropId, int rolls,
+                          List<DropPacks.GrantItem> grants, TempStat tempStat, boolean consume) {
+
+        boolean isEmpty() {
+            return healHp <= 0 && healMp <= 0 && openDropId == null
+                    && (grants == null || grants.isEmpty()) && tempStat == null;
+        }
+    }
+
     private final Object lock = new Object();
     private Lua lua;
     private boolean broken;
     private String brokenReason = "";
     private final Map<String, SkillOverlay> overlayCache = new ConcurrentHashMap<>();
+    private final Map<String, ItemUse> itemUseCache = new ConcurrentHashMap<>();
 
     private LuaScriptService() {
         synchronized (lock) {
@@ -129,10 +154,53 @@ public final class LuaScriptService {
         }
     }
 
+    /**
+     * 道具使用效果（scripts/item/&lt;configId&gt;.lua 的 M.on_use(ctx)）：
+     * 返回 null = 无脚本 / on_use 返回 nil / 引擎不可用 → 调用方走 INI 数据回退
+     * （ItemUseCatalog）；非空即脚本指令（可能全空效果 + consume，由调用方裁决）。
+     */
+    public ItemUse itemUse(String configId, ItemUseContext ctx) {
+        if (configId == null || configId.isEmpty()) {
+            return null;
+        }
+        ItemUse cached = itemUseCache.get(configId);
+        if (cached != null) {
+            return cached == ITEM_NONE ? null : cached;
+        }
+        synchronized (lock) {
+            cached = itemUseCache.get(configId);
+            if (cached != null) {
+                return cached == ITEM_NONE ? null : cached;
+            }
+            if (lua == null || broken) {
+                return null;
+            }
+            Path script = scriptPath("item", configId + ".lua");
+            if (!Files.isRegularFile(script)) {
+                itemUseCache.put(configId, ITEM_NONE);
+                return null;
+            }
+            String global = "ItemModule_" + configId.replaceAll("[^A-Za-z0-9_]", "_");
+            try {
+                if (!runModuleLocked(script, global)) {
+                    itemUseCache.put(configId, ITEM_NONE);
+                    return null;
+                }
+                ItemUse instructions = callOnUseLocked(global, configId, ctx);
+                itemUseCache.put(configId, instructions);
+                return instructions;
+            } catch (RuntimeException e) {
+                markBroken("item use " + configId + ": " + e);
+                return null;
+            }
+        }
+    }
+
     /** GM reload_scripts：重建引擎并清覆盖缓存（失败会回退 Java 管线而非抛出）。 */
     public void reload() {
         synchronized (lock) {
             overlayCache.clear();
+            itemUseCache.clear();
             closeQuietly();
             initLocked();
             LOG.info("lua scripts reloaded: available=" + (lua != null && !broken));
@@ -143,6 +211,10 @@ public final class LuaScriptService {
 
     /** 无覆盖哨兵（缓存命中区分"没脚本"与"没查过"）。 */
     private static final SkillOverlay NONE = new SkillOverlay(null, null, null, java.util.List.of());
+
+    /** item 域无脚本/nil 返回哨兵（对调用方表现为 null → INI 回退）。 */
+    private static final ItemUse ITEM_NONE =
+            new ItemUse(0, 0, null, 1, java.util.List.of(), null, true);
 
     private void initLocked() {
         broken = false;
@@ -265,6 +337,139 @@ public final class LuaScriptService {
             return NONE;
         }
         return new SkillOverlay(lease, slot, redArmor, stance);
+    }
+
+    /** 调 M.on_use(ctx) 并解析返回指令表（无 on_use / nil 返回 → ITEM_NONE 走 INI 回退）。 */
+    private ItemUse callOnUseLocked(String global, String configId,
+                                    ItemUseContext ctx) throws RuntimeException {
+        lua.getGlobal(global);
+        if (!lua.isTable(-1)) {
+            lua.pop(1);
+            return ITEM_NONE;
+        }
+        lua.getField(-1, "on_use");
+        if (!lua.isFunction(-1)) {
+            lua.pop(2);
+            return ITEM_NONE;
+        }
+        // ctx = {item_id, amount, now, self={hp,max_hp,mp,max_mp,silver}, rand={r_drop,r_proc}}
+        lua.createTable(0, 3);
+        lua.push(configId);
+        lua.setField(-2, "item_id");
+        setNum("amount", ctx.amount());
+        setNum("now", ctx.now());
+        lua.createTable(0, 5);
+        setNum("hp", ctx.hp());
+        setNum("max_hp", ctx.maxHp());
+        setNum("mp", ctx.mp());
+        setNum("max_mp", ctx.maxMp());
+        setNum("silver", ctx.silver());
+        lua.setField(-2, "self");
+        lua.createTable(0, 2);
+        setNum("r_drop", ctx.rDrop());
+        setNum("r_proc", ctx.rProc());
+        lua.setField(-2, "rand");
+        lua.pCall(1, 1);
+        if (!lua.isTable(-1)) {
+            lua.pop(2);
+            return ITEM_NONE;
+        }
+        ItemUse out = parseItemUseLocked(configId);
+        lua.pop(2);
+        return out;
+    }
+
+    /** 解析栈顶 on_use 返回表（指令白名单，非法条目丢弃 + WARNING，不打断使用链）。 */
+    private ItemUse parseItemUseLocked(String configId) {
+        int healHp = positiveField("heal_hp");
+        int healMp = positiveField("heal_mp");
+        String openDropId = null;
+        int rolls = 1;
+        lua.getField(-1, "open_box");
+        if (lua.isTable(-1)) {
+            lua.getField(-1, "drop_id");
+            String dropId = lua.isString(-1) ? lua.toString(-1).trim() : "";
+            lua.pop(1);
+            if (dropId.isEmpty()) {
+                LOG.warning("item script " + configId + ": open_box needs drop_id");
+            } else {
+                openDropId = dropId;
+                rolls = (int) readIntFieldAtTop("rolls");
+                if (rolls < 1 || rolls > 10) {
+                    LOG.warning("item script " + configId + ": open_box rolls " + rolls
+                            + " outside 1..10, clamped");
+                    rolls = Math.max(1, Math.min(10, rolls));
+                }
+            }
+        }
+        lua.pop(1);
+        List<DropPacks.GrantItem> grants = readGrantItems(configId);
+        TempStat tempStat = readTempStat(configId);
+        lua.getField(-1, "consume");
+        boolean consume = !lua.isBoolean(-1) || lua.toBoolean(-1);
+        lua.pop(1);
+        return new ItemUse(healHp, healMp, openDropId, rolls, grants, tempStat, consume);
+    }
+
+    /** grant_items = {{id="xx", amount=2}, ...}（最多 16 条，非法条目丢弃）。 */
+    private List<DropPacks.GrantItem> readGrantItems(String configId) {
+        lua.getField(-1, "grant_items");
+        if (!lua.isTable(-1)) {
+            lua.pop(1);
+            return List.of();
+        }
+        int count = lua.rawLength(-1);
+        List<DropPacks.GrantItem> out = new ArrayList<>(Math.min(count, 16));
+        for (int i = 1; i <= count && i <= 16; i++) {
+            lua.rawGetI(-1, i);
+            if (!lua.isTable(-1)) {
+                lua.pop(1);
+                continue;
+            }
+            lua.getField(-1, "id");
+            String id = lua.isString(-1) ? lua.toString(-1).trim() : "";
+            lua.pop(1);
+            int amount = (int) readIntFieldAtTop("amount");
+            lua.pop(1);
+            if (id.isEmpty() || amount < 1 || amount > 999) {
+                LOG.warning("item script " + configId + ": invalid grant_items entry ignored");
+                continue;
+            }
+            out.add(new DropPacks.GrantItem(id, amount));
+        }
+        lua.pop(1);
+        return out;
+    }
+
+    /** temp_stat = {attack_add, defense_add, max_hp_add, life_ms}（life_ms&gt;0 且至少一个 *_add）。 */
+    private TempStat readTempStat(String configId) {
+        lua.getField(-1, "temp_stat");
+        try {
+            if (!lua.isTable(-1)) {
+                return null;
+            }
+            long life = readIntFieldAtTop("life_ms");
+            int attack = (int) readIntFieldAtTop("attack_add");
+            int defense = (int) readIntFieldAtTop("defense_add");
+            int maxHp = (int) readIntFieldAtTop("max_hp_add");
+            if (life <= 0 || (attack == 0 && defense == 0 && maxHp == 0)) {
+                LOG.warning("item script " + configId
+                        + ": temp_stat needs life_ms>0 and at least one *_add");
+                return null;
+            }
+            return new TempStat(attack, defense, maxHp, life);
+        } finally {
+            lua.pop(1);
+        }
+    }
+
+    /** 栈顶 table 的正整数控件（负值/缺失 → 0，超 int 上限钳制）。 */
+    private int positiveField(String field) {
+        double v = readNum(field);
+        if (v <= 0) {
+            return 0;
+        }
+        return (int) Math.min(Integer.MAX_VALUE, Math.floor(v + 1e-9));
     }
 
     /** stance_cycle.variants[]（栈顶为 compile 返回 table；缺失/为空 → 空表）。 */

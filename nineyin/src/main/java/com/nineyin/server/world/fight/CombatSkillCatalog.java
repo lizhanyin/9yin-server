@@ -206,6 +206,13 @@ public final class CombatSkillCatalog {
                 Integer.toString(varProp.fields().int32("TargetShapePkg")));
         Section hitShape = tables.hitShape.get(
                 Integer.toString(varProp.fields().int32("HitShapePkg")));
+        // 官方 View40 行形状族下发规则（参考服 207 行抓包分桶实证，2026-11-05）：
+        // TargetShapePara2>0 即发（154 行）；HitShapePara2 仅 HitShape 类型>0 发
+        // （htype=0 无形状 124 例全不发；1圆/2选中/3扇/4矩/11地面全发）；
+        // HitShapePara1 仅扇形族 3/9/10 发（=24 行恰好全在 htype=3 桶，矩形宽度不发）。
+        // chz03/chz06/sfgp07×2 为表版本出入孤例（规则外，孤注记录）。
+        int hitShapeType = hitShape == null ? 0 : hitShape.int32("HitShape");
+        boolean sector = hitShapeType == 3 || hitShapeType == 9 || hitShapeType == 10;
         return new SkillRowData(varProp.id(), newFields.int32("UseLimit"),
                 consume == null ? 0 : consume.int32("AConsumeHP"),
                 consume == null ? 0 : consume.int32("AConsumeMP"),
@@ -213,8 +220,8 @@ public final class CombatSkillCatalog {
                 consume == null ? 0 : consume.int32("AConsumeQGP"),
                 targetShape == null ? 0 : targetShape.f32("TargetShapePara1"),
                 targetShape == null ? 0 : targetShape.f32("TargetShapePara2"),
-                hitShape == null ? 0 : hitShape.f32("HitShapePara1"),
-                hitShape == null ? 0 : hitShape.f32("HitShapePara2"));
+                !sector ? 0 : hitShape.f32("HitShapePara1"),
+                hitShapeType <= 0 ? 0 : hitShape.f32("HitShapePara2"));
     }
 
     /** View40 行补集（skillRowData 产物）：varPropNo=匹配 varprop 行号（客户端 varpkg 同值）。 */
@@ -437,6 +444,8 @@ public final class CombatSkillCatalog {
                 shape.mode(), shape.radius(), varProp.f32("HeightDiff"),
                 shape.angle(), shape.width(),
                 staticFields.int32("CanRush") != 0, staticFields.f32("RushRange"), isDamage,
+                staticFields.int32("TargetType"), staticFields.int32("DamageType"),
+                staticFields.last("LevelupRelevance"), newFields.int32("PackCategory"),
                 actions.actionName(), actions.durationMs(), actions.followups(), actions.hitFrameMs(),
                 effects, weaponItemTypes);
     }

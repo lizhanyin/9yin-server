@@ -36,6 +36,34 @@ public final class StarterGrants {
     public static final int SERVER_SWITCH_CONTROL_MESSAGE = 414;
     public static final int SKILL_ACTION_INPUT_SWITCH = 1223;
 
+    /**
+     * 参考服 pushSwitchSync 的功能开关白名单（exe main.switchSyncIDs @0x140a2e6a0
+     * 与 61653 抓包帧 #1815 逐值互验，203 项）：登录 ClientReady 收尾一次性
+     * S2C 0x1E 414 ("sync", id×203) 批量开启客户端引擎 SwitchManager。
+     * 2919 = ST_FUNCTION_NEW_C_FORM 在列——人物/装备栏"新旧界面切换"按钮的
+     * 显示门槛（lua is_show_new_type = CheckSwitchEnable(2919) && 本地
+     * c_form_style==0；switch_define.lua）。1223 不在此表，走 0x27 reset 单开。
+     */
+    public static final int[] SWITCH_SYNC_IDS = {
+            0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13,
+            15, 21, 24, 26, 27, 30, 32, 39, 40, 41, 42, 46,
+            47, 50, 52, 53, 70, 76, 77, 78, 92, 93, 94, 95,
+            96, 97, 98, 102, 104, 106, 107, 109, 112, 113, 144, 148,
+            151, 158, 161, 166, 167, 169, 171, 185, 210, 219, 232, 233,
+            234, 235, 247, 249, 252, 253, 254, 256, 272, 304, 347, 362,
+            363, 385, 387, 500, 501, 502, 503, 504, 505, 509, 520, 613,
+            625, 637, 659, 661, 689, 690, 691, 692, 696, 758, 775, 779,
+            783, 784, 789, 790, 791, 792, 793, 794, 818, 899, 930, 951,
+            970, 976, 980, 981, 986, 997, 1000, 1001, 1002, 1003, 1004, 1005,
+            1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1017, 1018, 1020,
+            1022, 1027, 1031, 1038, 1045, 1046, 1082, 1086, 1090, 1102, 1112, 1116,
+            1161, 1178, 1186, 1193, 1194, 1195, 1196, 1204, 1258, 1262, 1265, 1269,
+            1271, 1293, 1301, 1325, 1327, 1344, 1345, 1347, 1348, 1351, 1352, 1353,
+            1363, 1368, 1373, 1374, 1379, 1387, 1388, 1389, 2000, 2001, 2002, 2003,
+            2004, 2019, 2090, 2091, 2092, 2111, 2146, 2861, 2873, 2880, 2881, 2895,
+            2901, 2903, 2906, 2908, 2909, 2911, 2917, 2918, 2919, 2923, 2925,
+    };
+
     /** Go grantStarterQingGong：轻功双真源 + 功能解锁（一次下发 18+1+70+15+1594 帧）。 */
     public static void grantStarterQingGong(Connection connection) {
         for (byte[] frame : StarterQingGong.qingGongFrames(
@@ -99,9 +127,15 @@ public final class StarterGrants {
         connection.writeFrame(player.vitalUpdate());
     }
 
-    /** DB 技能行（bak roleSkillViewAdd 十属性 + 四期零值特效族/目录 CoolDownTime）。 */
+    /**
+     * DB 技能行（官方抓包对齐 2026-11-05，参考服 207 行 View40 对拍：TargetShapePara2
+     * 154 次真实射程 3~25m、HitShapePara2 80 次、HitShapePara1 24 次、TargetShapePara1
+     * 从不发、VarPropNo/CanUse 每行必发、AConsume 族与 UseLimit 仅 &gt;0 稀疏发）。
+     * 旧 bak 十属性的 PrepareTime=1000 与 TargetShapePara2=50 硬编码即真机
+     * 「技能最大射程全是 50」根因，已删；UseLimit 恒 9（xhmdl01 官方=1）同批纠正。
+     */
     static byte[] dbSkillViewAdd(RoleInventoryStore.Skill skill, int slot) {
-        List<SceneMessages.ViewProperty> props = new ArrayList<>(24);
+        List<SceneMessages.ViewProperty> props = new ArrayList<>(28);
         Props.addView(props, "ConfigID", PropertyValues.Value.ofString(skill.skillId()));
         Props.addView(props, "StaticData", PropertyValues.Value.ofInt32(skill.staticData()));
         Props.addView(props, "ItemType",
@@ -110,14 +144,46 @@ public final class StarterGrants {
         Props.addView(props, "MaxLevel", PropertyValues.Value.ofInt32(1));
         Props.addView(props, "CurFillValue", PropertyValues.Value.ofInt32(0));
         Props.addView(props, "TotalFillValue", PropertyValues.Value.ofInt32(0));
-        Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(0));
-        Props.addView(props, "PrepareTime", PropertyValues.Value.ofInt32(1000));
-        Props.addView(props, "TargetShapePara2", PropertyValues.Value.ofFloat32(50.0f));
         SkillInitTable.Row row = SkillInitTable.load().row(skill.skillId());
-        // 属性族 bak 语义值（发 0 会显示空/零）：WuXing 走 wuxuebaseinfo 目录缺省太极。
-        Props.addView(props, "UseLimit", PropertyValues.Value.ofInt32(9));
-        Props.addView(props, "VarPropNo", PropertyValues.Value.ofInt32(0));
+        // 官方行补集（CombatSkillCatalog.skillRowData，与 StarterSkills 同源）：
+        // VarPropNo 每行必发（客户端 varpkg 同值）；AConsume*/TargetShapePara2/
+        // HitShapePara1/2/UseLimit 仅 >0 才发（官方稀疏风格——TargetShapePara2 即
+        // 技能最大射程，客户端 tooltip/施法限距都读它；查不到链路整组缺省不发）。
+        com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
+                com.nineyin.server.world.fight.CombatSkillCatalog.load()
+                        .skillRowData(skill.skillId(), 1);
+        Props.addView(props, "VarPropNo", PropertyValues.Value.ofInt32(
+                rowData != null ? rowData.varPropNo() : 0));
+        if (rowData != null && rowData.useLimit() > 0) {
+            Props.addView(props, "UseLimit", PropertyValues.Value.ofInt32(rowData.useLimit()));
+        }
+        if (rowData != null && rowData.aConsumeHP() > 0) {
+            Props.addView(props, "AConsumeHP", PropertyValues.Value.ofInt32(rowData.aConsumeHP()));
+        }
+        if (rowData != null && rowData.aConsumeMP() > 0) {
+            Props.addView(props, "AConsumeMP", PropertyValues.Value.ofInt32(rowData.aConsumeMP()));
+        }
+        if (rowData != null && rowData.aConsumeSP() > 0) {
+            Props.addView(props, "AConsumeSP", PropertyValues.Value.ofInt32(rowData.aConsumeSP()));
+        }
+        if (rowData != null && rowData.aConsumeQGP() > 0) {
+            Props.addView(props, "AConsumeQGP", PropertyValues.Value.ofInt32(rowData.aConsumeQGP()));
+        }
+        if (rowData != null && rowData.targetShapePara2() > 0) {
+            Props.addView(props, "TargetShapePara2", PropertyValues.Value.ofFloat32(
+                    rowData.targetShapePara2()));
+        }
+        if (rowData != null && rowData.hitShapePara1() > 0) {
+            Props.addView(props, "HitShapePara1", PropertyValues.Value.ofFloat32(
+                    rowData.hitShapePara1()));
+        }
+        if (rowData != null && rowData.hitShapePara2() > 0) {
+            Props.addView(props, "HitShapePara2", PropertyValues.Value.ofFloat32(
+                    rowData.hitShapePara2()));
+        }
+        Props.addView(props, "CanUse", PropertyValues.Value.ofByte(1));
         Props.addView(props, "Quality", PropertyValues.Value.ofByte(1));
+        // WuXing 走 wuxuebaseinfo 目录缺省太极（发 0 会显示空/零）。
         int wuXing = com.nineyin.server.game.avatar.neigong.NeiGongCatalog.load()
                 .wuXingOf(skill.skillId());
         Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(
@@ -137,8 +203,7 @@ public final class StarterGrants {
         Props.addView(props, "NegDamageMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(props, "MasDamageMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(props, "Flow", PropertyValues.Value.ofInt32(5));
-        Props.addView(props, "LeadTime", PropertyValues.Value.ofInt32(10000));
-        Props.addView(props, "LeadSepTime", PropertyValues.Value.ofInt32(1500));
+        // LeadTime/LeadSepTime：官方行同样从不发（bak 残留，删）。
         return SceneMessages.viewAdd(StarterSkills.VIEWPORT_SKILL, slot, props);
     }
 
@@ -217,6 +282,20 @@ public final class StarterGrants {
                 CustomMessages.Value.ofString("reset"),
                 CustomMessages.Value.ofInt32(SKILL_ACTION_INPUT_SWITCH),
                 CustomMessages.Value.ofInt32(1));
+    }
+
+    /** 参考服 pushSwitchSync：0x1E 414("sync", id×203) 批量开 SwitchManager；连接级一次。 */
+    public static void pushSwitchSync(Connection connection) {
+        connection.writeFrame(switchSyncFrame());
+    }
+
+    public static byte[] switchSyncFrame() {
+        CustomMessages.Value[] values = new CustomMessages.Value[SWITCH_SYNC_IDS.length + 1];
+        values[0] = CustomMessages.Value.ofString("sync");
+        for (int i = 0; i < SWITCH_SYNC_IDS.length; i++) {
+            values[i + 1] = CustomMessages.Value.ofInt32(SWITCH_SYNC_IDS[i]);
+        }
+        return CustomMessages.customIntMessage(SERVER_SWITCH_CONTROL_MESSAGE, values);
     }
 
     private StarterGrants() {

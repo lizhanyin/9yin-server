@@ -232,9 +232,10 @@ public final class AppearanceSync {
 
     /**
      * 外观属性帧（0x10）：显示开关 ShowEquipType + 三模式裁决后的衣/裤/鞋/帽
-     * 主通道 + 时装镜像通道（FashionCoat/Hat/Shoes 原始模型）+ 武器 WeaponMode。
-     * 登录期 addObject 后补帧、穿戴/切换后实时推送共用。空值部位跳过（客户端
-     * 保持当前值）。
+     * 主通道 + 时装镜像通道（FashionCoat/Hat/Shoes 原始模型）+ 武器三属性
+     * （Weapon/ShotWeapon/ActionSet——引擎挂 obj\weapon\<名>，官服实证；空串=
+     * 收武器显式清除，衣裤鞋空值仍跳过保持客户端当前值）。
+     * 登录期 addObject 后补帧、穿戴/切换后实时推送共用。
      */
     public static byte[] appearanceFrame(int objectId, int ownerId, int showEquipType, int sex,
                                          List<RoleInventoryStore.Equip> equips,
@@ -250,11 +251,18 @@ public final class AppearanceSync {
         addString(properties, "FashionCoat", models.get(SLOT_FASHION_COAT));
         addString(properties, "FashionHat", models.get(SLOT_FASHION_HAT));
         addString(properties, "FashionShoes", models.get(SLOT_FASHION_SHOES));
-        String weaponMode = InventoryMessages.weaponModeOf(sex, equips, resolver);
-        if (!weaponMode.isEmpty()) {
-            addString(properties, "WeaponMode", weaponMode);
-        }
+        InventoryMessages.WeaponVisual weapon =
+                InventoryMessages.weaponVisualOf(sex, equips, resolver);
+        addStringAlways(properties, "Weapon", weapon.weapon());
+        addStringAlways(properties, "ShotWeapon", weapon.shotWeapon());
+        addStringAlways(properties, "ActionSet", weapon.actionSet());
         return SceneMessages.objectProperties(objectId, ownerId, 0, properties);
+    }
+
+    /** 武器三属性专用：空串也写（官服收武器推 Weapon=""/ActionSet="" 显式清除）。 */
+    private static void addStringAlways(List<PropertyValues.Indexed> properties,
+                                        String name, String value) {
+        Props.add(properties, name, PropertyValues.Value.ofString(value == null ? "" : value));
     }
 
     private static void addString(List<PropertyValues.Indexed> properties, String name, String value) {

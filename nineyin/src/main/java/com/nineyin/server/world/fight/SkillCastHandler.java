@@ -8,13 +8,15 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.nineyin.server.game.avatar.Actor;
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.protocol.CustomC2S;
-import com.nineyin.server.protocol.CustomMessages;
 import com.nineyin.server.protocol.FightMessages;
+import com.nineyin.server.protocol.SceneMessages;
 import com.nineyin.server.script.CombatFormulas;
 import com.nineyin.server.script.LuaScriptService;
 import com.nineyin.server.transport.Connection;
@@ -31,7 +33,8 @@ import com.nineyin.server.world.scene.SceneLifecycle;
  */
 public final class SkillCastHandler {
 
-    private static final Logger LOG = Logger.getLogger(SkillCastHandler.class.getName());
+    /** slf4j（落盘）：JUL Logger 从不进 logback 文件——出招受理/拒绝曾全程不可见（63296 取证盲区）。 */
+    private static final Logger LOG = LoggerFactory.getLogger(SkillCastHandler.class);
 
     public static final int CUSTOM_USE_SKILL = 211;
     /** GCD 固定类别 50000（抓包；个人行 team=0xFFFF，GCD 行 team=skill_static.CoolDownTeam）。 */
@@ -63,6 +66,12 @@ public final class SkillCastHandler {
     /** 官方被击回怒（预留：本阶段无 NPC 攻击玩家路径，接线时用）：未格挡 +1/格挡 +2。 */
     public static final int RAGE_TAKEN_UNPARRIED = 1;
     public static final int RAGE_TAKEN_PARRIED = 2;
+    /** 武技连击 NPC debuff 租约（参考服 55866 myjf08 逐跳滚动 ~2s 量级）。 */
+    public static final long WUJI_DEBUFF_LEASE_MS = 2_000;
+    /** 冲锋暂存窗口（IDA stagePreCast msg25 skill_pause 恒 30000ms；超时未落地作废）。 */
+    public static final long RUSH_PENDING_WINDOW_MS = 30_000;
+    /** 战斗闲时退出扑空后的重查周期（毫秒）。 */
+    public static final long COMBAT_IDLE_RETRY_MS = 2_000;
 
     private static double square(float value) {
         return (double) value * value;
@@ -80,7 +89,11 @@ public final class SkillCastHandler {
     }
 
     public static void handle(CastContext context, CustomC2S.Message custom) {
-        List<CustomC2S.Value> values = custom.values;
+        handleValues(context, custom.values);
+    }
+
+    /** 值列表直驱（冲锋落地续招重组 211 复用同一条受理链）。 */
+    static void handleValues(CastContext context, List<CustomC2S.Value> values) {
         if (values.size() < 2 || values.get(0).exactInt32() != CUSTOM_USE_SKILL) {
             return;
         }
@@ -126,9 +139,24 @@ public final class SkillCastHandler {
                     + " not allowed, requires " + skill.weaponItemTypes());
             return;
         }
-        // 冲锋射程（CanRush 且 RushRange>0；无值回落 15 米）——单体/圈定冲锋放宽 8 米身位闸
+        // 冲锋位移上限（CanRush 且 RushRange>0；无值回落 15 米）——圈定落点宽容用。
         double rushRange = skill.canRush()
                 ? Math.max(skill.rushRangeM(), RUSH_RANGE_FALLBACK_METERS) : 0;
+        // 出招射程闸（参考服 exe 61653 抓包实证，2026-11-05）：CanRush 且 RushRange>0
+        // → RushRange（冲锋位移上限即判定值）；否则 TargetShapePara2（技能真实射程
+        // ——myjf02：CanRush 无 RushRange，TSP2=6，目标 6.73m>6 → msg25 暂存+msg24
+        // c61 起跑）；全无值回落 max(HitShape 半径, 近战身位 8m)。
+        CombatSkillCatalog.SkillRowData rowData = CombatSkillCatalog.load()
+                .skillRowData(skill.id(), skill.level());
+        float shapeRange = rowData != null ? rowData.targetShapePara2() : 0;
+        double castRange;
+        if (skill.canRush() && skill.rushRange() > 0) {
+            castRange = skill.rushRange();
+        } else if (shapeRange > 0) {
+            castRange = shapeRange;
+        } else {
+            castRange = Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
+        }
         // 打坐（zs_default_01）：UseLimit=9「无法在战斗状态使用」——战斗中静默拒
         // （与 CD/超距族同语义）；受理后切打坐态（下方 toggle）。
         boolean sitcrossSkill = CombatSkillCatalog.SITCROSS_SKILL_ID.equals(skill.id());
@@ -144,16 +172,32 @@ public final class SkillCastHandler {
                 LOG.info("reject skill id=" + skillId + " without living selected target");
                 return;
             }
-            // 攻击距离闸门（bug.txt「攻击距离正常」项）：单体/以目标为中心的技能校验
-            // 施法者(211 上报坐标)→目标距离，超距静默拒（客户端面板变红提示为本地行为）。
-            // 射程 = max(HitShape 半径, 近战兜底 8 米, 冲锋 RushRange)；形状技能（以己
-            // 圆/扇/矩）天然以施法者坐标为圆心，半径即射程，不走此闸。
+            // 攻击距离闸门：单体/以目标为中心的技能校验施法者(211 上报坐标)→目标距离。
+            // 射程=castRange（真实射程模型见上方注释）；形状技能（以己圆/扇/矩）天然以
+            // 施法者坐标为圆心，半径即射程，不走此闸。超距冲锋走暂存链（有客户端反馈），
+            // 其余超距静默拒（客户端面板变红提示为本地行为）。
             SceneLifecycle.CombatNpcInfo targetInfo = context.world().combatNpcInfo(selected.objectId());
             if (targetInfo != null) {
                 double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
                         + square(z - targetInfo.z()));
-                double maxRange = Math.max(Math.max(skill.areaRadius(), SELECTED_RANGE_METERS),
-                        rushRange);
+                // 冲锋暂存（参考服 exe 61653 抓包实证，2026-11-05 用户拍板对齐）：
+                // 超射程冲锋（skilllock+CanRush）→ msg25[30000,skill_pause] + msg24
+                // c1=61 疾跑去目标位置（qg_fastruning_s_2h_01），30s 窗口内 C2S 212
+                // 落地续招。官服（正版抓包 op2）无此链、337 终点驱动本地冲——如需
+                // 官服语义可 -Dnineyin.rush.stage=false 关回。
+                if (distance > castRange
+                        && skill.canRush()
+                        && "skilllock".equalsIgnoreCase(skill.script())
+                        && rushStageEnabled()) {
+                    stageRushCast(context, skill, targetInfo, distance);
+                    return;
+                }
+                double maxRange = castRange;
+                if (!rushStageEnabled() && skill.lockSkill()) {
+                    // 官服语义关回（-Dnineyin.rush.stage=false）：锁定/冲锋族不做射程闸
+                    //（op2 实证 33m 直冲受理、337 终点驱动本地冲）。60m 防跨图滥用兜底。
+                    maxRange = Math.max(maxRange, 60.0);
+                }
                 if (distance > maxRange) {
                     LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
                             + "m > " + (int) maxRange + "m");
@@ -189,21 +233,47 @@ public final class SkillCastHandler {
         if (selected != null) {
             targetKey = (selected.objectId() & 0xFFFFFFFFL) | ((long) selected.ownerId() << 32);
         }
+        // 顶掉补删（2026-11-04 对拍 §D8）：GCD 不硬闸，1-3s 连招会把上一招的收尾定时器
+        // 顶掉（clearCurrentSkill(旧id) 失败 → 29 加 18 删）。新招受理时上一招仍挂着的，
+        // 立即补发它的 0x12+清除帧——add/del 恒 1:1（参考服 8/8）；旧定时器按 epoch 失配空转。
+        String supersededSkill = context.player().currentSkillId();
         PlayerActor.SkillGate gate = context.player().beginSkillUse(skill, targetKey, now);
         if (!gate.allowed()) {
             LOG.info("reject skill id=" + skillId + ": " + gate.reason());
             return;
         }
-
         Connection connection = context.connection();
+        if (!supersededSkill.isEmpty()) {
+            connection.writeFrame(FightMessages.activeSkillRowRemove(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
+            connection.writeFrame(context.player().skillStateClearUpdate());
+            LOG.info("close superseded skill id=" + supersededSkill + " early (delete row + clear frame)");
+        }
+
         PlayerActor player = context.player();
         String playerName = player.snapshotName();
+        // 本招代次（收尾定时器配对用；beginSkillUse 已自增）。
+        long castEpoch = player.currentSkillEpoch();
         // 打坐受理：切 LogicState=102/0（toggle，出招面板 LogicState 随帧下发；回复由
         // LoginFlow 1s ticker 的 sitcrossTick 结算）。动作客户端原生（msg20 自带 id 即可）。
         if (sitcrossSkill) {
             boolean sitting = player.sitting();
             player.applySitcross(!sitting);
             LOG.info("sitcross skill accepted -> LogicState=" + (sitting ? 0 : 102));
+        } else if (player.sitting()) {
+            // 打坐中出任意武法=先起立再出招（2026-11-04 真机 63296 实证：客户端此路
+            // 不发 240/2 本地打断，服务端不退坐则 LogicState=102 随出招面板回发、
+            // sitcrossTick 持续结算，武法被坐姿压住不出）。起立先回全量 0x10 vital
+            // ——参考服 52905 抓包：坐/立迁移恒走 188 属性全量面板（LogicState 为首
+            // 属性、唯一变更项），非 6 值技能元组；随后出招面板照常。命中进战斗的
+            // 1 态由 enterCombat 后续自推。
+            player.applySitcross(false);
+            // 2026-11-05：起立面板改 188 名瘦集（castVitalUpdate 与参考 52905 #5470
+            // 逐名一致）——全量 vitalUpdate 夹带 Mount/CurRideMount 等登录域属性，
+            // 重推 Mount 族会清客户端动作/移动态（打坐动画打断根因）。
+            connection.writeFrame(player.castVitalUpdate());
+            LOG.info("stand up from sitcross on cast skill id=" + skill.id()
+                    + " (full vital 0x10, ref 52905 shape)");
         }
 
         // buff 先入租约再写全量面板（参考服 exe 形态：出招 buff 只随 0x10 面板的
@@ -241,8 +311,17 @@ public final class SkillCastHandler {
         // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
         // 外观属性官方不随出招重发，重推 Mount='' 等会把空中人物打回地面）。
         connection.writeFrame(player.castVitalUpdate());
-        // msg337 施法者位置/朝向回显（值取 211 请求，官方每招恒发 62433；冲锋位移
-        // 客户端本地执行，337 仍回显出招原地——官服抓包全程无玩家位移帧）。
+        // msg337 施法者位置/朝向回显=211 上报原地（官服每招恒发）。**冲锋技服务端同样
+        // 只锚原地、不携终点**——op2 抓包字节级实证：同一出招的 0x1F 与 337 的 xyz 三元
+        // 组完全相同且恒=上报原地（此前"337=终点"为手算浮点误读，已勘误）。冲锋位移=
+        // 客户端本地执行（按技能 lock data 自播冲刺动画，官服全程无玩家位移帧）；服务端
+        // 若在 337/0x1F 携终点，客户端按权威位置直接贴坐标=瞬移无动画（2026-11-05 真机
+        // 两轮反馈）。冲锋技在 337 前补 0x1F 原地锚定（官服冲锋簇帧序含此对帧）。
+        if (skill.canRush() && skill.rushRange() > 0) {
+            connection.writeFrame(SceneMessages.serverLocation(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    new com.nineyin.server.db.role.Roles.Position(x, y, z, orient)));
+        }
         connection.writeFrame(FightMessages.casterTransformSync(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
         ActionTarget actionTarget = resolveActionTarget(context, skill, selected, aimObjId, aimOwnerId);
@@ -251,6 +330,10 @@ public final class SkillCastHandler {
                 actionTarget.objectId(), actionTarget.ownerId()));
 
         List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient, castPoint);
+        // NPC 反击 AI 拉起（§D1）：打中过谁，谁开始还手（循环自续，失效自停）。
+        if (!targets.isEmpty()) {
+            NpcCombatAi.playerEngaged(context, targets, x, y, z);
+        }
         if (skill.hitFrameMs().isEmpty()) {
             // 单段技能：原路径（即时结算，帧序对齐 62433 抓包）。
             List<Hit> hits = settleTargets(context, skill, targets, now);
@@ -259,6 +342,7 @@ public final class SkillCastHandler {
                 connection.writeFrame(player.logicStateFrame());
             }
             emitPerTargetSequence(context, skill, hits, playerName);
+            emitWujiSequence(context, skill, hits, 0);
             awardRagePerHit(context, hits);
             applyTargetControl(context, skill, hits, now);
             feedMeridianZhenQi(context, hits);
@@ -268,12 +352,132 @@ public final class SkillCastHandler {
             // 同招各段伤害值相同=每招掷一次、段间重复；死亡目标后续段跳过）。
             scheduleMultiHits(context, skill, targets, hitTimes(skill), playerName);
         }
-        scheduleEndOfAction(context, skill, staged);
+        scheduleEndOfAction(context, skill, staged, castEpoch);
         scheduleCombatIdleExit(context);
         LOG.info("accepted skill id=" + skill.id() + " mp=" + player.actorState().mp()
                 + " sp=" + player.sp() + " targets=" + targets.size()
                 + (skill.hitFrameMs().isEmpty() ? "" : " ticks=" + skill.hitFrameMs().size())
                 + " personal_cd=" + skill.personalCdMs() + "ms public_cd=" + skill.publicCdMs() + "ms");
+    }
+
+    /**
+     * 冲锋暂存链开关（**默认开**，2026-11-05 用户拍板对齐参考服 exe 61653 抓包：超射程
+     * 冲锋下发 msg25 暂存+msg24 c61 起跑而非静默拒/直接受理）；官服（正版）无此链，
+     * -Dnineyin.rush.stage=false 可关回官服语义（337 终点驱动客户端本地冲）。
+     */
+    static boolean rushStageEnabled() {
+        return Boolean.parseBoolean(System.getProperty("nineyin.rush.stage", "true"));
+    }
+
+    /**
+     * 冲锋暂存（IDA stagePreCast 逐帧对齐 + 参考服 61653 抓包实测：myjf02 目标
+     * 6.73m&gt;TSP2 6m → msg25[30000,skill_pause]+msg24[玩家,61,目标位置,2,
+     * qg_fastruning_s_2h_01]）：CurSkillID 帧 + msg25 暂存 + msg24 c1=61 疾跑
+     * （目的地=目标位置）+ 暂存出招 30s。RushTarget/PendingSkill 两属性名不在
+     * 0x09 协商表（exe 编码失败静默跳过）——同样不发。CD/资源在落地续招时才结。
+     */
+    private static void stageRushCast(CastContext context, CombatSkill skill,
+                                      SceneLifecycle.CombatNpcInfo target, double distance) {
+        Connection connection = context.connection();
+        context.player().stagePendingCast(skill.id(), target.id(), target.ownerId(),
+                context.clock().instant().plusMillis(RUSH_PENDING_WINDOW_MS));
+        connection.writeFrame(context.player().curSkillIdFrame(skill.id()));
+        connection.writeFrame(FightMessages.skillPauseFrame((int) RUSH_PENDING_WINDOW_MS));
+        connection.writeFrame(FightMessages.dashRushFrame(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                target.x(), target.y(), target.z()));
+        context.player().markRushInFlight();
+        LOG.info("rush staged skill id=" + skill.id() + " dist=" + (int) distance
+                + "m dest=(" + (int) target.x() + "," + (int) target.y() + "," + (int) target.z() + ")");
+    }
+
+    /**
+     * C2S msg212 冲锋落地（IDA handleCastDashLanding 逐帧对齐；官服抓包无此消息，
+     * 暂存链默认开启时触发续招，-Dnineyin.rush.stage=false 时仅回显）：
+     * {@code [212, f32 x, f32 y, f32 z, (f32 朝向)]} → 清冲锋态 + msg337 回显新坐标 +
+     * msg26 解除 skill_pause + 取暂存出招（30s 过期作废）→ 重组 211 值列表（10 值短形，
+     * 无目标对象——目标回落选中态）重入受理链正式出招。
+     */
+    public static void handleDashLanding(CastContext context, CustomC2S.Message custom) {
+        List<CustomC2S.Value> values = custom.values;
+        if (values.size() < 5 || values.get(1).tag != 4 || values.get(2).tag != 4
+                || values.get(3).tag != 4) {
+            LOG.info("reject dash landing malformed values=" + values.size());
+            return;
+        }
+        float orient = values.size() > 4 && values.get(4).tag == 4 ? values.get(4).float32 : 0f;
+        resumePendingCastAt(context, values.get(1).float32, values.get(2).float32,
+                values.get(3).float32, orient, "dash-landing");
+    }
+
+    /**
+     * 冲锋落地续招本体（212 与 msg15 到位探测共用）：清冲锋态 + msg337 回显坐标 +
+     * msg26 解除 skill_pause + 取暂存出招 → 重组 211（10 值短形，目标回落选中态）
+     * 重入受理链正式出招（msg20 动作三分/CD 行/伤害段=官服受理簇同款）。
+     */
+    private static void resumePendingCastAt(CastContext context, float x, float y, float z,
+                                            float orient, String trigger) {
+        context.player().clearRushInFlight();
+        context.connection().writeFrame(FightMessages.casterTransformSync(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
+        PlayerActor.PendingCast pending = context.player()
+                .consumePendingCast(context.clock().instant()).orElse(null);
+        if (pending == null) {
+            LOG.info("dash landing without live pending cast (expired or none)");
+            return;
+        }
+        context.connection().writeFrame(FightMessages.skillPauseClearFrame());
+        List<CustomC2S.Value> resume = List.of(
+                CustomC2S.Value.ofInt(CUSTOM_USE_SKILL),
+                CustomC2S.Value.ofText(pending.skillId()),
+                CustomC2S.Value.ofFloat(x), CustomC2S.Value.ofFloat(y), CustomC2S.Value.ofFloat(z),
+                CustomC2S.Value.ofFloat(orient),
+                CustomC2S.Value.ofFloat(0f), CustomC2S.Value.ofFloat(0f), CustomC2S.Value.ofFloat(0f),
+                CustomC2S.Value.ofText(""));
+        LOG.info("dash landing resume skill id=" + pending.skillId() + " via " + trigger);
+        handleValues(context, resume);
+    }
+
+    /**
+     * msg15 移动上报驱动的冲锋到位续招（2026-11-05 用户需求「冲到目标范围内后下发帧
+     * 数据让角色攻击目标」）：客户端疾跑到位后不必然发 212（61653 实证：玩家到过目标
+     * 1m 内仍未发）——服务端在每次移动上报时探测，玩家与暂存目标距离进入技能射程
+     * （CanRush&&RushRange>0?RushRange:TSP2，同出招闸模型）即主动落地续招。212 路径
+     * 保留（consumePendingCast 幂等，双触发只生效一次）。
+     */
+    public static void tryRushArrival(CastContext context, float x, float y, float z, float orient) {
+        PlayerActor player = context.player();
+        if (!player.rushInFlight()) {
+            return;
+        }
+        PlayerActor.PendingCast pending = player.peekPendingCast(context.clock().instant());
+        if (pending == null) {
+            return;
+        }
+        SceneLifecycle.CombatNpcInfo target = context.world().combatNpcInfo(pending.targetObj());
+        if (target == null) {
+            return;
+        }
+        Integer level = context.learnedSkills().get(pending.skillId());
+        CombatSkill skill = level != null
+                ? CombatSkillCatalog.load().definition(pending.skillId(), level) : null;
+        if (skill == null) {
+            return;
+        }
+        CombatSkillCatalog.SkillRowData rowData = CombatSkillCatalog.load()
+                .skillRowData(pending.skillId(), level != null ? level : 1);
+        float shapeRange = rowData != null ? rowData.targetShapePara2() : 0;
+        double castRange = skill.canRush() && skill.rushRange() > 0 ? skill.rushRange()
+                : shapeRange > 0 ? shapeRange
+                : Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
+        double distance = Math.sqrt(square(x - target.x()) + square(y - target.y())
+                + square(z - target.z()));
+        if (distance > castRange) {
+            return;
+        }
+        LOG.info("rush arrival in range skill id=" + pending.skillId() + " dist="
+                + (int) distance + "m <= " + (int) castRange + "m");
+        resumePendingCastAt(context, x, y, z, orient, "msg15-arrival");
     }
 
     /**
@@ -331,8 +535,27 @@ public final class SkillCastHandler {
                     java.time.Duration.ofMillis(COMBAT_IDLE_EXIT_MS), context.clock().instant())) {
                 context.connection().writeFrame(context.player().logicStateFrame());
                 LOG.info("combat idle exit -> LogicState=NORMAL");
+                return;
+            }
+            // 扑空重查（2026-11-04 真机：多段技 touchCombat 把活跃时刻推后 ~1s，一次性
+            // +10s 任务判 9s<10s 失败后永无重试，LogicState 卡 Fighting「无法结束战斗」）。
+            if (context.player().fighting()) {
+                scheduleCombatIdleExitRetry(context);
             }
         }, COMBAT_IDLE_EXIT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** 扑空后的短周期重查（2s 一拍直至退出；不再战斗即静默停）。 */
+    private static void scheduleCombatIdleExitRetry(CastContext context) {
+        context.scheduler().schedule(() -> {
+            if (context.player().exitCombatIfIdle(
+                    java.time.Duration.ofMillis(COMBAT_IDLE_EXIT_MS), context.clock().instant())) {
+                context.connection().writeFrame(context.player().logicStateFrame());
+                LOG.info("combat idle exit (retry) -> LogicState=NORMAL");
+            } else if (context.player().fighting()) {
+                scheduleCombatIdleExitRetry(context);
+            }
+        }, COMBAT_IDLE_RETRY_MS, TimeUnit.MILLISECONDS);
     }
 
     // ------------------------------------------------------------------ 伤害
@@ -565,9 +788,11 @@ public final class SkillCastHandler {
         for (int tick = 0; tick < times.size(); tick++) {
             long at = times.get(tick);
             final boolean lastTick = at == lastAt;
+            final int tickIndex = tick;
             context.scheduler().schedule(() -> {
                 Instant now = context.clock().instant();
                 List<Hit> hits = new ArrayList<>(targets.size());
+                boolean killed = false;
                 for (FightState.HitTarget target : targets) {
                     Actor.State state = target.combat().state();
                     if (state.hp() <= 0) {
@@ -579,6 +804,7 @@ public final class SkillCastHandler {
                         continue;
                     }
                     if (outcome.killed()) {
+                        killed = true;
                         scheduleRespawn(context, target);
                     }
                     hits.add(new Hit(target, damage));
@@ -596,6 +822,14 @@ public final class SkillCastHandler {
                     context.player().touchCombat(now); // 后续段刷新活跃时刻，防段间闲退
                 }
                 emitPerTargetSequence(context, skill, hits, playerName);
+                emitWujiSequence(context, skill, hits, tickIndex);
+                if (killed && skill.wujiCombo()) {
+                    // 击杀红名标记（参考服 55866：myjf08 击杀后 [1, buf_fixed_red, 玩家…]）
+                    context.connection().writeFrame(FightMessages.skillBuff(1,
+                            PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                            PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                            "buf_fixed_red", playerName));
+                }
                 awardRagePerHit(context, hits); // 每段每目标各 +2（官方多段叠加速更快）
                 landedTotal[0] += (long) damage * hits.size();
                 if (lastTick) {
@@ -645,7 +879,7 @@ public final class SkillCastHandler {
                     PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
                     target.combat().threat()));
             connection.writeFrame(FightMessages.skillDamageFloat(info.id(), info.ownerId(),
-                    hit.damage(), skill.id(), skill.script(), info.modelOrFallback(), playerName));
+                    hit.damage(), skill.id(), skill.scriptLabel(), info.modelOrFallback(), playerName));
             connection.writeFrame(FightMessages.hitEffect(info.id(), info.ownerId(),
                     state.maxHp() <= 0 ? 0 : state.hp() * 100 / state.maxHp()));
             connection.writeFrame(FightMessages.hurtAction(info.id(), info.ownerId(),
@@ -653,6 +887,56 @@ public final class SkillCastHandler {
             connection.writeFrame(FightMessages.hitConfirm(PlayerActor.PLAYER_OBJECT_ID,
                     PlayerActor.PLAYER_OWNER_ID, skill.id(), info.id(), info.ownerId()));
         }
+    }
+
+    /**
+     * 武技族出招附加帧（2026-11-04 对拍 §D2，参考服 55866 myjf03/myjf08 实证）：
+     *
+     * <ul>
+     *   <li>wuji_* 族（LevelupRelevance）：首跳摘除玩家自身 {@code buf_<技能>_01}
+     *       （六值 169 v0=0 形态；myjf03 每招一次）。</li>
+     *   <li>wuji_* + 怒招（PackCategory=2，如 myjf08）：每跳对每个受害 NPC 追加
+     *       目标 debuff 169（v0=1 带到期毫秒，承载=NPC/施法者=玩家）+ 一条
+     *       msg24 c1=71 武技连击段（段名 ''/“_2”/“_3”/“_4”，受害与第二目标轮转）。</li>
+     * </ul>
+     */
+    private static void emitWujiSequence(CastContext context, CombatSkill skill,
+                                         List<Hit> hits, int tickIndex) {
+        if (!skill.wujiRelevance() || hits.isEmpty()) {
+            return;
+        }
+        Connection connection = context.connection();
+        String playerName = context.player().snapshotName();
+        if (tickIndex == 0) {
+            connection.writeFrame(FightMessages.skillBuff(PlayerActor.PLAYER_OBJECT_ID,
+                    PlayerActor.PLAYER_OWNER_ID, PlayerActor.PLAYER_OBJECT_ID,
+                    PlayerActor.PLAYER_OWNER_ID, "buf_" + skill.id() + "_01", playerName));
+        }
+        if (!skill.wujiCombo()) {
+            return;
+        }
+        Instant now = context.clock().instant();
+        for (Hit hit : hits) {
+            if (hit.damage() <= 0) {
+                continue;
+            }
+            SceneLifecycle.CombatNpcInfo info = hit.target().info();
+            connection.writeFrame(FightMessages.targetDebuffTimed(
+                    "buf_" + skill.id(), info.id(), info.ownerId(),
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, playerName,
+                    now.toEpochMilli() + WUJI_DEBUFF_LEASE_MS));
+        }
+        // 连击段（上限 4 段：''/ _2/ _3/ _4；参考服 myjf08 四跳四段）；受害/第二目标轮转
+        if (tickIndex > 3) {
+            return;
+        }
+        String stage = tickIndex == 0 ? "" : skill.levelupRelevance() + "_" + (tickIndex + 1);
+        Hit first = hits.get(0);
+        Hit second = hits.size() > 1 ? hits.get(1) : first;
+        connection.writeFrame(FightMessages.wujiComboFloat(
+                first.target().info().id(), first.target().info().ownerId(),
+                second.target().info().id(), second.target().info().ownerId(),
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, stage));
     }
 
     // ------------------------------------------------------------------ buff/收尾
@@ -736,11 +1020,16 @@ public final class SkillCastHandler {
         }
     }
 
-    /** 动作总时长后：0x12 删 active_skill_rec + State="stand"；buff 到期清槽发空帧。 */
-    private static void scheduleEndOfAction(CastContext context, CombatSkill skill, List<StagedBuff> staged) {
+    /**
+     * 动作总时长后：0x12 删 active_skill_rec + State="stand"；buff 到期清槽发空帧。
+     * 删行按 (id, epoch) 配对——被新招顶掉的旧招在此空转（§D8），同技能快速复读
+     * 也不会误删新招的行。
+     */
+    private static void scheduleEndOfAction(CastContext context, CombatSkill skill,
+                                            List<StagedBuff> staged, long castEpoch) {
         long delay = Math.max(skill.totalActionDurationMs(), 1);
         context.scheduler().schedule(() -> {
-            if (context.player().clearCurrentSkill(skill.id())) {
+            if (context.player().clearCurrentSkill(skill.id(), castEpoch)) {
                 context.connection().writeFrame(FightMessages.activeSkillRowRemove(
                         PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
                 // 技能状态清除帧（参考服 exe 收招恒发 #2014；此前缺失致客户端技能

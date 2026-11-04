@@ -19,11 +19,11 @@ import com.nineyin.server.transport.Connection;
 import io.netty.channel.embedded.EmbeddedChannel;
 
 /**
- * C2S 200/201 快捷栏编辑链路（帧序同客户端记录表操作语义）：
- * 200 替换 = 0x12 删旧行 + 0x11 增新行且新行落表尾（客户端删行重编号、增行追加，
- * 服务端列表必须镜像，行号口径才不漂移）；201 上行的是**可见快捷栏索引**
- * （shortcut_game.lua remove_shortcut(index) 全调用点），按索引删行 = 0x12；
- * 交换四连（put_other_short：201(源) 200(源,目标) 201(目标) 200(目标,源)）后两栏互换。
+ * C2S 200/201 快捷栏编辑链路（menu2 rebuildShortcutRecord 全量重建方言）：
+ * 任一有效变更 = 按变更前行数从 preCount-1 递减到 0 逐行 0x12 清空 + 0x11 全量重推；
+ * 201 上行的是**可见快捷栏索引**（shortcut_game.lua remove_shortcut(index) 全调用点）；
+ * 幂等/未命中零帧。交换四连（put_other_short）后两栏互换、无关行不受牵连。
+ * 增量 del 中段行号在真机客户端方言下会误删/漏删（幽灵+重叠），故弃用。
  */
 class ShortcutCustomFlowTest {
 
@@ -70,6 +70,18 @@ class ShortcutCustomFlowTest {
         return frame[12] & 0xFF | (frame[13] & 0xFF) << 8;
     }
 
+    /** 帧序列的操作简写（D=0x12 行号，A=0x11 行）。 */
+    private static String dialect(List<byte[]> frames) {
+        StringBuilder sb = new StringBuilder();
+        for (byte[] f : frames) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(f[0] == 0x12 ? "D" : "A");
+        }
+        return sb.toString();
+    }
+
     @Test
     void setShortcutReplacesRowAndRemoveDeletesIt() {
         Env env = new Env();
@@ -88,23 +100,22 @@ class ShortcutCustomFlowTest {
                 message(200, 12, "skill", "CS_jh_sfgp01"));
         assertNull(env.channel.readOutbound(), "幂等设置零帧");
 
-        // 替换 index=12：0x12 删旧行(行0) + 0x11 增新行。
+        // 替换 index=12（重建方言）：0x12(行0) 清空 + 0x11 全量重推（1 行）。
         env.flow.handleSetShortcut(new Connection(env.channel), env.session,
                 message(200, 12, "skill", "CS_jh_sfgp04"));
         frames = env.drain();
-        assertEquals(2, frames.size(), "替换 = 删旧 + 增新");
-        assertEquals(0x12, frames.get(0)[0]);
-        assertEquals(0, delRowNumber(frames.get(0)), "旧行在行0");
+        assertEquals("D A", dialect(frames), "替换 = 清空 + 全量重推");
+        assertEquals(0, delRowNumber(frames.get(0)), "清空从 preCount-1=0 起");
         assertEquals(0x11, frames.get(1)[0]);
         var snapshot = env.session.player.shortcutSnapshot();
         assertEquals(1, snapshot.size());
         assertEquals("CS_jh_sfgp04", snapshot.get(0).id());
 
-        // 201 按可见索引删（客户端 remove_shortcut(index)）：一帧 0x12，内存清空。
+        // 201 按可见索引删（客户端 remove_shortcut(index)）：0x12(行0) 清空，无行可重推。
         env.flow.handleRemoveShortcut(new Connection(env.channel), env.session, message(201, 12));
         frames = env.drain();
-        assertEquals(1, frames.size());
-        assertEquals(0x12, frames.get(0)[0]);
+        assertEquals("D", dialect(frames));
+        assertEquals(0, delRowNumber(frames.get(0)));
         assertTrue(env.session.player.shortcutSnapshot().isEmpty());
         // 再删同索引静默；删不存在的索引也静默。
         env.flow.handleRemoveShortcut(new Connection(env.channel), env.session, message(201, 12));
@@ -114,8 +125,8 @@ class ShortcutCustomFlowTest {
     }
 
     /**
-     * 替换后新行落表尾：服务端行序必须与客户端记录表一致（0x12 删行重编号 +
-     * 0x11 追加），否则后续删行的行号错位——真机"覆盖失败/原栏位还有技能"根因之一。
+     * 替换后新行落表尾（服务端内存语义不变），帧走全量重建：preCount-1 递减到 0
+     * 的 0x12 降序清空 + 0x11 全量重推。降序保证每个行号在删行收缩后仍有效。
      */
     @Test
     void replaceMovesRowToTableEnd() {
@@ -128,26 +139,25 @@ class ShortcutCustomFlowTest {
                 message(200, 12, "skill", "CS_jh_xfz03"));
         env.drain();
 
-        // 替换中间行 idx11：0x12 删行1 + 0x11 追加，快照行序变为 [10, 12, 11]。
+        // 替换中间行 idx11：清空 2..0 + 重推 3 行，快照行序变为 [10, 12, 11]。
         env.flow.handleSetShortcut(new Connection(env.channel), env.session,
                 message(200, 11, "skill", "CS_wd_tjq01"));
         List<byte[]> frames = env.drain();
-        assertEquals(2, frames.size());
-        assertEquals(0x12, frames.get(0)[0]);
-        assertEquals(1, delRowNumber(frames.get(0)), "被替换旧行在行1");
-        assertEquals(0x11, frames.get(1)[0]);
+        assertEquals("D D D A A A", dialect(frames), "3 行表变更 = 3 删 + 3 增");
+        assertEquals(2, delRowNumber(frames.get(0)), "清空首帧 = preCount-1");
+        assertEquals(1, delRowNumber(frames.get(1)));
+        assertEquals(0, delRowNumber(frames.get(2)), "清空末帧 = 行0");
         List<PlayerActor.PlayerShortcut> snapshot = env.session.player.shortcutSnapshot();
         assertEquals(List.of(10, 12, 11),
                 snapshot.stream().map(PlayerActor.PlayerShortcut::index).toList(),
-                "替换行移表尾（客户端追加语义）");
+                "替换行移表尾（追加语义）");
         assertEquals("CS_wd_tjq01", snapshot.get(2).id());
 
-        // 行序漂移下删 idx12：0x12 行号必须是客户端表内行1（不是旧口径行2）。
+        // 删 idx12：清空 2..0 + 重推剩余 2 行。
         env.flow.handleRemoveShortcut(new Connection(env.channel), env.session, message(201, 12));
         frames = env.drain();
-        assertEquals(1, frames.size());
-        assertEquals(0x12, frames.get(0)[0]);
-        assertEquals(1, delRowNumber(frames.get(0)), "idx12 删后位于行1");
+        assertEquals("D D D A A", dialect(frames));
+        assertEquals(2, delRowNumber(frames.get(0)));
         assertEquals(List.of(10, 11),
                 env.session.player.shortcutSnapshot().stream()
                         .map(PlayerActor.PlayerShortcut::index).toList());
@@ -171,21 +181,17 @@ class ShortcutCustomFlowTest {
         env.drain();
 
         Connection connection = new Connection(env.channel);
-        // put_other_short(self=10, other=11)
+        // put_other_short(self=10, other=11)，每步全量重建。
         env.flow.handleRemoveShortcut(connection, env.session, message(201, 10));
         env.flow.handleSetShortcut(connection, env.session, message(200, 10, "skill", "CS_jh_xfz02"));
         env.flow.handleRemoveShortcut(connection, env.session, message(201, 11));
         env.flow.handleSetShortcut(connection, env.session, message(200, 11, "skill", "CS_jh_xfz01"));
 
         List<byte[]> frames = env.drain();
-        // 0x12(行0 删 idx10) 0x11(idx10=xfz02) 0x12(行0 删 idx11) 0x11(idx11=xfz01)
-        assertEquals(4, frames.size());
-        assertEquals(0x12, frames.get(0)[0]);
-        assertEquals(0, delRowNumber(frames.get(0)));
-        assertEquals(0x11, frames.get(1)[0]);
-        assertEquals(0x12, frames.get(2)[0]);
-        assertEquals(0, delRowNumber(frames.get(2)), "idx11 删时已因前序删行前移到行0");
-        assertEquals(0x11, frames.get(3)[0]);
+        // 201(10)：清 2..0 + 推 2 行；200(10)：清 1..0 + 推 3 行；
+        // 201(11)：清 2..0 + 推 2 行；200(11)：清 1..0 + 推 3 行。
+        assertEquals("D D D A A D D A A A D D D A A D D A A A", dialect(frames),
+                "交换四连 = 四次全量重建");
 
         List<PlayerActor.PlayerShortcut> snapshot = env.session.player.shortcutSnapshot();
         assertEquals(3, snapshot.size(), "交换不丢行");
@@ -198,7 +204,7 @@ class ShortcutCustomFlowTest {
                 "无关栏位不受牵连");
     }
 
-    /** 拖出释放（game_hand.lua gamehand_left_mouse_up）：201(索引) 移除该栏。 */
+    /** 拖出释放（game_hand.lua gamehand_left_mouse_up）：201(索引) 清空重推去掉该栏。 */
     @Test
     void dragOutRemovesShortcutByIndex() {
         Env env = new Env();
@@ -208,12 +214,11 @@ class ShortcutCustomFlowTest {
                 message(200, 21, "skill", "CS_wd_tjq02"));
         env.drain();
 
-        // idx21 在行1：按索引删，0x12 行号取行1（旧按行号解释会拿 21 当行号落空）。
+        // 按索引删 idx21：清 1..0 + 重推剩余 1 行（旧增量方言单帧 0x12 真机不收敛）。
         env.flow.handleRemoveShortcut(new Connection(env.channel), env.session, message(201, 21));
         List<byte[]> frames = env.drain();
-        assertEquals(1, frames.size());
-        assertEquals(0x12, frames.get(0)[0]);
-        assertEquals(1, delRowNumber(frames.get(0)));
+        assertEquals("D D A", dialect(frames));
+        assertEquals(1, delRowNumber(frames.get(0)), "清空首帧 = preCount-1");
         List<PlayerActor.PlayerShortcut> snapshot = env.session.player.shortcutSnapshot();
         assertEquals(1, snapshot.size());
         assertEquals(20, snapshot.get(0).index());

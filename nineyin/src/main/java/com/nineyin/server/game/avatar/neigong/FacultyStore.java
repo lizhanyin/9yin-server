@@ -84,6 +84,20 @@ public final class FacultyStore {
         if (lastLivepointText != null && !lastLivepointText.isEmpty()) {
             lastLivepoint = Instant.parse(lastLivepointText);
         }
+        JSONObject vitalsNode = node.getJSONObject("vitals");
+        PlayerProgress.Vitals vitals = null;
+        if (vitalsNode != null) {
+            vitals = new PlayerProgress.Vitals(
+                    vitalsNode.getIntValue("ene"),
+                    vitalsNode.getIntValue("max_ene"),
+                    vitalsNode.getIntValue("resume_ene"),
+                    vitalsNode.getIntValue("sat"),
+                    vitalsNode.getIntValue("max_sat"),
+                    vitalsNode.getIntValue("pk_value"),
+                    vitalsNode.getIntValue("drunk_level"),
+                    vitalsNode.getIntValue("max_hp_override"),
+                    vitalsNode.getIntValue("max_mp_override"));
+        }
         return new PlayerProgress.Snapshot(
                 node.getString("cur_neigong"),
                 node.getIntValue("faculty"),
@@ -109,7 +123,13 @@ public final class FacultyStore {
                 node.getIntValue("act_day_value_used"),
                 node.getIntValue("act_day_value_last"),
                 node.getIntValue("team_faculty_value"),
-                node.getIntValue("team_faculty_last"));
+                node.getIntValue("team_faculty_last"),
+                node.getIntValue("base_str"),
+                node.getIntValue("base_sta"),
+                node.getIntValue("base_dex"),
+                node.getIntValue("base_ing"),
+                node.getIntValue("base_spi"),
+                vitals);
     }
 
     /** Go 风格 DSN（user:pass@tcp(host:port)/db）→ 独立小池；失败仅告警（JSON 仍可用）。 */
@@ -278,6 +298,27 @@ public final class FacultyStore {
         node.field("act_day_value_last", snapshot.actDayValueLast());
         node.field("team_faculty_value", snapshot.teamFacultyValue());
         node.field("team_faculty_last", snapshot.teamFacultyLast());
+        // 基础五维（GM set_five_attributes）：旧档缺省 0 → restore 不覆盖运行时值。
+        node.field("base_str", snapshot.baseStr());
+        node.field("base_sta", snapshot.baseSta());
+        node.field("base_dex", snapshot.baseDex());
+        node.field("base_ing", snapshot.baseIng());
+        node.field("base_spi", snapshot.baseSpi());
+        // 生存属性层（GM set_vitals：体力/饱食/杀戮/酒量）：null = 旧档未设置，不落节点。
+        PlayerProgress.Vitals vitals = snapshot.vitals();
+        if (vitals != null) {
+            GoJson.Object vitalsNode = new GoJson.Object();
+            vitalsNode.field("ene", vitals.ene());
+            vitalsNode.field("max_ene", vitals.maxEne());
+            vitalsNode.field("resume_ene", vitals.resumeEne());
+            vitalsNode.field("sat", vitals.sat());
+            vitalsNode.field("max_sat", vitals.maxSat());
+            vitalsNode.field("pk_value", vitals.pkValue());
+            vitalsNode.field("drunk_level", vitals.drunkLevel());
+            vitalsNode.field("max_hp_override", vitals.maxHpOverride());
+            vitalsNode.field("max_mp_override", vitals.maxMpOverride());
+            node.raw("vitals", vitalsNode.render(depth + 1));
+        }
         List<String> books = new ArrayList<>();
         for (PlayerProgress.BookSnapshot book : snapshot.books()) {
             GoJson.Object bookNode = new GoJson.Object();

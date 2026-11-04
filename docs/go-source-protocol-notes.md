@@ -77,7 +77,8 @@ C2S opcode：`0x02 Login`、`0x03 WorldInfo`、`0x04 ChooseRole`、`0x05 CreateR
 实际是 `名字\0 + u16 index + u8 wireType` 每条（`msg = append(name...); append(0, byte(Type))`，名字后跟 NUL 和类型字节；index 隐含为字段序号）。
 
 **WireType 编码（npc_schema.go:12-22）**：`1=byte 2=word(2B) 3=int32 5=float32 7=string 8=widestring 9=object(8B)`。
-注意 4 不在属性表用（那是 TVarList 的 float 标签），6 也不用（那是 TVarList double / record 陷阱）。
+Go 源码时代 4/6 不入属性表；**真机 F 参考服 2370 项表两者都在**（52905 抓包 0x09 表实测：type4=58 项、type6=33 项），
+且 **4 与 6 均按 8B double 解**（CapitalType1=104514.0 的 double 编码；按 4B 解 188 属性面板必错位）。
 
 ### 4.1 基础 99 字段（NPC 可见属性，npc_schema.go:95-195；Modern 版仅改 34=NpcType 为 int32）
 
@@ -149,6 +150,7 @@ Go 侧协商的 6 张 record（recordIndex 0-5，qinggong_records.go:73-98）：
   **+0x0C/+0x0E 是"源行 start/count"，不是列区间**；每次恰好一行完整行，count 必须 1。行是**追加**语义，稀疏行需先发前面行。玩家记录的 obj/owner 必须与 0x0D 一致（1-1），否则 GetPlayer()/QueryRecord 看不见。
   单元格编码：int=u32、int64=u64、string=u32 长度(含 NUL)+字节+NUL。
 - **0x12 RecordDelRow**（shortcut_records.go:53-65）：**整帧恰 14 字节**，`0x12 | 0 | u32 obj | u32 owner | u16 recordIndex | u16 0 基行号`。删除按**记录行号**，不是可见快捷栏索引。
+- **快捷栏变更方言 = 全量重建（menu2 rebuildShortcutRecord，52905 真机抓包实证）**：任何有效 200/201 都**不做增量删行**，而是按变更前行数从 preCount-1 **递减到 0** 逐行 0x12 清空客户端记录，再按服务端列表全量重推 0x11（被替换/新增行落表尾）。抓包 14 个重建 burst（117 行表：dels 116..0 + adds 116/117...），交换四连 = 连续 4 次重建，无操作静默。增量发中段行号 0x12 在真机客户端不可靠——拖拽后图标残留（幽灵）/同槽双行（重叠）/拖出删不掉，2026-11-04 Java 增量方言真机复现。
 
 ### 5.2 任务位图（qinggong_records.go:253-265）
 
@@ -237,13 +239,13 @@ C2S 解析器另接受 `5=double(8B) 7=widestr`（custom_c2s.go:106-204）。
 | ID | 含义 | 参数（类型实证） |
 |---|---|---|
 | 200 | 设置快捷栏 | (index, kind 字符串, configID 字符串) |
-| 201 | 删除快捷栏 | (记录行号) |
+| 201 | 删除快捷栏 | (**可见快捷栏索引**，非行号——shortcut_game.lua remove_shortcut(index) 全调用点 + 52905 真机抓包 `[201, 209]` 实证；Go 源码形参名 row 是误读) |
 | 211 | USE_SKILL 请求 | (configID 字符串, f32 X, f32 Y, f32 Z, [f32 朝向], [目标位置...]) |
 | 215 | 装备内功 | (configID) 只接受已学 View=43 书 |
 | 216 | USE_QINGGONG | (id 字符串, int begin=1/end=0)。**只在 begin 扣点**，end 再扣=一次按放双倍耗 |
 | 217 | ACTIVE_QINGGONG | (id 字符串)。ActiveQGSkillRec 行授权高阶轻功，与 216 分工：216 耗资源 |
 | 218 | 主动格挡 | (subtype, arg)。枚举未复原；本地服每请求给 600ms 格挡窗 |
-| 240 | 打坐开关 | (int 1 开始/0 停止/2 被打断)。**重复 1=按住不是切换**；2 必须当正常停处理否则战斗打断瞬间断连 |
+| 240 | 打坐开关 | (int 1 开始/0 停止/2 被打断)。**重复 1=按住不是切换**；2 必须当正常停处理否则战斗打断瞬间断连。52905 抓包实证：现代客户端停止恒发 2（全程无 0）且**每次打断连发两帧 2**——首帧回 188 属性全量 0x10（LogicState 为首属性、唯一变更项），第二帧重复已停=零帧静默（Go duplicate ignored 同款）；进入 1 同样回全量 0x10。zs_default_01 恒走 240 不走 211 |
 | 307 | 仓库（子消息 4） | — |
 | 1006 | 内功面板总线 | 1 选书 / 11 普通内修开始 / 21 演武开始 / 22 关闭 / **23 三选卡（两个 double:0/double:1 枚举值）** / 24 刷新 / 14 升级通知 |
 | **30** | **MOVEITEM 移动物品**（穿/脱装备、页间移动） | `(fromView, fromSlot, toView, toSlot)`。脱下=`[1,槽,121,0]`（toSlot=0 自动选格）；穿上=`[121,格,1,身体槽]`。menu2.exe 证据：`MOVEITEM (%d,%d)->(%d,%d)` / `MOVEITEM addtoolbox anchor not found`（扩容包链）；**不承载"使用"语义** |

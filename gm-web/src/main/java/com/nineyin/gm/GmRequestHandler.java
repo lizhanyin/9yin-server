@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -23,7 +24,8 @@ import java.util.regex.Pattern;
  * gm-web 独立面板 HTTP 处理（多服务器管理网关）：
  * <ul>
  * <li>GET / 管理页 index.html（服务器列表存前端 localStorage）；GET /console.html 控制台
- *     （须带 ?s=host:port，由 console 侧门禁跳转）。</li>
+ *     （须带 ?s=host:port，由 console 侧门禁跳转）；GET /static/* 控制台拆分出的
+ *     css/js 静态资源（路径段 + 扩展名白名单）。</li>
  * <li>GET /api/manage/status?s=host:port — 管理页轮询目标游戏服在线状态。</li>
  * <li>动态数据 /api/status、/api/sessions、POST /api/sessions/{id}/command、
  *     /api/minimal-login（GET/POST）— 按 __s=host:port 经 {@link GameServerRpc} 路由到
@@ -39,6 +41,14 @@ public final class GmRequestHandler {
 
     private static final Pattern HOST_PATTERN =
             Pattern.compile("^(localhost|(\\d{1,3}\\.){3}\\d{1,3})$", Pattern.CASE_INSENSITIVE);
+
+    /** /static/ 静态资源扩展名白名单 → Content-Type（仅 css/js，其余一律 404）。 */
+    private static final Map<String, String> ASSET_TYPES = Map.of(
+            ".css", "text/css; charset=utf-8",
+            ".js", "text/javascript; charset=utf-8");
+
+    /** 资源路径段白名单：字母/数字/点/下划线/连字符；"." 与 ".." 在代码里单独拒绝。 */
+    private static final Pattern ASSET_SEGMENT = Pattern.compile("[A-Za-z0-9._-]+");
 
     private final GmCatalog catalog;
     private final GameServerRpc gameRpc;
@@ -65,6 +75,10 @@ public final class GmRequestHandler {
         }
         if (HttpMethod.GET.name().equals(method) && "/console.html".equals(path)) {
             return GmHttpUtil.response(HttpResponseStatus.OK, page("console.html"), "text/html; charset=utf-8");
+        }
+        // GET /static/&lt;path&gt; — console.html 拆分出的 css/js 静态资源（受保护路由）
+        if (HttpMethod.GET.name().equals(method) && path.startsWith("/static/")) {
+            return staticAsset(path);
         }
         if (!HttpMethod.GET.name().equals(method) && !HttpMethod.POST.name().equals(method)) {
             return GmHttpUtil.jsonError(HttpResponseStatus.METHOD_NOT_ALLOWED, "method not allowed");
@@ -337,6 +351,35 @@ public final class GmRequestHandler {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             return "<html><body>" + name + " load failed</body></html>";
+        }
+    }
+
+    /**
+     * /static/&lt;path&gt; 静态资源（classpath nineyin/gm/static/ 下）：
+     * 每段须匹配 {@link #ASSET_SEGMENT} 且不得为 "."/".."（防目录穿越，URL 编码的
+     * %2e%2e 因含 % 不匹配白名单直接 404），扩展名须在 {@link #ASSET_TYPES} 内。
+     */
+    private static HttpResponse staticAsset(String path) {
+        String rel = path.substring("/static/".length());
+        for (String seg : rel.split("/")) {
+            if (seg.isEmpty() || seg.equals(".") || seg.equals("..") || !ASSET_SEGMENT.matcher(seg).matches()) {
+                return GmHttpUtil.jsonError(HttpResponseStatus.NOT_FOUND, "not found");
+            }
+        }
+        int dot = rel.lastIndexOf('.');
+        String contentType = dot < 0 ? null
+                : ASSET_TYPES.get(rel.substring(dot).toLowerCase(Locale.ROOT));
+        if (contentType == null) {
+            return GmHttpUtil.jsonError(HttpResponseStatus.NOT_FOUND, "not found");
+        }
+        try (InputStream in = GmRequestHandler.class.getResourceAsStream("/nineyin/gm/static/" + rel)) {
+            if (in == null) {
+                return GmHttpUtil.jsonError(HttpResponseStatus.NOT_FOUND, "not found");
+            }
+            return GmHttpUtil.response(
+                    HttpResponseStatus.OK, new String(in.readAllBytes(), StandardCharsets.UTF_8), contentType);
+        } catch (IOException e) {
+            return GmHttpUtil.jsonError(HttpResponseStatus.INTERNAL_SERVER_ERROR, "asset load failed");
         }
     }
 }

@@ -115,6 +115,34 @@ class GmRequestHandlerTest {
         assertEquals(200, console.status().code());
         assertTrue(content(console).contains("九阴本地 GM"));
         assertTrue(console.headers().get("Content-Type").startsWith("text/html"));
+        assertTrue(content(console).contains("/static/console.css"), "console.html 应引用拆分出的样式");
+        assertTrue(content(console).contains("/static/console-features.js"), "console.html 应引用拆分出的脚本");
+
+        FullHttpResponse css = request("GET", "/static/console.css", null);
+        assertEquals(200, css.status().code());
+        assertTrue(css.headers().get("Content-Type").startsWith("text/css"));
+        assertTrue(content(css).contains("--accent"));
+
+        for (String js : new String[] {"/static/console-core.js", "/static/console-features.js"}) {
+            FullHttpResponse resp = request("GET", js, null);
+            assertEquals(200, resp.status().code(), js + " 应可下发");
+            assertTrue(resp.headers().get("Content-Type").startsWith("text/javascript"));
+        }
+        assertTrue(content(request("GET", "/static/console-features.js", null)).contains("setInterval(refresh"));
+    }
+
+    /** /static/ 白名单门禁：目录穿越、未知扩展名、不存在的资源一律 404。 */
+    @Test
+    void staticAssetsGuarded() {
+        for (String uri : new String[] {
+                "/static/../console.html",
+                "/static/%2e%2e/static.css",
+                "/static/foo.exe",
+                "/static/no_such_file.js",
+                "/static//console.css",
+        }) {
+            assertEquals(404, request("GET", uri, null).status().code(), uri + " 应被拒绝");
+        }
     }
 
     @Test

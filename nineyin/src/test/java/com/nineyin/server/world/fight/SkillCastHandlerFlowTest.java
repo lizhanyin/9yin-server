@@ -41,6 +41,8 @@ import io.netty.channel.embedded.EmbeddedChannel;
  */
 public class SkillCastHandlerFlowTest {
 
+    // 断言（rec 行号/伤害段数）按 G: 老资源树固化，E: 树数据不同必挂——保留 G: 门控
+    // 在本机跳过；CanUse 行为断言由 GroundChargeAndRageTest（E: 树）覆盖。
     private static final Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
 
     /** 可推进的固定时钟（技能 CD/租约判定全走它）。 */

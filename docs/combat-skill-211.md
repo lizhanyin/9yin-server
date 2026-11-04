@@ -121,8 +121,16 @@ buff_new/buff_static/buff_varprop（buf_<技能ID> 精确 buff）。
    不随下发客户端上限显示为 0；本服发 SP=progress、MaxSP=100/MaxSPAdd=0。
 4. **技能可用性 CanUse**：View40 行帧 `{0x10 | isView=1 | u32 40 | u32 行号 | u16 1 |
    u16 CanUse(2236) | u8 0/1}`（15B，owner 字段=行号 1..N，抓包 2159 帧、每行 127 次周期重播）。
-   不发则客户端图标恒不可用（能释放但显示灰）。实现：授予时全行置 1、施放置 0、
+   不发则客户端技能图标恒不可用（能释放但显示灰）。实现：授予时全行置 1、施放置 0、
    max(个人CD,GCD) 到期置 1（事件驱动替代 exe 周期重播）。
+   **值语义勘误（2026-11-04，52795/57378 取证 `tools/smoke/rage_canuse_57378.py`）**：
+   官方值恒 1、**不按资源门控**——316 批 11730 帧中仅行 11（CS_gb_dgbf03，
+   AConsumeQGP=10）出 0；怒招行（AConsumeSP=50）在 SP=26 时仍推 1；被释放的
+   怒招行（chz04/hyjf08/yydf05/tjq08/shl08，行 20/87/134/178/187）**全程零推送**
+   （无出招置 0、无 CD 尽置 1）。推送范围仅快捷栏 17 行（GM 号 207 已学行中）。
+   怒招图标点亮/特殊动画由客户端按 SP+行内 AConsumeSP 自算；服务端只做周期保活。
+   实现（对齐后）：授予置 1、施放置 0、个人 CD 尽置 1（不看 SP）、ticker 恒 1、
+   SP 变化不推行帧（pushRageRowTransitions 已删）。
 
 ## 10. 技能 CD 文本显示源 = View40 行 CoolDownTime 属性（2026-11-02，view40_forensics.py）
 

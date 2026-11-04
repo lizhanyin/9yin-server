@@ -174,15 +174,11 @@ public final class SkillCastHandler {
         if (selected != null) {
             targetKey = (selected.objectId() & 0xFFFFFFFFL) | ((long) selected.ownerId() << 32);
         }
-        int spBeforeCast = context.player().sp();
         PlayerActor.SkillGate gate = context.player().beginSkillUse(skill, targetKey, now);
         if (!gate.allowed()) {
             LOG.info("reject skill id=" + skillId + ": " + gate.reason());
             return;
         }
-        // 怒招消耗可能把其它怒招行也压到阈值下（如 40/80 双怒招，SP 100→60 时 80 招
-        // 应灰）：SP 变化即推全量怒招行过渡（变化才发）。
-        pushRageRowTransitions(context, spBeforeCast, context.player().sp());
 
         Connection connection = context.connection();
         PlayerActor player = context.player();
@@ -204,11 +200,12 @@ public final class SkillCastHandler {
                 PlayerActor.PLAYER_OWNER_ID, GCD_CATEGORY, start,
                 start + skill.publicCdMs(),
                 skill.cooldownTeam() > 0 ? skill.cooldownTeam() : GCD_TEAM_FALLBACK));
-        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；个人 CD 尽时按
-        // 「SP≥消耗」置 1——官方 CanUse 完全由服务端逐行推（61114 登录批 196 帧、
-        // 62433 战斗 2159 帧实证），CD 尽但怒气不够时必须保持 0，否则图标假可用。
-        // 出招技能自身不吃公共 GCD（同套路不触发 7s，bug.txt；2026-11-02 前
-        // max(个人,GCD) 把 cd<7s 的技能图标也压到 7s，已改回个人 CD）
+        // CanUse 置 0（View40 行；不置则真机技能图标恒灰）；个人 CD 尽时置 1。
+        // 官方 CanUse 值恒 1、不按资源门控（52795 抓包：怒招行 SP=26<消耗 50 仍推 1，
+        // 出招/CD 尽也均不推）——资源灰由客户端按 SP+行内 AConsumeSP 自算，服务端
+        // 只做出招置 0 + 周期保活批（LoginFlow ticker）。出招技能自身不吃公共 GCD
+        // （同套路不触发 7s，bug.txt；2026-11-02 前 max(个人,GCD) 把 cd<7s 的技能
+        // 图标也压到 7s，已改回个人 CD）
         Integer row = context.skillRows().get(skill.id());
         if (row != null && row > 0) {
             connection.writeFrame(FightMessages.skillRowCanUse(SKILL_VIEW_ID, row, false));
@@ -216,7 +213,7 @@ public final class SkillCastHandler {
             // 大括号块保证解析到 schedule(Runnable)：单表达式 lambda 会因返回值落到 Callable 重载
             context.scheduler().schedule(() -> {
                 context.connection().writeFrame(FightMessages.skillRowCanUse(
-                        SKILL_VIEW_ID, row, context.player().sp() >= skill.spCost()));
+                        SKILL_VIEW_ID, row, true));
             }, Math.max(canUseAt, 1), TimeUnit.MILLISECONDS);
         }
         // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
@@ -407,7 +404,9 @@ public final class SkillCastHandler {
 
     /**
      * 官方回怒：每次实招命中未格挡目标 +2（按打击次数不按伤害；多段招每段每目标
-     * 各算）。变化才发单属性 SP 帧（饱和 0..100，满值不加帧）+ 怒招行可用性过渡。
+     * 各算）。变化才发单属性 SP 帧（饱和 0..100，满值不加帧）。可用提示不在此处
+     * 推 CanUse——官方 SP 变化不触发行帧（52795：SP 跨 50 阈值无 CanUse 推送，
+     * 图标点亮由客户端按 SP 自算）。
      */
     private static void awardRagePerHit(CastContext context, List<Hit> hits) {
         int landed = 0;
@@ -428,38 +427,6 @@ public final class SkillCastHandler {
         PlayerActor.SPUpdate update = player.addSP(delta);
         if (update.sp() != before) {
             context.connection().writeFrame(update.frame());
-            pushRageRowTransitions(context, before, update.sp());
-        }
-    }
-
-    /**
-     * 怒气维度的 View40 行可用性过渡（bug.txt「怒招不够怒气快捷栏不灰」）：SP 跨过
-     * 某技能 AConsumeSP 阈值时推该行 CanUse（变化才发，官方稀疏风格）。0→1 即真机
-     * 怒招可释放特殊动画的触发源；值=资源可用性（SP≥消耗）——CD 灰由客户端
-     * cooldown_rec 扫描独立承担（官方 61579 批对 CD 中的行也恒推 1，LoginFlow 的
-     * 2s 心跳批同语义）。消耗族与 View40 行同源（skillRowData，免整编译）。
-     */
-    private static void pushRageRowTransitions(CastContext context, int beforeSp, int afterSp) {
-        if (beforeSp == afterSp || context.skillRows().isEmpty()) {
-            return;
-        }
-        CombatSkillCatalog catalog = CombatSkillCatalog.load();
-        for (Map.Entry<String, Integer> learned : context.learnedSkills().entrySet()) {
-            String id = learned.getKey();
-            CombatSkillCatalog.SkillRowData rowData =
-                    catalog.skillRowData(id, learned.getValue());
-            int cost = rowData == null ? 0 : rowData.aConsumeSP();
-            if (cost <= 0) {
-                continue;
-            }
-            Integer row = context.skillRows().get(id);
-            if (row == null || row <= 0) {
-                continue;
-            }
-            if ((beforeSp >= cost) != (afterSp >= cost)) {
-                context.connection().writeFrame(FightMessages.skillRowCanUse(
-                        SKILL_VIEW_ID, row, afterSp >= cost));
-            }
         }
     }
 

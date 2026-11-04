@@ -2751,36 +2751,23 @@ public final class LoginFlow {
     /**
      * View40 行 CanUse 心跳批（官方 61579 战斗抓包实证：进战斗 LogicState 帧+首批
      * 命中后紧跟全行批，此后每 ~2s 重推；61114 登录批一次、纯闲时无批——客户端可用
-     * 性态会衰减，真机表现为"进战斗图标全灰但能放"，由周期批自愈）。值=资源可用性：
-     * 怒招行按 SP≥AConsumeSP，其余恒 1；CD 灰由客户端 cooldown_rec 扫描独立承担
-     * （官方批对 CD 中的行也恒推 1）。消耗按授予时点快照固化，断连取消。
+     * 性态会衰减，真机表现为"进战斗图标全灰但能放"，由周期批自愈）。值恒 1、
+     * 不按资源门控（52795 取证：怒招行 SP=26<消耗 50 仍推 1；资源灰由客户端按
+     * SP+行内 AConsumeSP 自算，CD 灰由 cooldown_rec 扫描独立承担——官方 316 批
+     * 11730 帧仅特殊行 QGP 不足出 0）。断连取消。
      */
     private void startSkillCanUseTicker(Connection connection, LoginSession session) {
         if (session.skillCanUseTicker != null) {
             session.skillCanUseTicker.cancel(false);
         }
-        java.util.Map<String, Integer> costs = new java.util.HashMap<>();
-        com.nineyin.server.world.fight.CombatSkillCatalog catalog =
-                com.nineyin.server.world.fight.CombatSkillCatalog.load();
-        for (java.util.Map.Entry<String, Integer> learned : session.learnedSkills.entrySet()) {
-            com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
-                    catalog.skillRowData(learned.getKey(), learned.getValue());
-            if (rowData != null && rowData.aConsumeSP() > 0) {
-                costs.put(learned.getKey(), rowData.aConsumeSP());
-            }
-        }
         session.skillCanUseTicker = scheduler.scheduleWithFixedDelay(() -> {
             try {
-                PlayerActor player = session.player;
-                if (player == null) {
+                if (session.player == null) {
                     return;
                 }
-                int sp = player.sp();
                 for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
-                    Integer cost = costs.get(row.getKey());
                     connection.writeFrame(FightMessages.skillRowCanUse(
-                            SkillCastHandler.SKILL_VIEW_ID, row.getValue(),
-                            cost == null || sp >= cost));
+                            SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
                 }
             } catch (RuntimeException e) {
                 log.warn("skill CanUse ticker session={}: {}", session.machine.id(), e.getMessage());

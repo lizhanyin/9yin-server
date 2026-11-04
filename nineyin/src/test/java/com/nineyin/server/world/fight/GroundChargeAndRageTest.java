@@ -39,7 +39,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
  */
 class GroundChargeAndRageTest {
 
-    private static final Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
+    private static final Path GO_SERVER_ROOT = Path.of("E:/Workspace/project/game/9yin_server1");
 
     @BeforeAll
     static void needsSharedSkillResources() {
@@ -220,13 +220,13 @@ class GroundChargeAndRageTest {
     // ------------------------------------------------------------------ 辅助
 
     /**
-     * bug.txt「怒招不够怒气快捷栏不灰」：View40 行 CanUse 完全由服务端动态推
-     * （官方 61114 登录批 196 帧/62433 战斗 2159 帧实证）。双怒招不同消耗：
-     * 出招大消耗招把兄弟行也压灰；回怒跨过小阈值兄弟行 0→1 复亮（真机特殊动画
-     * 触发源）；CD 尽回调 SP 不足时大行保持灰。
+     * 官方 CanUse 语义（52795 取证：11730 帧中仅 QGP 门控行出 0，怒招行 SP=26
+     * 低于消耗 50 仍恒推 1；SP 跨阈值无任何行帧）：出招置 0、个人 CD 尽置 1
+     * （不看 SP）；SP 变化（消耗/回怒）不推兄弟行——资源灰由客户端按 SP+行内
+     * AConsumeSP 自算（bug.txt「怒招不够怒气快捷栏不灰」由此闭环）。
      */
     @Test
-    void rageShortcutAvailabilityFollowsSpThresholds() {
+    void rageShortcutAvailabilityFollowsOfficialSemantics() {
         CombatSkill rage = firstCompiled(List.of("wx_sl_tzcq08", "wx_tm_fg06", "wx_wd_tjj08"));
         assumeTrue(rage != null && rage.spCost() > 0, "无可放怒招可测");
         String sibling = "wx_wd_tjj08".equals(rage.id()) ? "wx_sl_tzcq08" : "wx_wd_tjj08";
@@ -242,32 +242,28 @@ class GroundChargeAndRageTest {
         h.skillRows.put(sibling, 2);
 
         int costBig = Math.max(rage.spCost(), siblingRow.aConsumeSP());
-        int costSmall = Math.min(rage.spCost(), siblingRow.aConsumeSP());
         int rowBig = costBig == rage.spCost() ? 1 : 2;
         int rowSmall = rowBig == 1 ? 2 : 1;
 
-        // SP=costBig+5：出招（costBig 在手）→ SP=5 < costSmall：两行都应灰
+        // SP=costBig+5：出招（costBig 在手）→ SP=5：只有出招行置 0/CD 尽置 1；
+        // 兄弟行全程不得出现 CanUse 帧（官方无 SP 维度行帧）
         h.player.setSP(costBig + 5);
         h.cast(rage.id(), 100f, 20f, 100f);
         h.scheduler.runAll();
         List<byte[]> frames = h.drain();
         List<int[]> pushes = canUsePushes(frames);
         assertTrue(pushes.stream().anyMatch(p -> p[0] == rowBig && p[1] == 0),
-                "出招后大怒招行置灰，实际=" + pushes);
-        assertTrue(pushes.stream().anyMatch(p -> p[0] == rowSmall && p[1] == 0),
-                "SP 被压到小阈值下兄弟行置灰，实际=" + pushes);
+                "出招后大怒招行置 0，实际=" + pushes);
+        assertFalse(pushes.stream().anyMatch(p -> p[0] == rowSmall),
+                "SP 被压到小阈值下也不推兄弟行，实际=" + pushes);
 
         int landed = msg24Count(frames);
         int finalSp = h.player.sp();
         assertEquals(5 + landed * SkillCastHandler.RAGE_PER_HIT_DEALT, finalSp,
                 "扣到 5 后按落血次数回怒");
-        if (finalSp >= costSmall) {
-            assertTrue(pushes.stream().anyMatch(p -> p[0] == rowSmall && p[1] == 1),
-                    "回怒跨过小阈值兄弟行 0→1 复亮，实际=" + pushes);
-        }
         if (finalSp < costBig) {
-            assertFalse(pushes.stream().anyMatch(p -> p[0] == rowBig && p[1] == 1),
-                    "CD 尽但 SP 不足时大怒招行不得复亮，实际=" + pushes);
+            assertTrue(pushes.stream().anyMatch(p -> p[0] == rowBig && p[1] == 1),
+                    "CD 尽置 1（不看 SP 是否够），实际=" + pushes);
         }
     }
 

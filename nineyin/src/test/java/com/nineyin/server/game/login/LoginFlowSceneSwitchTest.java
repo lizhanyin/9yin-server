@@ -36,7 +36,9 @@ import io.netty.channel.embedded.EmbeddedChannel;
  */
 class LoginFlowSceneSwitchTest {
 
-    private static final Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
+    /** Go 仓库根（share 资源）；默认 G: 机器，可用 GO_SERVER_ROOT 环境变量指向本地克隆。 */
+    private static final Path GO_SERVER_ROOT = Path.of(
+            System.getenv().getOrDefault("GO_SERVER_ROOT", "G:/pojie/ai/9yin-go-server1"));
 
     @BeforeAll
     static void needsGoResources() {
@@ -243,6 +245,70 @@ class LoginFlowSceneSwitchTest {
                 }
             }
         }
+    }
+
+    @Test
+    void sceneSwitchReplaysShortcutRowsAfterExitScene() {
+        // ExitScene 清玩家对象挂接记录行（连接级 schema 存活）——重入收尾必须按内存
+        // 快照整表重放 shortcut_rec（record=93），会话内编辑（200/201）随之保留；
+        // starter 模式无 DB，内存即唯一事实源（Go reentry grantShortcutRows 同款）。
+        Env env = new Env();
+        // 会话内编辑缩影：idx40 设 A 再替换为 B（替换=删旧追新，B 应存活重放）。
+        env.flow.handleSetShortcut(env.connection, env.session, shortcutMessage(200, 40, "skill", "CS_jh_xfz01"));
+        env.flow.handleSetShortcut(env.connection, env.session, shortcutMessage(200, 40, "skill", "CS_wd_tjq01"));
+        env.drainFrameOpcodes();
+
+        env.enqueue("switch_scene_preset", Map.of("preset", "yanjing"));
+        env.flow.drainGmCommands(env.connection, env.session);
+        env.scheduler.tasks.remove(0).run();      // 0x0B + 0x0D 延迟帧
+        assertTrue(env.flow.dispatch(env.connection, env.session, new byte[]{0x09}),
+                "目标场景 0x09 收尾应成功");
+
+        Map<Integer, String> shortcutIds = new java.util.HashMap<>();
+        int duplicateRows = 0;
+        byte[] frame;
+        while ((frame = env.readFrame()) != null) {
+            if ((frame[0] & 0xFF) != 0x11 || frame.length < 16
+                    || ((frame[10] & 0xFF) | (frame[11] & 0xFF) << 8) != 93) {
+                continue;
+            }
+            int index = (frame[16] & 0xFF) | (frame[17] & 0xFF) << 8
+                    | (frame[18] & 0xFF) << 16 | (frame[19] & 0xFF) << 24;
+            // 列区 [u32 index][str kind][str id]：str = u32 len(含 NUL) + utf8 + NUL。
+            int offset = 20;
+            String id = "";
+            for (int cell = 0; cell < 2 && offset + 4 <= frame.length; cell++) {
+                int len = ((frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8
+                        | (frame[offset + 2] & 0xFF) << 16 | (frame[offset + 3] & 0xFF) << 24) - 1;
+                offset += 4;
+                String text = new String(frame, offset, len, java.nio.charset.StandardCharsets.UTF_8);
+                offset += len + 1;
+                if (cell == 1) {
+                    id = text;
+                }
+            }
+            duplicateRows += shortcutIds.put(index, id) != null ? 1 : 0;
+        }
+        assertEquals("CS_wd_tjq01", shortcutIds.get(40), "会话内替换值应整表重放");
+        assertTrue(shortcutIds.containsKey(9), "打坐 idx9 应随链补授/重放");
+        for (int index = 10; index <= 16; index++) {
+            assertTrue(shortcutIds.containsKey(index), "starter idx" + index + " 应重放");
+        }
+        assertEquals(0, duplicateRows, "重放不得产生重复行");
+    }
+
+    /** 0x1E 直达 [msgId, int, str, str]（200 设快捷栏）。 */
+    private static com.nineyin.server.protocol.CustomC2S.Message shortcutMessage(
+            int msgId, int index, String kind, String id) {
+        com.nineyin.server.protocol.PacketWriter writer =
+                com.nineyin.server.protocol.PacketWriter.ofCapacity(64);
+        writer.writeU8(0x1E).writeU16(4);
+        writer.writeU8(2).writeU32(msgId).writeU8(2).writeU32(index);
+        byte[] kindBytes = kind.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        writer.writeU8(6).writeU32(kindBytes.length + 1).writeBytes(kindBytes).writeU8(0);
+        byte[] idBytes = id.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        writer.writeU8(6).writeU32(idBytes.length + 1).writeBytes(idBytes).writeU8(0);
+        return com.nineyin.server.protocol.CustomC2S.parseDirect(writer.toBytes());
     }
 
     @Test

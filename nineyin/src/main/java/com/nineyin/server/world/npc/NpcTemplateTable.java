@@ -153,7 +153,7 @@ public final class NpcTemplateTable {
     }
 
     /** encoding/csv（Comma='\t'）语义：带引号字段可含换行/制表符，"" 为字面引号。 */
-    static List<List<String>> parseQuotedTsv(String text) {
+    public static List<List<String>> parseQuotedTsv(String text) {
         List<List<String>> records = new ArrayList<>();
         List<String> fields = new ArrayList<>();
         StringBuilder field = new StringBuilder();

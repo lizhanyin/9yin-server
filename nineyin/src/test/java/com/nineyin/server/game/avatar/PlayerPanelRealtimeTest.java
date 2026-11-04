@@ -101,6 +101,23 @@ class PlayerPanelRealtimeTest {
         assertEquals(35 + 40, valueOf(block, "MaxMeleeDamage").i32());
     }
 
+    @Test
+    void meleeDamageRangeKeepsUnarmedBase() {
+        PlayerActor player = PlayerActor.create("空手侠", 99998, Clock.systemUTC());
+        // 拳/腿套路无武器限制：空手仍有基础外功 20-35，掷值不落 0（否则公式保底恒 1 点，
+        // 真机表现为「打怪无伤害」——2026-11-04 修复回归钉）
+        int[] bare = player.meleeDamageRange();
+        assertEquals(20, bare[0], "空手 min=基础下限");
+        assertEquals(35, bare[1], "空手 max=基础上限");
+
+        // 有武器：与面板 Min/MaxMeleeDamage 同口径（基础+装备），MeleePower 不折入
+        PlayerProgress.EquipBonus bonus = new PlayerProgress.EquipBonus(
+                0, 0, 0, 0, 0, 0, 0, 50, 0, 0, 0, 0, 0, 0, 25, 40);
+        int[] armed = player.progress.meleeDamageRange(bonus);
+        assertEquals(20 + 25, armed[0], "min=基础+装备（面板同口径）");
+        assertEquals(35 + 40, armed[1], "max=基础+装备（面板同口径）");
+    }
+
     private static PropertyValues.Value valueOf(List<PropertyValues.Indexed> properties, String name) {
         for (PropertyValues.Indexed property : properties) {
             if (property.name().equals(name)) {

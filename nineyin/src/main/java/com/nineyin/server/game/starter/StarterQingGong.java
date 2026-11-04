@@ -101,19 +101,13 @@ public final class StarterQingGong {
         return frames;
     }
 
-    /** Go taskCompletedBit：一位基任务序号映射 32 位 Task_Completed 行/位。 */
+    /** Go taskCompletedBit：一位基任务序号映射 32 位 Task_Completed 行/位（任务系统共享公式）。 */
     static long[] taskCompletedBit(long taskId) {
-        long serial = taskId + 1;
-        long row = serial / 32;
-        long bit = serial % 32;
-        if (bit == 0) {
-            row--;
-            bit = 32;
-        }
-        return new long[]{row, 1L << (bit - 1)};
+        return com.nineyin.server.game.avatar.task.TaskMessages.completedBit(taskId);
     }
 
-    static List<Long> acceptedTaskIds() {
+    /** starter 功能解锁已接族（登录链 Task_Accepted 前缀行，任务系统行号契约）。 */
+    public static List<Long> acceptedTaskIds() {
         List<Long> ids = new ArrayList<>(15);
         for (long id = FACULTY_GUIDE_TASK_FIRST; id <= FACULTY_GUIDE_TASK_LAST; id++) {
             ids.add(id);
@@ -126,7 +120,8 @@ public final class StarterQingGong {
         return ids;
     }
 
-    static List<Long> completedTaskIds() {
+    /** starter 功能解锁已完成族（Task_Completed 位图基线，任务系统增量合并基准）。 */
+    public static List<Long> completedTaskIds() {
         List<Long> ids = new ArrayList<>(16);
         ids.add(FUNCTION_UNLOCK_TASK_ID);
         ids.add(FACULTY_ALT_TASK_ID);

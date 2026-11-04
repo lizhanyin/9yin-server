@@ -33,7 +33,7 @@
 | 方向 | ID | 载荷 | 语义 |
 |---|---|---|---|
 | C2S | **200** | `[200, index, kind, id]` | 设置快捷栏（kind∈skill/item/neigong/zhenfa；item 的 id=unique_id） |
-| C2S | **201** | `[201, 行号]` | 按记录行号摘除 |
+| C2S | **201** | `[201, index]` | 按**可见快捷栏索引**摘除（见 §十三勘误） |
 
 帧序：替换 = `0x12` 删旧行 + `0x11` 增新行（shortcut_rec 官方下标 93，三列完整行）；
 幂等重设零帧；摘除缺行静默。
@@ -41,8 +41,9 @@
 ### 实现
 
 - `LoginFlow.handleSetShortcut/handleRemoveShortcut`：内存态（PlayerActor.setShortcut/
-  removeShortcutRow）+ 帧下发 + **role_shortcuts 落库**（现有表：`RoleInventoryStore
-  .upsertShortcut` 按 shortcut_index 原位更新/追加、`deleteShortcut` 按 index 删）。
+  removeShortcutIndex，201 按索引删——见 §十二勘误）+ 帧下发 + **role_shortcuts 落库**
+  （现有表：`RoleInventoryStore.upsertShortcut` 按 shortcut_index 原位更新/追加、
+  `deleteShortcut` 按 index 删）。
   登录链已有 `shortcuts(roleId)` 回放（grantStarterProgress），至此设置 → 落库 →
   重登回放闭环。
 - tag2 负值宽容读取：客户端 nx_int 负数以 u32 回绕上行（-3 → 4294967293），
@@ -182,7 +183,56 @@ SELECTED 模式。
 - 服务端仍有原因不明的突然终止（01:15 一次，无 hs_err 无异常，用户会话中被杀），
   复现时先查 hs_err_pid*.log 与 Windows 事件日志。
 
-## 十二、遗留
+## 十二、快捷栏拖拽修复（2026-11-04 真机反馈）
+
+> 症状：① 技能拖出快捷栏在空白处松手不移除；② 拖到已占栏位时"覆盖失败、原栏位还在"。
+
+### 根因（两处叠加 + 两个同族潜伏）
+
+1. **201 语义误读**：Go/Java 都把 201 参数当"记录行号"（Go `removeShortcutRow`）。
+   实际客户端 `shortcut_game.lua` 的 `remove_shortcut(index)` → `custom_remove_shortcut`
+   的全部调用点传的都是**可见快捷栏索引**（`game_hand.lua` 拖出释放/点击、
+   `put_other_short` 交换、`form_jingmai` 清栏遍历 beginindex..endindex）——
+   `custom_sender` 形参名 `row` 是误导。行号≠索引（starter 布局 idx20 在 row8），
+   于是 201(20) 删掉 row20（idx27 的行）或落空 → 拖出无效 + 交换错删无辜行。
+2. **替换原位 set vs 客户端删+追加**：Java `setShortcut` 替换是 `list.set(row)`，
+   但下发帧序是 `0x12 删旧行 + 0x11 增新行`——客户端记录表删行后**重编号**、
+   新行**追加表尾**，服务端列表原地不动 → 一次替换后两端行号口径永久错位，
+   后续所有 0x12 删错行（表象即"图标异常"）。Go 是 `append(append(前段,后段...), 新行)`
+   删旧追新，Java 移植时走样。
+3. **（潜伏）DB 模式回放不入内存**：`grantStarterProgress` 只发 role_shortcuts 帧，
+   `player.shortcuts` 始终空 → 200/201 的行号计算从登录起就与客户端无关；
+   且打坐幂等门 `hasShortcutIndex(9)` 恒假 → idx9 重复下发。
+4. **（潜伏）切图后整栏丢失**：starter 分支 `unchanged` 跳过零帧，而 ExitScene 清
+   客户端记录行——Go 有独立 `grantShortcutRows`（快照全量重放）兜底，Java 移植丢了。
+
+### 修复
+
+- `PlayerActor`：`setShortcut` 改**删旧行+追加表尾**（镜像客户端表操作，行号同口径）；
+  `removeShortcutRow` → `removeShortcutIndex(index)`（返回行号+行，供 0x12 用）；
+  新增 `resetShortcuts(rows)`（DB 基线整表入内存）。
+- `LoginFlow.handleRemoveShortcut`：按索引删 + 索引范围校验（0..4096），未命中静默。
+- **每场景代全量重放**：`grantOncePerConnectionRows` 新增块（轻功后、打坐前）——
+  首次裁决 DB 基线（非空→`resetShortcuts` 入内存，此后内存为唯一事实源；
+  空→starter 回退并记住），随后 `StarterGrants.grantShortcutRows` 按快照整表重放；
+  `completeSceneReentry` 复位 `shortcutRowsSent`（同键位闸模式）。
+  `grantStarterProgress` 不再发快捷栏帧（dbShortcuts 参数改为 starter 补授开关）。
+- 登录帧序不变：starter 模式登录时快照为空（重放零帧），打坐/starter 15 行仍在
+  原位（golden 1698/1732-1746 段界不动）。
+
+### 测试与探针
+
+- `ShortcutCustomFlowTest`（5）：201 按索引删+缺行静默 / 替换移表尾（行序
+  [10,12,11] 断言）/ 交换四连（put_other_short 帧序 0x12行0-0x11-0x12行0-0x11，
+  两栏互换、第三栏不受牵连）/ 拖出按索引删 / 非法参数零帧。
+- `LoginFlowSceneSwitchTest.sceneSwitchReplaysShortcutRowsAfterExitScene`：切图
+  重入后会话内替换值（idx40=A→B）整表重放、idx9 无重复行。
+- `probe_shortcuts.py` 扩拖出探针：201(索引)→0x12(行号=索引所在行)、重复静默、
+  200 恢复→0x11。
+- `LoginFlowTest`/`LoginFlowSceneSwitchTest` 的 Go 仓库根支持 `GO_SERVER_ROOT`
+  环境变量覆盖（默认 G: 不变）。
+
+## 十三、遗留
 
 - 240（打坐 SITCROSS）与 217/218 仍在 backlog（打坐有独立状态机，另行批次）。
 - yydf04 型引导循环技（观测 6-8 段浮动 > 单趟动作帧数）当前按单趟帧位结算，未做

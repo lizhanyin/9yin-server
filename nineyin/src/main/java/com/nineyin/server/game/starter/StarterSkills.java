@@ -6,6 +6,7 @@ import java.util.List;
 import com.nineyin.server.protocol.Props;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.SceneMessages;
+import com.nineyin.server.world.db.RoleInventoryStore;
 
 /**
  * 已学技能容器（View 40）starter 集，逐行移植 Go skill_view.go。
@@ -20,9 +21,22 @@ public final class StarterSkills {
                         int maxLevel, int fill, int total, float pauseTime) {
     }
 
-    /** 当前 starter 已学集：打坐前置 + 花神七式 + 心佛掌七招 + 太极拳(古谱)八式。 */
-    static final List<LearnedSkill> STARTER_SKILL_VIEWS = List.of(
+    /**
+     * 默认分类「基础武学 → 三脚猫招式」三技能（bug.txt：官服全角色默认已学）：
+     * 打坐调息 / 自断经脉 / 骑术精通。staticData/itemType 与 game_skills 目录一致
+     * （zs_default_01=22 / zs_suicide=55 / riding_start=21515）。
+     */
+    static final List<LearnedSkill> DEFAULT_BASIC_SKILLS = List.of(
             new LearnedSkill("zs_default_01", 22, 1000, 1, 1, 0, 0, 0),
+            new LearnedSkill("zs_suicide", 55, 1000, 1, 1, 0, 0, 0),
+            new LearnedSkill("riding_start", 21515, 1000, 1, 1, 0, 0, 0));
+
+    /** 当前 starter 已学集：基础武学三件套 + 花神七式 + 心佛掌七招 + 太极拳(古谱)八式。 */
+    static final List<LearnedSkill> STARTER_SKILL_VIEWS = starterSkillViews();
+
+    private static List<LearnedSkill> starterSkillViews() {
+        List<LearnedSkill> views = new ArrayList<>(DEFAULT_BASIC_SKILLS);
+        views.addAll(List.of(
             new LearnedSkill("CS_yhwq_hsqs01", 12636, 1000, 1, 11, 0, 156550, pauseFrames(43)),
             new LearnedSkill("CS_yhwq_hsqs02", 12637, 1001, 1, 11, 0, 156550, pauseFrames(65)),
             new LearnedSkill("CS_yhwq_hsqs03", 12638, 1000, 1, 11, 0, 156550, pauseFrames(30)),
@@ -46,7 +60,44 @@ public final class StarterSkills {
             new LearnedSkill("CS_wd_tjq05", 5451, 1000, 1, 19, 0, 0, pauseFrames(29)),
             new LearnedSkill("CS_wd_tjq06", 5452, 1000, 1, 19, 0, 0, pauseFrames(61)),
             new LearnedSkill("CS_wd_tjq07", 5453, 1000, 1, 3, 0, 0, pauseFrames(102)),
-            new LearnedSkill("CS_wd_tjq08", 2107, 1000, 1, 19, 0, 0, (float) (757.5 + 58 * 1000.0 / 30)));
+            new LearnedSkill("CS_wd_tjq08", 2107, 1000, 1, 19, 0, 0, (float) (757.5 + 58 * 1000.0 / 30))));
+        return List.copyOf(views);
+    }
+
+    /**
+     * 登录全量下发补集（bug.txt 基础武学项）：DB 已学行缺默认三技能时按默认序补在
+     * 队首——内存合成不落库，幂等可重放；空表原样返回（starter 回退集本就含三件套）。
+     * staticData/itemType 取 DEFAULT_BASIC_SKILLS 内联值（与 game_skills 目录一致，
+     * 客户端 GoodsGrid 图标解析不受影响）。
+     */
+    public static List<RoleInventoryStore.Skill> withDefaultBasics(
+            List<RoleInventoryStore.Skill> dbSkills) {
+        if (dbSkills == null || dbSkills.isEmpty()) {
+            return dbSkills;
+        }
+        java.util.Set<String> present = new java.util.HashSet<>();
+        for (RoleInventoryStore.Skill skill : dbSkills) {
+            present.add(skill.skillId());
+        }
+        List<RoleInventoryStore.Skill> missing = null;
+        for (LearnedSkill basic : DEFAULT_BASIC_SKILLS) {
+            if (present.contains(basic.configId())) {
+                continue;
+            }
+            if (missing == null) {
+                missing = new ArrayList<>(DEFAULT_BASIC_SKILLS.size());
+            }
+            missing.add(new RoleInventoryStore.Skill(
+                    basic.configId(), "wuxue", basic.staticData(), basic.itemType()));
+        }
+        if (missing == null) {
+            return dbSkills;
+        }
+        List<RoleInventoryStore.Skill> merged = new ArrayList<>(missing.size() + dbSkills.size());
+        merged.addAll(missing);
+        merged.addAll(dbSkills);
+        return merged;
+    }
 
     /** Go 常量语义：N*1000.0/30 按双精度求值再转 float32（float 逐位一致）。 */
     private static float pauseFrames(int frames) {

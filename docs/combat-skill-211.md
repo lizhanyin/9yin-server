@@ -265,3 +265,22 @@ HeightDiff 高度差过滤天然覆盖（圆心在地面、目标在地面 dy≈
 
 **测试**：`GroundChargeAndRageTest`（圈定免选中按落点命中/超程拒/无落点零伤害；
 冲锋 12m 放行 25m 拒+非冲锋同距对比；怒招 SP 闸门/扣减/命中回怒+SP 帧）。
+
+## 12. 套路武器限制 + 空手基础外功（2026-11-04，bug.txt「套路 武器限制」落地）
+
+**武器门控**：`skill_new.UseLimit` → `skill_use_limit.ini` 的 `r=0,ItemType,<code|code>,==`
+规则编译为 `CombatSkill.weaponItemTypes`（101刀/102单手剑/103匕首/104双刀/105双剑/
+106双刺/107长棍/108短棍/111-117暗器族）。出招时已穿武器 ItemType（`PlayerActor.
+equippedWeaponItemType`，`applyEquipBonuses` 全量重算点同步，0=空手）不在集内
+→ **静默拒**（与 CD/超距族同语义；客户端本地图标按武器自置灰）。拳/腿套路无
+ItemType 条件（UseLimit 缺失或无武器行）→ 空集不闸，空手可出。同节其它条件
+（门派/阵法/血量/战斗态，如打坐的 9=非战斗态）不在此期范围，忽略不编译。
+
+**空手基础外功**：`meleeDamageRange` 与面板 Min/MaxMeleeDamage 同口径
+（基础 20-35 + 装备外功 + 内功 Min/MaxMeleeDamage + PhyDamageAdd 平加；
+MeleePower 为独立攻击强度不折入）。修复前空手 attack=0 走公式保底恒 1 点
+（真机「打怪无伤害」根因之一）。掷骰序改为 miss/crit 先掷、区间后掷——
+命中/暴击结论不依赖区间跨度（同种子稳定）。
+
+**测试**：`WeaponLimitGateTest`（UseLimit=2→{102} 编译/空手静默零帧/持剑放行/
+持刀仍拒/拳套空手可出）。

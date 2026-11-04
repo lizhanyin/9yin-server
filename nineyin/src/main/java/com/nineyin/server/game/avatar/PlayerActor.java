@@ -65,8 +65,14 @@ public final class PlayerActor {
     final PlayerProgress progress;
     /** 面板实时状态（身份块字段 + 装备词缀累积层，四期）。 */
     private final PanelState panel = new PanelState();
+    /** 已穿武器 ItemType（101-119 武器/暗器族；0=空手）。skill_use_limit 武器门控数据源，
+     *  登录装载与穿脱（applyEquipBonuses 全量重算点）同步。 */
+    private volatile int equippedWeaponItemType;
     /** 经脉修炼状态（修炼经脉/周天/进度/总等级权威源；登录恢复）。 */
     private final com.nineyin.server.game.avatar.jingmai.PlayerMeridian meridian;
+    /** 任务状态（已接/已完成；登录恢复，TaskStore 双源持久化）。 */
+    private final com.nineyin.server.game.avatar.task.PlayerTask task =
+            new com.nineyin.server.game.avatar.task.PlayerTask();
     /** active_jingmai_rec 行是否已下发（jmActCount=1，激活位=当前修炼经脉）。 */
     private boolean meridianActivated;
     /** qinggong_9 轻身缓降租约（216 flag=1 挂 / flag=0 摘 / 点耗尽强摘）。 */
@@ -217,9 +223,17 @@ public final class PlayerActor {
     public record ShortcutUpdate(int oldRow, boolean existed, boolean unchanged) {
     }
 
+    /** 201 摘除结果：被删行号 + 行内容（帧 0x12 按行号删，须与列表口径一致）。 */
+    public record RemovedShortcut(int row, PlayerShortcut shortcut) {
+    }
+
     private final List<PlayerShortcut> shortcuts = new ArrayList<>();
 
-    /** Go playerActor.setShortcut：同索引同值幂等；同索引不同值原位替换。 */
+    /**
+     * Go playerActor.setShortcut：同索引同值幂等；同索引不同值**删旧行 + 追加表尾**。
+     * 追加而非原位替换是协议要求：下发帧序为 0x12 删旧行 + 0x11 增新行，客户端记录表
+     * 删行后重编号、0x11 追加在表尾——服务端列表必须镜像同一套操作，行号口径才不漂移。
+     */
     public synchronized ShortcutUpdate setShortcut(int index, String kind, String id) {
         for (int row = 0; row < shortcuts.size(); row++) {
             PlayerShortcut shortcut = shortcuts.get(row);
@@ -229,19 +243,33 @@ public final class PlayerActor {
             if (shortcut.kind().equals(kind) && shortcut.id().equals(id)) {
                 return new ShortcutUpdate(row, true, true);
             }
-            shortcuts.set(row, new PlayerShortcut(index, kind, id));
+            shortcuts.remove(row);
+            shortcuts.add(new PlayerShortcut(index, kind, id));
             return new ShortcutUpdate(row, true, false);
         }
         shortcuts.add(new PlayerShortcut(index, kind, id));
         return new ShortcutUpdate(0, false, false);
     }
 
-    /** Go removeShortcutRow：按行号摘除。 */
-    public synchronized PlayerShortcut removeShortcutRow(int row) {
-        if (row < 0 || row >= shortcuts.size()) {
-            return null;
+    /**
+     * C2S 201 按可见快捷栏索引摘除。客户端 shortcut_game.lua 的 remove_shortcut(index)
+     * → custom_remove_shortcut 上行的一律是栏位索引（game_hand.lua 拖出、put_other_short
+     * 交换、form_jingmai 清栏都传 index；Go 注释"按记录行号"是误读形参名）。
+     * 未命中返回 null（静默零帧）。
+     */
+    public synchronized RemovedShortcut removeShortcutIndex(int index) {
+        for (int row = 0; row < shortcuts.size(); row++) {
+            if (shortcuts.get(row).index() == index) {
+                return new RemovedShortcut(row, shortcuts.remove(row));
+            }
         }
-        return shortcuts.remove(row);
+        return null;
+    }
+
+    /** DB 基线整表替换（登录装载；行序=下发序，与客户端记录表逐行对齐）。 */
+    public synchronized void resetShortcuts(List<PlayerShortcut> rows) {
+        shortcuts.clear();
+        shortcuts.addAll(rows);
     }
 
     public synchronized List<PlayerShortcut> shortcutSnapshot() {
@@ -316,6 +344,22 @@ public final class PlayerActor {
 
     public com.nineyin.server.game.avatar.jingmai.PlayerMeridian.Snapshot meridianSnapshot() {
         return meridian.snapshot();
+    }
+
+    // ------------------------------------------------------------------ task
+
+    /** 任务状态（登录 restore 后为持久化形态）。 */
+    public com.nineyin.server.game.avatar.task.PlayerTask task() {
+        return task;
+    }
+
+    /** 登录恢复任务存档。 */
+    public void restoreTask(com.nineyin.server.game.avatar.task.PlayerTask.Snapshot snapshot) {
+        task.restore(snapshot);
+    }
+
+    public com.nineyin.server.game.avatar.task.PlayerTask.Snapshot taskSnapshot() {
+        return task.snapshot();
     }
 
     public boolean meridianActivated() {
@@ -963,20 +1007,22 @@ public final class PlayerActor {
     }
 
     /**
-     * 伤害公式攻方面（formula.lua 的 attack）：装备外功上下限 + 内功运功书
-     * PhyDamageAdd；掷值由调用方做（可测试）。
+     * 伤害公式攻方面（formula.lua 的 attack）：基础外功（空手 20-35）+ 装备外功 +
+     * 内功 Min/MaxMeleeDamage，与面板 Min/MaxMeleeDamage 同口径（拳/腿套路无武器
+     * 不落 0 吃保底 1 点）；掷值由调用方做（可测试）。
      */
     public int[] meleeDamageRange() {
-        PlayerProgress.EquipBonus bonus = panel.equipBonus();
-        PlayerProgress.Book equipped = progress.book(progress.curNeiGong);
-        int add = PlayerProgress.eff(equipped, "PhyDamageAdd");
-        int meleePower = bonus == null ? 0 : bonus.meleePowerAdd();
-        int min = (bonus == null ? 0 : bonus.minMelee()) + add + meleePower;
-        int max = (bonus == null ? 0 : bonus.maxMelee()) + add + meleePower;
-        if (max < min) {
-            max = min;
-        }
-        return new int[]{min, max};
+        return progress.meleeDamageRange(panel.equipBonus());
+    }
+
+    /** 已穿武器 ItemType（0=空手；skill_use_limit 武器门控用）。 */
+    public int equippedWeaponItemType() {
+        return equippedWeaponItemType;
+    }
+
+    /** 武器类型同步（applyEquipBonuses 全量重算点调用：装备里首个武器族 ItemType，0=无）。 */
+    public void noteEquippedWeaponItemType(int itemType) {
+        this.equippedWeaponItemType = itemType;
     }
 
     // ------------------------------------------------------------------- frames

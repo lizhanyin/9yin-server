@@ -34,7 +34,9 @@ public final class EquipAffixCatalog {
     }
 
     private void loadAll(Path shareRoot) {
-        loadIni(shareRoot.resolve(Path.of("modifypack", "proppack.ini")));
+        // loadIni 是静态工厂（解析结果在返回值），必须并入本实例——
+        // 此前返回值被丢弃导致 load() 恒为空表（recast_add_affix 校验/词缀累积全链失效）。
+        packs.putAll(loadIni(shareRoot.resolve(Path.of("modifypack", "proppack.ini"))).packs);
     }
 
     /** 单文件解析（测试注入临时 ini 用；ResourceCache 按路径缓存文本）。 */

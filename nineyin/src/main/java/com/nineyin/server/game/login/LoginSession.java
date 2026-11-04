@@ -25,6 +25,14 @@ public final class LoginSession {
     boolean neigongGranted;
     /** 经脉 View45 授予标志（每连接一次）。 */
     boolean meridianGranted;
+    /**
+     * 快捷栏基线/重放：shortcutsLoaded=DB 基线是否已裁决入内存（每连接一次，
+     * starterShortcutFallback 记住裁决结果）；shortcutRowsSent=本场景代是否已全量
+     * 重放（ExitScene 清客户端记录行，切图收尾复位——Go reentry grantShortcutRows）。
+     */
+    boolean shortcutsLoaded;
+    boolean starterShortcutFallback = true;
+    boolean shortcutRowsSent;
     /** 个性配置：ClientReady 是否已尝试推送存档 / 会话是否已见过一次上传。 */
     boolean customizingPushed;
     boolean customizingSeenUpload;
@@ -45,6 +53,8 @@ public final class LoginSession {
     SceneLifecycle world;
     List<NpcSpawn> sceneNpcs = List.of();
     Set<Integer> activeNpcs = new java.util.HashSet<>();
+    /** 四期交互：NPC 对话/商店路由态（0x07 两段式 + View61 开店 + msg70 购买）。 */
+    com.nineyin.server.world.npc.NpcDialog dialog = new com.nineyin.server.world.npc.NpcDialog();
     Instant lastPositionSave;
     Roles.Location pendingLocation;
     /**
@@ -68,6 +78,26 @@ public final class LoginSession {
     /** View40 行号表（id → 行，CanUse 行帧寻址，授予时与 View40 行同序固化）。 */
     java.util.Map<String, Integer> skillRows = new java.util.HashMap<>();
     java.util.Random combatRandom = new java.util.Random();
+
+    /**
+     * GM 运行时摆放（训练木桩/世界宝箱）：对象号 900000 起递增（目录 NPC 是
+     * 下标+2 的小号段，永不冲突）；切图随 world.begin 整体清空。
+     */
+    static final class GmSpawn {
+        final int objectId;
+        final NpcSpawn npc;
+        /** true=世界宝箱（点击开箱拾取后消失）；false=训练木桩（战斗对象）。 */
+        final boolean chest;
+
+        GmSpawn(int objectId, NpcSpawn npc, boolean chest) {
+            this.objectId = objectId;
+            this.npc = npc;
+            this.chest = chest;
+        }
+    }
+
+    java.util.Map<Integer, GmSpawn> gmSpawns = new java.util.LinkedHashMap<>();
+    int nextGmObjectId = 900_000;
 
     public LoginSession() {
     }

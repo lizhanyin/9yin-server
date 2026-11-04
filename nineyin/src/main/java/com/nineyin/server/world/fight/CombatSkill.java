@@ -33,6 +33,9 @@ import java.util.List;
  *                        施法特效帧；52795 抓包实证：gxfhj02 的 4 个 _hurt 触发帧=每招 4 段、
  *                        shl08 的 6 个=6 段、无 trigger_effect 的技能单段即时结算）
  * @param effects         效果列表（伤害/自buff/目标控制/红霸体/架势轮换）
+ * @param weaponItemTypes 武器限制（skill_new.UseLimit → skill_use_limit 的 ItemType 规则：
+ *                        101刀/102单手剑/103匕首/104双刀/105双剑/106双刺/107长棍/108短棍/
+ *                        111-117暗器族；空集=无限制——拳/腿套路空手可出）
  */
 public record CombatSkill(
         String id, int staticData, String script, int level,
@@ -43,7 +46,8 @@ public record CombatSkill(
         boolean canRush, float rushRangeM,
         String actionName, long actionDurationMs, List<ActionSegment> followups,
         List<Long> hitFrameMs,
-        List<Effect> effects) {
+        List<Effect> effects,
+        java.util.Set<Integer> weaponItemTypes) {
 
     /**
      * GROUND_AREA/GROUND_RECTANGLE 为玩家点选地面落点形状（attack_hitshape 11/12，
@@ -93,6 +97,11 @@ public record CombatSkill(
 
     public boolean requiresTarget() {
         return targetMode == TargetMode.SELECTED || targetMode == TargetMode.SELECTED_AREA;
+    }
+
+    /** 武器门控：空集=无限制（拳/腿套路）；否则已穿武器 ItemType 须在允许集内（0=空手必拒）。 */
+    public boolean weaponAllowed(int equippedWeaponItemType) {
+        return weaponItemTypes.isEmpty() || weaponItemTypes.contains(equippedWeaponItemType);
     }
 
     /** 冲锋射程（米）：CanRush 且 RushRange&gt;0 才有效，缺省 0=非冲锋。 */

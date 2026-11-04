@@ -38,3 +38,4 @@ logs/
 .e2e/
 
 !/admin/**/*.gz
+!record_table.bin

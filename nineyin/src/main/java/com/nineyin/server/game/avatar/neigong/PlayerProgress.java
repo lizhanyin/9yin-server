@@ -505,6 +505,25 @@ public final class PlayerProgress {
         return properties;
     }
 
+    /**
+     * 伤害公式攻方区间（formula.lua 的 attack 掷值域）：与面板 Min/MaxMeleeDamage
+     * 同口径合成——基础属性 + 装备外功 + 内功 Min/MaxMeleeDamage（拳/腿套路无武器
+     * 时基础 20-35 仍在，不吃公式保底 1 点）；另叠伤害专属平加 PhyDamageAdd（面板
+     * 伤害块同键）。MeleePower 是独立攻击强度属性，不折入掷值。
+     */
+    public int[] meleeDamageRange(EquipBonus bonus) {
+        Book equipped = book(curNeiGong);
+        int flat = eff(equipped, "PhyDamageAdd");
+        int min = attributes.minMeleeDamage + (bonus == null ? 0 : bonus.minMelee())
+                + eff(equipped, "MinMeleeDamage") + flat;
+        int max = attributes.maxMeleeDamage + (bonus == null ? 0 : bonus.maxMelee())
+                + eff(equipped, "MaxMeleeDamage") + flat;
+        if (max < min) {
+            max = min;
+        }
+        return new int[]{min, max};
+    }
+
     /** 运功书 varprop stats 取值（无书/缺键 0；面板/伤害块叠加）。 */
     public static int eff(Book book, String key) {
         Integer value = book == null ? null : book.effectStats.get(key);
@@ -698,6 +717,13 @@ public final class PlayerProgress {
             case 3 -> value.liveGroove4();
             default -> value.liveGroove5();
         };
+    }
+
+    /** 任务奖励历练直加（修炼度单位，与 advanceFaculty 结算同一 faculty 池；负值忽略）。 */
+    public synchronized void addFaculty(long value) {
+        if (value > 0) {
+            faculty += (int) Math.min(value, Integer.MAX_VALUE - faculty);
+        }
     }
 
     /** Go advanceFaculty：按整分钟以 FillSpeed 结算修炼，余数留在 lastAdvance。

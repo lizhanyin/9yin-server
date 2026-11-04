@@ -64,18 +64,20 @@ public final class StarterGrants {
         return true;
     }
 
-    /** Go grantStarterProgress 闭包体（starter 回退）：View43 → View40 → 两组快捷栏 → 收尾 vital。 */
+    /** starter 回退便捷重载：View43 → View40 → 两组快捷栏补授 → 收尾 vital。 */
     public static void grantStarterProgress(Connection connection, PlayerActor player) {
-        grantStarterProgress(connection, player, null, null);
+        grantStarterProgress(connection, player, null, true);
     }
 
     /**
      * 三期 DB 模式：View43（role_faculty 快照恢复后的真书）→ View40（role_skills 十属性行，
-     * cap=行数）→ 快捷栏（role_shortcuts 全行）→ 收尾 vital；任一 DB 列表为空回退 starter 表。
+     * cap=行数）→ 收尾 vital。快捷栏不在本链下发：ExitScene 后客户端记录表清空，由
+     * {@link #grantShortcutRows} 每场景代按内存快照全量重放（DB 基线登录时已入内存）。
+     * starterShortcuts=true 时补授 starter 两套（unchanged 跳过，与登录首授同源）。
      */
     public static void grantStarterProgress(Connection connection, PlayerActor player,
                                             java.util.List<RoleInventoryStore.Skill> dbSkills,
-                                            java.util.List<RoleInventoryStore.Shortcut> dbShortcuts) {
+                                            boolean starterShortcuts) {
         for (byte[] frame : player.progress().viewFrames()) {
             connection.writeFrame(frame);
         }
@@ -90,12 +92,7 @@ public final class StarterGrants {
                 connection.writeFrame(frame);
             }
         }
-        if (dbShortcuts != null && !dbShortcuts.isEmpty()) {
-            for (RoleInventoryStore.Shortcut shortcut : dbShortcuts) {
-                connection.writeFrame(shortcutAddFrame(new PlayerActor.PlayerShortcut(
-                        shortcut.shortcutIndex(), shortcut.kind(), shortcut.id())));
-            }
-        } else {
+        if (starterShortcuts) {
             grantHeartBuddhaPalmShortcuts(connection, player);
             grantTaiJiQuanGuPuShortcuts(connection, player);
         }
@@ -182,6 +179,20 @@ public final class StarterGrants {
             granted++;
         }
         return granted;
+    }
+
+    /**
+     * Go grantShortcutRows：按内存快照全量重放 0x11 行。ExitScene 销毁原生玩家对象时
+     * 清掉其挂接记录行（连接级 schema 存活），每个场景代必须整表重发；内存是唯一
+     * 事实源（DB 基线登录装载 + 200/201 增量），行序与 0x12 删行号同口径。
+     */
+    public static void grantShortcutRows(Connection connection, PlayerActor player) {
+        if (player == null) {
+            return;
+        }
+        for (PlayerActor.PlayerShortcut shortcut : player.shortcutSnapshot()) {
+            connection.writeFrame(shortcutAddFrame(shortcut));
+        }
     }
 
     /** Go shortcutAddFrame：shortcut_rec 完整三列行。 */

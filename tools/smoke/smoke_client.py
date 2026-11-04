@@ -250,13 +250,14 @@ def main():
            and struct.unpack("<H", f[10:12])[0] == 1]
     check("qinggong 217 active record row", bool(rec))
 
-    # 10. 选中 NPC（10001 可能不存在，用下发到的第一个）
+    # 10. 选中 NPC（10001 可能不存在，用下发到的第一个）：
+    # 0x10 LastObject 恒回；该 NPC 有 optiontalk 对话时再跟 0x1C 菜单
+    # （对话全链见 npc_talk_probe.py）
     if npc_oid:
         sock.sendall(encode_frame(select_packet(1, npc_oid, 1, 0)))
         frames = recv_frames(sock, 1, timeout=3)
         ops = [op(f) for f in frames]
-        check("select NPC -> 0x1D + LastObject", 0x1D in ops and 0x10 in ops,
-              "ops=%s" % ops)
+        check("select NPC -> LastObject 0x10", 0x10 in ops, "ops=%s" % ops)
 
     # 11. GM HTTP
     import urllib.request

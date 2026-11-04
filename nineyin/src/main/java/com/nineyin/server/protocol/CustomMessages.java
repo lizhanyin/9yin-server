@@ -130,6 +130,18 @@ public final class CustomMessages {
         return customIntMessageWithOpcode(0x27, messageId, values);
     }
 
+    /**
+     * 命令名寻址 S2C（lua64 字典第三节：引擎按消息名调 custom_handler.lua 同名
+     * 函数）：现代 0x27 壳，首值为窄字符串命令名，其后为该 handler 的实参。
+     * 与数字路由互斥——首参线型 tag6 决定分发路径。
+     */
+    public static byte[] modernCustomCommandMessage(String command, Value... values) {
+        Value[] args = new Value[values.length + 1];
+        args[0] = Value.ofString(command);
+        System.arraycopy(values, 0, args, 1, values.length);
+        return encode(0x27, args);
+    }
+
     private static byte[] customIntMessageWithOpcode(int opcode, int messageId, Value... values) {
         if (messageId < 1 || messageId >= 765) {
             throw new IllegalArgumentException("custom message id " + messageId + " outside client range [1,764]");

@@ -179,6 +179,8 @@ public class GmRemote {
                         "leg", "shoes", "wrist", "ear", "ring").contains(slot)
                         ? null : "armorSlot must be helmet/amulet/cloth/pants/leg/shoes/ear/ring";
             }
+            // 配套：模板生成护腕（无参——模板挑选与词条构造全部在游戏侧）。
+            case "gm_generate_bracer" -> null;
             // 传送三动作（Go gm_panel.go switch_scene/switch_scene_preset/teleport）：
             // 预设键入口即校验（表=GmScenePresets 107 键）；免费格式由游戏侧解析。
             case "switch_scene_preset" -> {
@@ -192,6 +194,41 @@ public class GmRemote {
             }
             case "switch_scene" -> nonEmpty(params, "destination");
             case "teleport" -> nonEmpty(params, "position");
+            // 弹出游戏 GM 面板（GMCC）：无参，帧由 LoginFlow.applyPopupGmPanel 组。
+            case "popup_gm_panel" -> null;
+            // 洗练六动作：随机/定向/抛光/招式开光（slot）；加词条（slot+packIDs+affixKind）；清空（slot）。
+            case "recast_slot_prop", "recast_slot_dire", "recast_slot_polish",
+                 "recast_slot_skill", "recast_clear_affix" -> intRange(params, "slot", 1, 63);
+            case "recast_add_affix" -> {
+                String slotBad = intRange(params, "slot", 1, 63);
+                if (slotBad != null) {
+                    yield slotBad;
+                }
+                String kind = params != null ? params.getString("affixKind") : null;
+                if (!"prop".equals(kind) && !"skill".equals(kind)) {
+                    yield "affixKind must be prop or skill";
+                }
+                JSONArray packIds = params != null ? params.getJSONArray("packIDs") : null;
+                if (packIds == null || packIds.isEmpty()) {
+                    yield "packIDs must be a non-empty int array";
+                }
+                if (packIds.size() > 12) {
+                    yield "packIDs at most 12 entries";
+                }
+                for (int i = 0; i < packIds.size(); i++) {
+                    Integer id = packIds.getInteger(i);
+                    if (id == null || id < 1) {
+                        yield "packIDs[" + i + "] must be a positive int";
+                    }
+                }
+                yield null;
+            }
+            // 场景生成：训练木桩（dummyHp 可选 0=默认 10 万）+ 世界宝箱（无参）。
+            case "spawn_dummy" -> {
+                Integer hp = params != null ? params.getInteger("dummyHp") : null;
+                yield hp == null ? null : intRange(params, "dummyHp", 0, 100_000_000);
+            }
+            case "spawn_chest" -> null;
             default -> "unsupported action: " + action;
         };
     }

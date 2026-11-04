@@ -100,6 +100,7 @@ public final class CombatSkillCatalog {
         Map<String, Section> buffNew = new HashMap<>();
         Map<String, Section> buffStatic = new HashMap<>();
         Map<String, Section> buffVar = new HashMap<>();
+        Map<String, Section> useLimit = new HashMap<>();
     }
 
     private final Tables tables;
@@ -306,6 +307,7 @@ public final class CombatSkillCatalog {
         readIni(tables.buffNew, skillRoot.resolve("buff_new.ini"));
         readIni(tables.buffStatic, skillRoot.resolve("buff_static.ini"));
         readIni(tables.buffVar, skillRoot.resolve("buff_varprop.ini"));
+        readIni(tables.useLimit, skillRoot.resolve("skill_use_limit.ini"));
         // zhaoshi_list.ini 逻辑包含四文件为单一命名空间：后文件整节覆盖同节
         Path actionRoot = ServerPaths.projectPath("resources", "modern", "ini", "action");
         for (String name : new String[]{"zhaoshi_player.ini", "zhaoshi_player_2.ini",
@@ -354,6 +356,8 @@ public final class CombatSkillCatalog {
         Section consume = tables.consume.get(Integer.toString(varProp.int32("Consume")));
         int[] damage = compileSkillDamage(tables.damage.get(
                 Integer.toString(varProp.int32("DamageCalculate"))));
+        java.util.Set<Integer> weaponItemTypes =
+                compileWeaponItemTypes(newFields.last("UseLimit"));
         boolean isDamage = staticFields.int32("IsDamage") != 0;
         Section hitShape = tables.hitShape.get(Integer.toString(varProp.int32("HitShapePkg")));
         TargetShape shape = compileTargetMode(hitShape, isDamage);
@@ -422,7 +426,7 @@ public final class CombatSkillCatalog {
                 shape.angle(), shape.width(),
                 staticFields.int32("CanRush") != 0, staticFields.f32("RushRange"),
                 actions.actionName(), actions.durationMs(), actions.followups(), actions.hitFrameMs(),
-                effects);
+                effects, weaponItemTypes);
     }
 
     private record ExactBuff(String configId, long staticData, int level,
@@ -451,6 +455,37 @@ public final class CombatSkillCatalog {
             }
         }
         return null;
+    }
+
+    /**
+     * 官方使用限制（skill_use_limit.ini）的武器规则：{@code r=0,ItemType,<code|code>,==}
+     * → 允许的武器 ItemType 集（101刀/102单手剑/103匕首/104双刀/105双剑/106双刺/
+     * 107长棍/108短棍/111-117暗器族）。同节其它条件（门派/阵法/血量/战斗态）非本期
+     * 范围，忽略不编译——只取 ItemType 行，避免误伤无武器条件的技能。
+     */
+    private java.util.Set<Integer> compileWeaponItemTypes(String useLimitId) {
+        if (useLimitId == null || useLimitId.isBlank()) {
+            return java.util.Set.of();
+        }
+        Section fields = tables.useLimit.get(useLimitId.trim());
+        if (fields == null) {
+            return java.util.Set.of();
+        }
+        java.util.Set<Integer> codes = new java.util.HashSet<>();
+        for (String[] field : fields.all("r")) {
+            String[] parts = field[1].split(",");
+            if (parts.length < 3 || !"ItemType".equals(parts[1].trim())) {
+                continue;
+            }
+            for (String code : parts[2].split("\\|")) {
+                try {
+                    codes.add(Integer.parseInt(code.trim()));
+                } catch (NumberFormatException ignored) {
+                    // 表内杂字节（skill_new 同款容错）
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableSet(codes);
     }
 
     /** Go compileSkillDamage：r 字段（逗号分隔）第 3 段求和 → [编译伤害, 正段数]。 */

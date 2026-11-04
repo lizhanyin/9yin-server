@@ -103,6 +103,15 @@ public final class SceneMessages {
         return writer.toBytes();
     }
 
+    /**
+     * ServerDeleteView（0x16，恰 3 字节：op | u16 viewId，layout_proven）。
+     * F 服开商店抓包：重开 View61 前先 0x16 清旧视图。
+     */
+    public static byte[] deleteView(int viewId) {
+        PacketWriter writer = PacketWriter.ofCapacity(3);
+        return writer.writeU8(0x16).writeU16(viewId).toBytes();
+    }
+
     /** ServerViewRemove（0x19，5 字节）：视图内按 objectIndex 摘除一行。 */
     public static byte[] viewRemove(int viewId, int objectIndex) {
         PacketWriter writer = PacketWriter.ofCapacity(5);

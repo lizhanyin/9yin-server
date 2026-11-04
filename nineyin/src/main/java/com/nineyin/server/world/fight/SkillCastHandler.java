@@ -118,6 +118,14 @@ public final class SkillCastHandler {
             LOG.info("reject learned skill without compiled level id=" + skillId + " level=" + learned);
             return;
         }
+        // 套路武器限制（skill_use_limit ItemType 规则；拳/腿套路空集不闸）：不持对应
+        // 武器静默拒（官方语义同 CD/超距族——客户端本地图标本就按武器置灰）。
+        int equippedWeapon = context.player().equippedWeaponItemType();
+        if (!skill.weaponAllowed(equippedWeapon)) {
+            LOG.info("reject skill id=" + skillId + ": weapon type " + equippedWeapon
+                    + " not allowed, requires " + skill.weaponItemTypes());
+            return;
+        }
         // 冲锋射程（CanRush 且 RushRange>0；无值回落 15 米）——单体/圈定冲锋放宽 8 米身位闸
         double rushRange = skill.canRush()
                 ? Math.max(skill.rushRangeM(), RUSH_RANGE_FALLBACK_METERS) : 0;
@@ -545,8 +553,14 @@ public final class SkillCastHandler {
         }
     }
 
-    /** formula.lua（Lua 权威/Java 兜底）：attack=装备+内功掷值，守方侧当前取缺省。 */
+    /**
+     * formula.lua（Lua 权威/Java 兜底）：attack=基础+装备+内功掷值（面板同口径），
+     * 守方侧当前取缺省。掷骰序：miss/crit 先掷、区间掷值后掷——前两者不依赖区间
+     * 跨度，同种子下命中/暴击结论稳定（可测试）。
+     */
     private static int rollDamage(CastContext context, CombatSkill skill) {
+        double missRoll = context.random().nextDouble();
+        double critRoll = context.random().nextDouble();
         int[] range = context.player().meleeDamageRange();
         int roll = range[0];
         if (range[1] > range[0]) {
@@ -558,7 +572,7 @@ public final class SkillCastHandler {
                 0, 0, 0, 0, 0, 0,
                 0, 0,
                 skill.damageRatio(), false,
-                context.random().nextDouble(), context.random().nextDouble());
+                missRoll, critRoll);
         CombatFormulas.Result result = LuaScriptService.getInstance().calc(input);
         return result.miss() ? 0 : (int) Math.min(result.damage(), Integer.MAX_VALUE);
     }

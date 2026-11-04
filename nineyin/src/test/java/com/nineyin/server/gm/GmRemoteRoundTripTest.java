@@ -225,6 +225,45 @@ class GmRemoteRoundTripTest {
         assertEquals("修为设为 9999999", JSON.parseObject(facultyQueued).getString("message"));
         assertTrue(JSON.parseObject(fillQueued).getBooleanValue("ok"), "fill_current_neigong 应回 ok: " + fillQueued);
 
+        // command：模板生成护腕（无参白名单）与洗练动作（slot 域）透传 + 游戏侧回执回环。
+        Thread generateConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 2; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "gm_generate_bracer" ->
+                            command.succeed("已生成并穿戴护腕 wrist_60501（词条 6 条）外观与加成已同步");
+                    case "recast_slot_prop" -> command.succeed("随机洗练完成：sword_xiyu_60501 槽22 重掷 6 条");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-generate-consumer");
+        generateConsumer.start();
+        Map<String, Object> bracerData = Map.of(
+                "sessionId", 7,
+                "action", "gm_generate_bracer",
+                "params", Map.of());
+        String bracerQueued = remote.syncRemote("GmRemote", "command", bracerData, String.class);
+        Map<String, Object> recastData = Map.of(
+                "sessionId", 7,
+                "action", "recast_slot_prop",
+                "params", Map.of("slot", 22));
+        String recastQueued = remote.syncRemote("GmRemote", "command", recastData, String.class);
+        generateConsumer.join(5000);
+        assertTrue(JSON.parseObject(bracerQueued).getBooleanValue("ok"),
+                "gm_generate_bracer 应白名单透传: " + bracerQueued);
+        assertTrue(JSON.parseObject(recastQueued).getBooleanValue("ok"),
+                "recast_slot_prop 应白名单透传（此前漏挂白名单）: " + recastQueued);
+
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);
         assertFalse(JSON.parseObject(before).getBooleanValue("enabled"));

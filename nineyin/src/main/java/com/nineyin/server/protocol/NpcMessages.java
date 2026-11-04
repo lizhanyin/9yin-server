@@ -103,6 +103,36 @@ public final class NpcMessages {
                 .toBytes();
     }
 
+    /**
+     * 菜单项：type 客户端渲染分类、mark 服务端本地路由号（客户端选择后以
+     * 0x07 FuncID=mark 回发）、text 为 UTF-16 菜单文本（传 string key 由客户端
+     * 字串表解析，如 biaoti00007 / ui_form_talk_leave）。
+     */
+    public record MenuItem(int type, int mark, String text) {
+    }
+
+    /**
+     * Go messages.go SERVER_MENU（0x1C）：`op | u32 obj | u32 owner | u16 count |
+     * 每项(u8 type, u16 mark, u32 UTF16 字节长含 NUL, UTF16LE 内容含 NUL)`。
+     * 客户端 on_menu（sub_10617490）驱动 form_talk 对话菜单。
+     */
+    public static byte[] serverMenu(int objectId, int ownerId, List<MenuItem> items) {
+        PacketWriter writer = PacketWriter.ofCapacity(11 + items.size() * 16);
+        writer.writeU8(0x1C).writeU32(objectId).writeU32(ownerId).writeU16(items.size());
+        for (MenuItem item : items) {
+            byte[] text = item.text().getBytes(java.nio.charset.StandardCharsets.UTF_16LE);
+            writer.writeU8(item.type()).writeU16(item.mark())
+                    .writeU32(text.length + 2L)
+                    .writeBytes(text).writeU16(0);
+        }
+        return writer.toBytes();
+    }
+
+    /** Go on_clear_menu（0x1D）：整帧仅 1 字节操作码，关闭对话菜单。 */
+    public static byte[] clearMenu() {
+        return new byte[]{0x1D};
+    }
+
     private NpcMessages() {
     }
 }

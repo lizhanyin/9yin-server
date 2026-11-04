@@ -84,14 +84,14 @@ class LoginFlowGmCommandTest {
     void badValueAndUnknownActionFailWithoutFrames() {
         Env env = new Env();
         GmCommand over = env.enqueue("set_move_speed", Map.of("value", 500));
-        GmCommand unknown = env.enqueue("spawn_dummy", Map.of());
+        GmCommand unknown = env.enqueue("definitely_not_an_action", Map.of());
 
         env.flow.drainGmCommands(new Connection(env.channel), env.session);
 
         assertFalse(reply(over).ok(), "超界值应失败");
         assertTrue(reply(over).message().contains("0.1"));
         assertFalse(reply(unknown).ok(), "未实现动作应失败");
-        assertTrue(reply(unknown).message().contains("spawn_dummy"));
+        assertTrue(reply(unknown).message().contains("definitely_not_an_action"));
         assertNull(env.channel.readOutbound(), "失败命令不应写帧");
     }
 
@@ -382,6 +382,84 @@ class LoginFlowGmCommandTest {
     }
 
     // ------------------------------------------------- V2/V3 外观挂载动作
+
+    /**
+     * popup_gm_panel：单帧 0x27 现代壳命令名寻址 close_gmcc_form msg_id=2
+     * （客户端 form_gmcc_main.open_gmcc_chat 显示 GMCC 面板；lua 取证
+     * custom_handler.lua close_gmcc_form 分支 msg_id==2）。
+     */
+    @Test
+    void popupGmPanelSendsGmccOpenFrame() {
+        Env env = new Env();
+        GmCommand command = env.enqueue("popup_gm_panel", Map.of());
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(command).ok(), "弹出 GM 面板应成功");
+        byte[] frame = env.channel.readOutbound();
+        assertTrue(frame != null, "应写出一帧");
+        assertEquals(0x27, frame[0] & 0xFF, "现代 custom 壳 0x27");
+        assertEquals(2, (frame[1] & 0xFF) | (frame[2] & 0xFF) << 8, "两值：命令名 + msg_id");
+        assertEquals(6, frame[3] & 0xFF, "首值线型 tag6 窄字符串（命令名寻址）");
+        int len = (frame[4] & 0xFF) | (frame[5] & 0xFF) << 8 | (frame[6] & 0xFF) << 16
+                | (frame[7] & 0xFF) << 24;
+        assertEquals(16, len, "u32 = 字节数 15 + NUL");
+        String commandName = new String(frame, 8, 15, java.nio.charset.StandardCharsets.US_ASCII);
+        assertEquals("close_gmcc_form", commandName);
+        assertEquals(0, frame[23], "字符串 NUL 结尾");
+        assertEquals(2, frame[24] & 0xFF, "次值线型 tag2 int32");
+        int msgId = (frame[25] & 0xFF) | (frame[26] & 0xFF) << 8 | (frame[27] & 0xFF) << 16
+                | (frame[28] & 0xFF) << 24;
+        assertEquals(2, msgId, "msg_id=2 → open_gmcc_chat 打开面板");
+        assertNull(env.channel.readOutbound(), "仅一帧");
+    }
+
+    /** 洗练六动作：无 inventory DB 时明确失败且不写帧（不半途改词条）。 */
+    @Test
+    void recastActionsFailWithoutInventoryStore() {
+        Env env = new Env();
+        GmCommand roll = env.enqueue("recast_slot_prop", Map.of("slot", 22));
+        GmCommand add = env.enqueue("recast_add_affix",
+                Map.of("slot", 22, "packIDs", List.of(63308), "affixKind", "prop"));
+        GmCommand clear = env.enqueue("recast_clear_affix", Map.of("slot", 22));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(roll).ok());
+        assertTrue(reply(roll).message().contains("物品 DB 未接入"));
+        assertFalse(reply(add).ok());
+        assertFalse(reply(clear).ok());
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+    }
+
+    /** 场景生成两动作：未进场景（无 world）明确失败且不写帧。 */
+    @Test
+    void spawnDummyAndChestFailWithoutScene() {
+        Env env = new Env();
+        GmCommand dummy = env.enqueue("spawn_dummy", Map.of("dummyHp", 500000));
+        GmCommand chest = env.enqueue("spawn_chest", Map.of());
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(dummy).ok(), "未进场景木桩应失败");
+        assertEquals("角色尚未进入场景", reply(dummy).message());
+        assertFalse(reply(chest).ok(), "未进场景宝箱应失败");
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+    }
+
+    /** propBuilt 串方言（"1,id;1,id"，PanelState.recomputeEquipBonuses 同款）解析/构建往返。 */
+    @Test
+    void propBuiltParseBuildRoundTrip() {
+        assertEquals(List.of(11, 12), LoginFlow.parsePropBuiltPacks("1,11;1,12"));
+        assertEquals(List.of(11, 12), LoginFlow.parsePropBuiltPacks("1,11;x,;1,12"),
+                "脏段跳过");
+        assertEquals(List.of(), LoginFlow.parsePropBuiltPacks(""));
+        assertEquals(List.of(), LoginFlow.parsePropBuiltPacks(null));
+        assertEquals("1,11;1,12", LoginFlow.buildPropBuilt(List.of(11, 12)));
+        assertEquals("", LoginFlow.buildPropBuilt(List.of()));
+        assertEquals("1,11", LoginFlow.buildPropBuilt(LoginFlow.parsePropBuiltPacks("1,11")),
+                "构建结果可直接回写 equip.propBuilt");
+    }
 
     /** grant_item 无 inventory DB 时明确失败且不写帧（不穿戴/不入包半途状态）。 */
     @Test

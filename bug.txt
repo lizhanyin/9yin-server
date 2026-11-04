@@ -49,5 +49,14 @@ V3  修复怪打不死的BUG
 打坐
 
 
-套路 武器限制
+~~套路 武器限制~~（已完成 2026-11-04：skill_use_limit ItemType 规则出招门控，拳/腿空手豁免；空手基础外功 20-35 同步修复）
 快捷栏拖拽
+
+
+npc
+后续值得接 Lua 的交互点（按框架“纯函数 + Java 兜底”哲学）
+item/*.lua（框架已规划）：giveitem 发的 Box_qycdu_009 这类宝箱的使用效果——现在只入包，右键开启还没有效果层。
+对话条件判定：optiontalk 选项的 ConditionSet（如 9833/10596）和 IsKarma——目前统一日志放行，接 Lua 可做条件脚本决定置灰/隐藏。
+头顶气泡/杂谈：NpcTalkRule + custom 43 on_npc_talk、gossiptalk_* 表——彩蛋对话适合脚本化。
+若真机验证后切 custom 4..8 路由，菜单组装（mark→动作映射）可下沉到 scripts/npc/<id>.lua，Java 只留路由壳。
+要我现在把其中某一项接进 LuaScriptService 吗？最有性价比的是 ①（item/*.lua 契约框架里已经留了位置）。

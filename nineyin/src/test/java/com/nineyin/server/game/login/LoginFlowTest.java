@@ -45,7 +45,9 @@ import io.netty.channel.embedded.EmbeddedChannel;
  */
 class LoginFlowTest {
 
-    private static final java.nio.file.Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
+    /** Go 仓库根（share 资源）；默认 G: 机器，可用 GO_SERVER_ROOT 环境变量指向本地克隆。 */
+    private static final java.nio.file.Path GO_SERVER_ROOT = Path.of(
+            System.getenv().getOrDefault("GO_SERVER_ROOT", "G:/pojie/ai/9yin-go-server1"));
 
     @BeforeAll
     static void needsGoResources() {
@@ -404,8 +406,9 @@ class LoginFlowTest {
         }
         // 状态无关样本帧逐字节：记录行/视图/快捷栏/0x27 开关。
         // 段界：0-17 轻功行 | 18 View46 | 19-88 条目 | 89-103 任务接受 | 104-1697 位图 | 1698 打坐
-        // | 1699 View43 | 1700-1705 书 | 1706 View40 | 1707-1729 技能 | 1730-1744 快捷栏 | 1745 vital
-        // | 1746-1768 View40 行可用性 CanUse=1 批（战斗一期）| 1769 switch | 1770 vital。
+        // | 1699 View43 | 1700-1705 书 | 1706 View40 | 1707-1731 技能（25=基础武学三件套
+        // + 花神 7 + 心佛掌 7 + 太极拳 8）| 1732-1746 快捷栏 | 1747 vital
+        // | 1748-1772 View40 行可用性 CanUse=1 批（战斗一期）| 1773 switch | 1774 vital。
         assertArrayEquals(golden("qinggong_record_add.bin"), replies.get(0));
         assertArrayEquals(golden("view46_create.bin"), replies.get(18));
         SnapshotGoldens.assertOrRegen("view46_add_official_first.bin", replies.get(19));
@@ -417,9 +420,9 @@ class LoginFlowTest {
         assertArrayEquals(golden("view43_create.bin"), replies.get(1699));
         assertArrayEquals(golden("view40_create.bin"), replies.get(1706));
         SnapshotGoldens.assertOrRegen("view40_add_official_first.bin", replies.get(1707));
-        SnapshotGoldens.assertOrRegen("view40_add_official_last.bin", replies.get(1729));
+        SnapshotGoldens.assertOrRegen("view40_add_official_last.bin", replies.get(1731));
         // CanUse=1 批首帧：0x10|isView=1|view40|行1|CanUse(2236)=1（62433 抓包 2159 帧同款）
-        byte[] canUseFirst = replies.get(1746);
+        byte[] canUseFirst = replies.get(1748);
         assertEquals(0x10, canUseFirst[0] & 0xFF);
         assertEquals(1, canUseFirst[1]);
         assertEquals(40, u32(canUseFirst, 2));
@@ -427,10 +430,10 @@ class LoginFlowTest {
         assertEquals(15, canUseFirst.length);
         assertEquals(2236, u16(canUseFirst, 12));
         assertEquals(1, canUseFirst[14]);
-        assertArrayEquals(golden("skill_switch.bin"), replies.get(1769));
+        assertArrayEquals(golden("skill_switch.bin"), replies.get(1773));
         // 两帧 vital 自一致（buff 时钟随运行时钟，不比 golden；fixture 书 fill 与新角色不同，书帧只比长度）。
-        assertArrayEquals(replies.get(1745), replies.get(1770));
-        assertEquals(0x10, replies.get(1745)[0] & 0xFF);
+        assertArrayEquals(replies.get(1747), replies.get(1774));
+        assertEquals(0x10, replies.get(1747)[0] & 0xFF);
 
         // 0x0A activity → 无回包，状态机进 InWorld。
         send(channel, new byte[]{0x0A, 0x00});

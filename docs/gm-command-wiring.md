@@ -133,6 +133,65 @@ switch_scene_preset, switch_scene, teleport`
 | `switch_scene` | `destination` = `config,resource,x,y,z,orient` 免费格式 | 同上 |
 | `teleport` | `position` = `x,y,z,orient`（同场景，仅 0x1F 不读图） | 同上 |
 
+弹出游戏 GM 面板（2026-11-04）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `popup_gm_panel` | 无参 | 无（单帧下发） |
+
+单帧 0x27 现代壳**命令名寻址** `close_gmcc_form` msg_id=2 —— 客户端 lua
+`custom_handler.lua close_gmcc_form` 分支 msg_id==2 → `form_gmcc_main.open_gmcc_chat()`
+显示 GMCC 聊天面板（msg_id=1 为关闭分支）。取证来源：`res1/lua64` 客户端脚本。
+
+洗练六动作（2026-11-04，`RecastCatalog` 四池 + proppack 词缀包）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `recast_slot_prop` | `slot`（随机洗练：整池重掷全词条，保留官方重复权重） | role_equip_items |
+| `recast_slot_dire` | `slot`（定向：同属性族档序列内随机重掷数值，不跨族/不跨内功系） | 同上 |
+| `recast_slot_polish` | `slot`（抛光：同序列取最高档=行末位） | 同上 |
+| `recast_slot_skill` | `slot`（招式开光：仅 senior_weapon 池词条随机重掷，其余保留） | 同上 |
+| `recast_add_affix` | `slot` + `packIDs`（1..12 个 proppack 包号）+ `affixKind`(prop/skill) | 同上 |
+| `recast_clear_affix` | `slot`（清空普通+招式全部词条） | 同上 |
+
+池选取：装备 ConfigID 在 senior_weapon_* 有精确节 → weapon 池，否则 senior_prop_*；
+无精确节按家族前缀（去尾部 `_数字` 段）回退，仍无才兜底整池。词条串 propBuilt
+（"1,id;1,id"，PanelState 同方言）；落地走 upsertEquip + pushWearFrames
+（装备视图 + 战斗加成 + vital 整层重刷）。`recast_add_affix` 的包号入口即面板
+`/api/recast-affixes` 两组列表（prop=普通词条 / senior_weapon=招式词条口径）。
+
+场景生成两动作（2026-11-04，`GmNpcFactory` 模板克隆 + 900000+ 对象号段）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `spawn_dummy` | `dummyHp` 可选（0=默认 10 万，≤1 亿） | 无（会话内实体） |
+| `spawn_chest` | 无参 | 无（会话内实体） |
+
+- **木桩** = worldnpc/attacknpc.txt `monv010100`（官方「木桩」AttackNpc）克隆：
+  玩家身前 2.5 米（朝向按 0x26 motion orient），MaxHP/HP 覆盖、移速 0；AttackNpc →
+  可选中/受击/AoE 命中（FightState 按帧内 MaxHP 物化），死亡走战斗一期语义
+  （不删对象、15s 回满血）。
+- **宝箱** = worldnpc/monsternpc_commonnpc.txt `stormbox_10`（CommonNpc）克隆改名
+  「镀银宝箱」：点击（0x07 FuncID=0，openNpcDialog 的 gmSpawns 分支）→ 随机拾取
+  一件入背包（可穿戴 ∪ 开箱类 ItemType 2102/2103）→ unregister + reconcile
+  （0x0E 消失）。拾取词缀暂不附（背包行无 propBuilt 通道）。切图随 world.begin
+  清空（session.gmSpawns，两处 begin 站点同步清）。
+
+模板生成三动作（2026-11-04，60501 家族基座 + 官方洗练池词条）：
+
+| action | 参数 | 词条构造 | 落库 |
+| --- | --- | --- | --- |
+| `gm_generate_weapon` | `weaponType` 101-108/122 + `crafter` cook/smith | 厨师 6 条属性 / 铁匠 3 属性+3 招式，全取 `RecastCatalog.randPool/weaponPool`（senior_weapon_rand 按武器家族节）；池缺失回退全池随机并回执注明 | role_equip_items（立即穿戴） |
+| `gm_generate_armor` | `armorSlot` helmet/amulet/cloth/pants/leg/shoes/wrist/ear/ring | 固定 5 条红词条（PhyDefAdd+46/+47、StaAdd+29、MaxMPAdd+39、StrAdd+35），按 (属性名,数值) 从 proppack 定位包号（多包命中取最小号，未命中跳过并计数）；饰品（项链/耳环/戒指）也有穿戴槽，同款词条直接穿 | 同上 |
+| `gm_generate_bracer` | 无参 | 固定 3 条臂力（StrAdd +33/+35/+35）+ 3 条招式词条（按身上已穿武器 `weaponPool`，未穿则省略并回执注明） | 同上 |
+
+模板挑选 `pickTemplate`：EquipType+性别过滤后 **`_60501` 家族（51 级金色生活技能
+基座）优先随机**，无家族候选才回退品质降序头部窗口。词条随装备 propBuilt 落库并
+整层重刷（upsertEquip + pushWearFrames）；槽位未证类型兜底入背包（词条不随行）。
+
+配套修复：`EquipAffixCatalog.loadAll` 此前丢弃 `loadIni` 返回值导致 `load()` 恒空表
+（recast_add_affix 包号校验与装备词缀加成累积全链失效），已修（解析结果并入实例）。
+
 切图链（`applySceneSwitch`）：0x0C 退场 → `world.begin` 世代重置 → **750ms 调度延迟**
 （旧场景 on_exit_scene 的 ClearAll 收尾；Go 在会话 goroutine 睡，Java 在 faculty ticker
 上不能睡改 `scheduler.schedule`，`LoginFlow.reentryFrameDelayMillis` 测试可注入）→
@@ -153,9 +212,9 @@ faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
 `learn_all_neigong, learn_all_taolu, forget_all_taolu, grant_all_cards, unequip_card,
-set_faction, set_five_attributes, set_jingmai_tier, spawn_dummy,
-spawn_chest, add_item, worldboss_*, bot_*, equip_card, ninjiuzhi_*, set_pk_mode,
-set_weather, popup_gm_panel, recast_*, gm_generate_*, story, custom_probe, keybind` 等。
+set_faction, set_five_attributes, set_jingmai_tier,
+add_item, worldboss_*, bot_*, equip_card, ninjiuzhi_*, set_pk_mode,
+set_weather, story, custom_probe, keybind` 等。
 
 ## 6. 测试
 
@@ -166,5 +225,7 @@ set_weather, popup_gm_panel, recast_*, gm_generate_*, story, custom_probe, keybi
   演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）；
   传送域：`LoginFlowSceneSwitchTest`（0x0C 重入帧序/残余包忽略/0x09 收尾/瞬移单帧/加载中拒绝，
   ManualScheduler 驱动 750ms 延迟任务）+ `GmScenePresetsTest`（107 键/抽样值/免费格式解析）。
+  模板生成域：`GenerateEquipFlowTest`（真实 MySQL+参考服 share：60501 家族/官方池词条/
+  固定红词条/护腕臂力+招式/饰品穿戴帧序；临时角色 990033 测后清理）。
 - 已知存量失败 7 个（View40 CD 显示修复遗留，与 GM 链路无关）：PlayerActorGoldenTest 2、
   LoginFlowTest 1、SkillCastHandlerFlowTest 3、RoleInventoryStoreIntegrationTest 1（需 MySQL）。

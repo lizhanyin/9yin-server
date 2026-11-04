@@ -409,6 +409,7 @@ Delete_rows BEFORE 镜像恢复）。
 
 ### 四期遗留
 
-~~msg30 穿脱/使用~~（**已完成 2026-11-03**：msg30=MOVEITEM 纯移动穿/脱/页间移动、msg31=USEITEM 右键使用（装备→穿/风物志卡片→收录）、msg886-889=一键穿 uid 认领，共享 `wearFromBag` 核心——帧组 0x19 成对清位+0x18 落位+外观/词缀/vital 刷新，DB 四事务 `moveEquipToBag/moveBagToEquip/swapEquipSlot/moveBagSlot`；饰品槽 11-15（双槽耳环/戒指）一并接入。语义证据链=menu2.exe 字符串+bak 反汇编，见 `docs/go-source-protocol-notes.md` §7.3；冒烟 `tools/smoke/verify_move_item.py` 17/17）、0x07 对象选择/菜单/商店、
+~~msg30 穿脱/使用~~（**已完成 2026-11-03**：msg30=MOVEITEM 纯移动穿/脱/页间移动、msg31=USEITEM 右键使用（装备→穿/风物志卡片→收录）、msg886-889=一键穿 uid 认领，共享 `wearFromBag` 核心——帧组 0x19 成对清位+0x18 落位+外观/词缀/vital 刷新，DB 四事务 `moveEquipToBag/moveBagToEquip/swapEquipSlot/moveBagSlot`；饰品槽 11-15（双槽耳环/戒指）一并接入。语义证据链=menu2.exe 字符串+bak 反汇编，见 `docs/go-source-protocol-notes.md` §7.3；冒烟 `tools/smoke/verify_move_item.py` 17/17）、
+~~0x07 对象选择/菜单/商店~~（**已完成 2026-11-04**：0x07 两段式——FuncID=0 点击（combat 走既有选目标/非 combat 回 LastObject idx414+optiontalk 开 0x1C 菜单）、FuncID=mark 菜单回发（NextPage 翻页/shop 开 View61/giveitem 入包/告辞 0x1D）；mark=NpcDialog 会话本地顺排防重放。商店 0x16→0x15(101-104)→0x18(105-110) 帧组对齐 F 服抓包，msg70 购买=碎银扣款+insertBagItem+成对帧+silverUpdate。数据链与证据表见 `docs/npc-optiontalk-shop.md`；测试 NpcDialogFlowTest 7/7（真 MySQL 购买链）+ ShopCatalogTest 5/5；冒烟 `tools/smoke/npc_talk_probe.py`；真机待验 6 项见该文档 §6）、
 战斗（211/cooldown/combat tick——equipPhyVa 累积器已备）、0x0C 切图重入恢复链、传送门、
 200/201/240/216-218 信封、243/266 骑乘（CurRideMount 真值）、943 兵录修改。

@@ -118,9 +118,12 @@ class GroundChargeAndRageTest {
         assertEquals(CombatSkill.TargetMode.GROUND_AREA, skill.targetMode(),
                 "HitShape 11 → GROUND_AREA");
         assertFalse(skill.requiresTarget(), "圈定技能免选中目标");
+        // 三候选全挂武器限制（UseLimit 2/4/28 → 102/104/117）：测试角色配对应武器过闸
+        int weapon = skill.weaponItemTypes().isEmpty() ? 0 : skill.weaponItemTypes().iterator().next();
 
         // 不选中目标：落点（idx 11-13）即圆心，圈内 NPC 被结算
         Harness harness = new Harness(100_000, 100f, 100f);
+        harness.player.noteEquippedWeaponItemType(weapon);
         harness.learned.put(skill.id(), 1);
         harness.handle(useSkillLongMessage(skill.id(), 100f, 20f, 100f, 1.0f, 100f, 20f, 100f));
         harness.scheduler.runAll();
@@ -131,12 +134,14 @@ class GroundChargeAndRageTest {
 
         // 落点 200 米外：超宽容射程（30m）静默拒
         Harness far = new Harness(1000, 100f, 100f);
+        far.player.noteEquippedWeaponItemType(weapon);
         far.learned.put(skill.id(), 1);
         far.handle(useSkillLongMessage(skill.id(), 100f, 20f, 100f, 1.0f, 100f, 20f, 300f));
         assertNull(far.channel.readOutbound(), "落点超宽容射程静默拒（零帧）");
 
         // 短格式无落点且无选中：受理但伤害空集（Go "no center" 同款）
         Harness noPoint = new Harness(1000, 100f, 100f);
+        noPoint.player.noteEquippedWeaponItemType(weapon);
         noPoint.learned.put(skill.id(), 1);
         noPoint.handle(SkillCastHandlerFlowTest.useSkillMessage(skill.id(), 100f, 20f, 100f, 1.0f));
         noPoint.scheduler.runAll();

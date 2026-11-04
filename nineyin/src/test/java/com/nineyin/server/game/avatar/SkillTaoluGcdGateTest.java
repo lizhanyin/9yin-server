@@ -25,7 +25,7 @@ class SkillTaoluGcdGateTest {
                 100, 1,
                 CombatSkill.TargetMode.SELECTED, 5f, 0f, 0f, 0f,
                 false, 0f,
-                "act", 500L, List.of(), List.of(), List.of());
+                "act", 500L, List.of(), List.of(), List.of(), java.util.Set.of());
     }
 
     @Test

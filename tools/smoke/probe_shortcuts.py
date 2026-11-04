@@ -63,6 +63,58 @@ def parse_record_row(frame):
     return rec, None
 
 
+def cs(s):
+    """tag6 窄字符串：u32 len(含 NUL) + utf8 + NUL。"""
+    b = s.encode("utf-8")
+    return b"\x06" + struct.pack("<I", len(b) + 1) + b + b"\x00"
+
+
+def custom(msg):
+    return _SC.direct_custom(0x1E, msg)
+
+
+def find_del_rows(frames):
+    """0x12 RecordDelRow(93) 行号列表：[0]=0x12 len=14 [12:14]=u16 row。"""
+    out = []
+    for f in frames:
+        if op(f) == 0x12 and len(f) == 14:
+            rec = struct.unpack("<H", f[10:12])[0]
+            if rec == RECORD_SHORTCUT:
+                out.append(struct.unpack("<H", f[12:14])[0])
+    return out
+
+
+def drag_out_and_restore(sock, rows):
+    """真机拖拽出栏验证：201(索引) 应回 0x12(行号=该索引所在行)；
+    重复 201 静默；200(索引,kind,id) 恢复应回 0x11。"""
+    if not rows:
+        print("SKIP drag-out probe (no shortcut rows)")
+        return
+    index, kind, sid = rows[0][0], rows[0][1], rows[0][2]
+    row_pos = next(i for i, c in enumerate(rows) if c[0] == index)
+    print("drag-out probe: index=%s kind=%s id=%s (row=%d)" % (index, kind, sid, row_pos))
+
+    sock.sendall(encode_frame(custom([_SC.ci(201), _SC.ci(index)])))
+    frames = recv_frames(sock, 4, timeout=6, quiet=1.0)
+    dels = find_del_rows(frames)
+    ok = dels == [row_pos]
+    print("%s drag-out 201(%s) -> 0x12 rows=%s (expect [%d])"
+          % ("OK  " if ok else "FAIL", index, dels, row_pos))
+
+    sock.sendall(encode_frame(custom([_SC.ci(201), _SC.ci(index)])))
+    frames = recv_frames(sock, 2, timeout=4, quiet=1.0)
+    dels = find_del_rows(frames)
+    ok = not dels
+    print("%s repeat 201(%s) silent -> 0x12 rows=%s" % ("OK  " if ok else "FAIL", index, dels))
+
+    sock.sendall(encode_frame(custom([_SC.ci(200), _SC.ci(index), cs(kind), cs(sid)])))
+    frames = recv_frames(sock, 4, timeout=6, quiet=1.0)
+    added = [parse_record_row(f) for f in frames if op(f) == 0x11]
+    added = [p for p in added if p and p[0] == RECORD_SHORTCUT and p[1]]
+    ok = len(added) == 1 and added[0][1][0] == index and added[0][1][2] == sid
+    print("%s restore 200(%s) -> 0x11 %s" % ("OK  " if ok else "FAIL", index, added[:1]))
+
+
 def main():
     sock = socket_create()
     sock.sendall(encode_frame(LOGIN_PLAIN))
@@ -115,6 +167,7 @@ def main():
         print("  row:", c)
     if len(rows) > 20:
         print("  ... (%d more)" % (len(rows) - 20))
+    drag_out_and_restore(sock, rows)
     sock.close()
 
 

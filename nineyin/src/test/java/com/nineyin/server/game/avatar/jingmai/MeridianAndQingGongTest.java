@@ -304,8 +304,12 @@ class MeridianAndQingGongTest {
         QingGongHandler.handle(harness.connection, harness.player,
                 customMessage(216, "qinggong_9", 1));
         List<byte[]> frames = harness.drain();
-        assertEquals(2, frames.size(), "msg169(挂) + BufferInfoN 槽帧");
-        byte[] buff = frames.get(0);
+        // 2026-11-03 轻功值经济：begin 先扣 Consume=10（Go UseQingGong 同口径）
+        // 并推 QG 点数帧，再挂 buff 链。
+        assertEquals(3, frames.size(), "QG 点数帧 + msg169(挂) + BufferInfoN 槽帧");
+        assertEquals(0x10, frames.get(0)[0], "开局费扣点单帧");
+        assertEquals(140, harness.player.actorState().qingGongPoint());
+        byte[] buff = frames.get(1);
         assertEquals(0x1E, buff[0]);
         // [169, 0, 'buf_qg_light', obj, obj, 宽名×2, i64 到期, i32 2048] 九值。
         int args = buff[1] | buff[2] << 8;
@@ -314,10 +318,10 @@ class MeridianAndQingGongTest {
         assertTrue(text.contains("buf_qg_light"));
         assertTrue(harness.player.gliding());
 
-        // 1s tick 扣 10 轻功值（150 → 140）。
+        // 1s tick 扣 10 轻功值（140 → 130）。
         assertTrue(QingGongHandler.glideTick(harness.connection, harness.player));
         harness.drain();
-        assertEquals(140, harness.player.actorState().qingGongPoint());
+        assertEquals(130, harness.player.actorState().qingGongPoint());
 
         QingGongHandler.handle(harness.connection, harness.player,
                 customMessage(216, "qinggong_9", 0));
@@ -334,13 +338,13 @@ class MeridianAndQingGongTest {
                 customMessage(216, "qinggong_9", 1));
         assertTrue(harness.player.gliding());
         harness.drain();
-        // 连续扣到耗尽（150 点 / 10 每秒：15 拍扣完，第 16 拍付不起强摘）。
-        for (int i = 0; i < 15 && harness.player.gliding(); i++) {
+        // begin 先扣 10（150→140），此后每秒 10：14 拍扣完，第 15 拍付不起强摘。
+        for (int i = 0; i < 14 && harness.player.gliding(); i++) {
             harness.clock.advanceMillis(1_000);
             QingGongHandler.glideTick(harness.connection, harness.player);
             harness.drain();
         }
-        assertTrue(harness.player.gliding(), "15 秒后仍持有租约（点数恰扣完）");
+        assertTrue(harness.player.gliding(), "14 秒后仍持有租约（点数恰扣完）");
         assertEquals(0, harness.player.actorState().qingGongPoint());
         harness.clock.advanceMillis(1_000);
         boolean still = QingGongHandler.glideTick(harness.connection, harness.player);

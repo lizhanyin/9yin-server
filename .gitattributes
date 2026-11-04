@@ -1,0 +1,4 @@
+# 字节级比对 golden 资源：禁止任何 EOL 转换——core.autocrlf=true 的 Windows 检出
+# 会把 LF 洗成 CRLF，导致 byte-for-byte 断言每行差 1 字节（JsonRoleRepositoryTest
+# 6821 vs 6561 实证）。golden 目录整体按二进制对待，工作区字节恒等于仓库字节。
+nineyin/src/test/resources/golden/** -text

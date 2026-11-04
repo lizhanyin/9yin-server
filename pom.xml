@@ -178,6 +178,11 @@
                     <configuration>
                         <release>${java.version}</release>
                         <showWarnings>true</showWarnings>
+                        <!-- IDE(JDT/ECJ) 与 Maven 共写 target/classes：IDE 带错误占位符的
+                             产物比源码新时增量编译会跳过重编、surefire 直接执行坏类
+                             （GmRemoteRoundTripTest/MeridianAndQingGongTest 实证）。
+                             关闭增量、每次全量 javac，代价秒级。 -->
+                        <useIncrementalCompilation>false</useIncrementalCompilation>
                     </configuration>
                 </plugin>
                 <plugin>

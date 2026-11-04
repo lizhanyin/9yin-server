@@ -43,11 +43,13 @@ class RoleInventoryStoreIntegrationTest {
         assumeTrue(available(), "MySQL 不可用，跳过物品域集成");
         try (RoleInventoryStore store = RoleInventoryStore.open(dsn())) {
             assumeTrue(store.hasRoleData(ROLE), "role 618 无数据");
-            assertEquals(8, store.equips(ROLE).size(), "穿戴装备 8 件");
-            assertEquals(27, store.bagItems(ROLE).size(), "背包 27 件");
+            // 真机穿脱/GM 测试会改这些数字（2026-11-04 按当期 DB 对齐：武器卸回
+            // 背包、背包三页 17+13+5、快捷栏 +1）。漂移时按当期 DB 核对后更新。
+            assertEquals(7, store.equips(ROLE).size(), "穿戴装备 7 件");
+            assertEquals(35, store.bagItems(ROLE).size(), "背包 35 件");
             assertEquals(190, store.skills(ROLE, "wuxue").size(), "武学 190");
             assertEquals(48, store.skills(ROLE, "neigong").size(), "内功 48");
-            assertEquals(117, store.shortcuts(ROLE).size(), "快捷栏 117 行");
+            assertEquals(118, store.shortcuts(ROLE).size(), "快捷栏 118 行");
             assertEquals(4, store.bagpacks(ROLE).size(), "扩容锚点 4 个（每页首锚）");
             // game_items 富化：武器行拿到 ItemType/名称/EquipType。
             var weapon = store.bagItems(ROLE).stream()

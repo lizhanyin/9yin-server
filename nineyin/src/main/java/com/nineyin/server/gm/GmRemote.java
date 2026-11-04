@@ -181,6 +181,8 @@ public class GmRemote {
             case "giftbox_merchant_here" -> null;
             // V3 风物志：卡牌挂载/卸下/全量收录（GM 网页直接驱动）。
             case "equip_card" -> intRange(params, "cardId", 1, Integer.MAX_VALUE);
+            // 风物志头发：仅纯发型卡（只含 Hat 部件），同部件互斥由游戏侧裁决。
+            case "equip_hair" -> intRange(params, "cardId", 1, Integer.MAX_VALUE);
             case "unequip_card", "grant_all_cards", "grant_all_fashion" -> null;
             // V4 三套外观：显示类型切换（0=江湖装 1=身份装 2=时装）+ 身份装按门派激活。
             case "set_showequip_type" -> intRange(params, "type", 0, 2);
@@ -251,6 +253,15 @@ public class GmRemote {
                 yield hp == null ? null : intRange(params, "dummyHp", 0, 100_000_000);
             }
             case "spawn_chest" -> null;
+            // 坐骑管理：按道具 config 骑乘/再点同骑下马（pack 解析与记录帧由游戏侧）。
+            case "mount_ride" -> nonEmpty(params, "mountConfig");
+            // 待机站姿（持久化）：b_action_index.ini 节名；空串 = 恢复默认站姿。
+            case "idle_stance_set" -> {
+                String stance = params != null ? params.getString("stanceAction") : null;
+                yield stance == null || stance.length() > 64
+                        ? "stanceAction must be a string of at most 64 chars"
+                        : null;
+            }
             default -> "unsupported action: " + action;
         };
     }

@@ -580,4 +580,135 @@ class LoginFlowGmCommandTest {
                         new com.nineyin.server.db.role.Roles.Scene("school09", "school09"),
                         new com.nineyin.server.db.role.Roles.Position(0, 0, 0, 0), 1));
     }
+
+    /** 参考资源候选根（E=测试机约定，G=本机 Go 镜像，F=部署服务根——tool_item.ini 仅 F 有）。 */
+    private static final List<Path> RESOURCE_ROOTS = List.of(
+            Path.of("E:/Workspace/project/game/9yin-go-server1"),
+            Path.of("G:/pojie/ai/9yin-go-server1"),
+            Path.of("F:/Game/Online/9yin/9yin_server_new"));
+
+    /** 依次在候选根里找相对路径并复制到临时根；任一命中返回 true。 */
+    private static boolean copyResource(Path tempRoot, Path relative) throws java.io.IOException {
+        for (Path root : RESOURCE_ROOTS) {
+            Path source = root.resolve(relative);
+            if (java.nio.file.Files.isRegularFile(source)) {
+                Path target = tempRoot.resolve(relative);
+                java.nio.file.Files.createDirectories(target.getParent());
+                java.nio.file.Files.copy(source, target);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * equip_hair：纯发型卡（只含 Hat 部件，card.ini 1036）挂载成功且同部件互斥——
+     * 换第二顶发型时替换旧发型；非发型卡（card 1=Weapon）明确拒绝。
+     */
+    @Test
+    void equipHairMountsHatOnlyCardWithMutualExclusion(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "share", "rule", "card.ini")),
+                "参考服 card.ini 不可用，跳过发型挂载断言");
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand first = env.enqueue("equip_hair", Map.of("cardId", 1036));
+            GmCommand second = env.enqueue("equip_hair", Map.of("cardId", 1040));
+            GmCommand notHair = env.enqueue("equip_hair", Map.of("cardId", 1));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(first).ok(), "纯发型卡 1036 应可挂载");
+            assertTrue(reply(second).ok(), "纯发型卡 1040 应可挂载");
+            assertTrue(reply(second).message().contains("替换"), "第二顶发型应替换第一顶");
+            assertFalse(reply(notHair).ok(), "Weapon 部件卡不是发型卡应拒绝");
+            assertTrue(reply(notHair).message().contains("不是纯发型卡"));
+            assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "skins.json"))));
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /**
+     * mount_ride：坐骑道具（ride_jh_whz_0001，ArtPack=9583 → itemartstatic
+     * npc\ride_camel_0104）骑乘成功——NewRideRec 行（0x11）+ 骑乘态 0x10 +
+     * data/坐骑.json 落档；再点同骑 = 下马（0x12 删行 + 0x10 空模型）；
+     * 未知道具明确失败。
+     */
+    @Test
+    void mountRideTogglesAndPersists(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "share", "item", "tool_item.ini"))
+                        && copyResource(tempRoot, Path.of("resources", "modern", "share", "item", "itemartstatic.ini"))
+                        && copyResource(tempRoot, Path.of("resources", "modern", "share", "ride", "new_ride.ini")),
+                "参考服坐骑资源不可用（tool_item/itemartstatic/new_ride），跳过骑乘断言");
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand ride = env.enqueue("mount_ride", Map.of("mountConfig", "ride_jh_whz_0001"));
+            GmCommand dismount = env.enqueue("mount_ride", Map.of("mountConfig", "ride_jh_whz_0001"));
+            GmCommand unknown = env.enqueue("mount_ride", Map.of("mountConfig", "no_such_mount"));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(ride).ok(), "望辉洲-骆驼 应可骑乘: " + reply(ride).message());
+            assertTrue(reply(ride).message().contains("npc\\ride_camel_0104"));
+            assertTrue(reply(dismount).ok(), "再点同骑应下马");
+            assertTrue(reply(dismount).message().contains("下马"));
+            assertFalse(reply(unknown).ok(), "未知坐骑道具应失败");
+            assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "坐骑.json"))));
+
+            // 帧序：骑乘 = NewRideRec 行 0x11 → 骑乘态 0x10；下马 = 0x12 删行 → 0x11 行 → 0x10。
+            List<Byte> opcodes = new java.util.ArrayList<>();
+            byte[] frame;
+            while ((frame = env.channel.readOutbound()) != null) {
+                opcodes.add(frame[0]);
+            }
+            assertEquals(List.of((byte) 0x11, (byte) 0x10,
+                    (byte) 0x12, (byte) 0x11, (byte) 0x10), opcodes);
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /**
+     * idle_stance_set：合法动作名（khbd_stand_01）切换 + PlayActionName 0x10 帧 +
+     * data/待机站姿.json 落档；未知动作名拒绝；空参 = 重推当前站姿（不改档）。
+     */
+    @Test
+    void idleStanceSetValidatesAndPersists(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "ini", "b_action_index.ini")),
+                "参考服 b_action_index.ini 不可用，跳过站姿断言");
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand set = env.enqueue("idle_stance_set", Map.of("stanceAction", "khbd_stand_01"));
+            GmCommand bogus = env.enqueue("idle_stance_set", Map.of("stanceAction", "no_such_action"));
+            GmCommand reapply = env.enqueue("idle_stance_set", Map.of("stanceAction", ""));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(set).ok(), "khbd_stand_01 应可切换");
+            assertFalse(reply(bogus).ok(), "未知动作名应拒绝");
+            assertTrue(reply(bogus).message().contains("不存在"));
+            assertTrue(reply(reapply).ok(), "空参应重推当前站姿");
+            assertTrue(reply(reapply).message().contains("khbd_stand_01"));
+            assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "待机站姿.json"))));
+
+            List<Byte> opcodes = new java.util.ArrayList<>();
+            byte[] frame;
+            while ((frame = env.channel.readOutbound()) != null) {
+                opcodes.add(frame[0]);
+            }
+            // 切换 0x10 + 重推 0x10（拒绝路径零帧）。
+            assertEquals(List.of((byte) 0x10, (byte) 0x10), opcodes);
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
 }

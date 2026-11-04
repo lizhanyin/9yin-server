@@ -47,6 +47,15 @@ public final class LoginSession {
     /** 时装页签：已激活套装（role_fashion_suits；选角时装载，ClientReady 推 FashionSuitRec 行）。 */
     java.util.List<String> fashionSuits = java.util.List.of();
     boolean fashionPushed;
+    /** 坐骑：会话内状态（选角时装载，GM/骑乘链原地改写）；ClientReady 是否已推 NewRideRec。 */
+    com.nineyin.server.game.avatar.mount.MountStore.State mountState;
+    boolean mountsPushed;
+    /** 坐骑：已推送的 NewRideRec 行数（整刷前删行的口径）；riding=当前是否在马上。 */
+    int mountRows;
+    boolean riding;
+    /** 待机站姿：b_action_index.ini 动作名（null=默认站姿）；最近一次保持拍时间（ms）。 */
+    String idleStance;
+    long idleStanceLastPushMs;
     /**
      * 功能开关批量同步（0x1E 414 "sync"）：连接级一次——引擎 SwitchManager 是
      * 客户端全局，0x0C 切图后仍在，参考服同会话不重推（与 705 个性配置同口径）。

@@ -988,6 +988,10 @@
       if (!s.value) return alert("请先选择一个站姿");
       command({ action: "idle_stance_set", stanceAction: s.value });
     }
+    // 快捷站姿按钮：空串=恢复当前站姿（重推存档，不改档）。
+    function setIdleStancePreset(action) {
+      command({ action: "idle_stance_set", stanceAction: action });
+    }
     function mountSelected() {
       let sel = document.querySelector("#mount-result");
       if (!sel.value) return alert("请先选择一个坐骑");

@@ -136,6 +136,14 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.appearance.AppearanceStore appearanceStore =
             com.nineyin.server.game.avatar.appearance.AppearanceStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "appearance.json"));
+    /** 坐骑存档（data/坐骑.json 主档；DB 经 {@link #attachMountDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.mount.MountStore mountStore =
+            com.nineyin.server.game.avatar.mount.MountStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "坐骑.json"));
+    /** 待机站姿存档（data/待机站姿.json 主档；DB 经 {@link #attachIdleStanceDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.stance.IdleStanceStore idleStanceStore =
+            com.nineyin.server.game.avatar.stance.IdleStanceStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "待机站姿.json"));
     private final GmHub gmHub;
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
@@ -230,6 +238,26 @@ public final class LoginFlow {
             log.info("appearance store attached to MySQL role_appearance");
         } catch (RuntimeException e) {
             log.warn("appearance store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
+    /** 坐骑存档 DB 双源挂接（role_mounts；失败仅告警，JSON 仍为主档）。 */
+    public void attachMountDatabase(String dsn) {
+        try {
+            mountStore.attachDatabase(dsn);
+            log.info("mount store attached to MySQL role_mounts");
+        } catch (RuntimeException e) {
+            log.warn("mount store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
+    /** 待机站姿存档 DB 双源挂接（role_idle_stance；失败仅告警，JSON 仍为主档）。 */
+    public void attachIdleStanceDatabase(String dsn) {
+        try {
+            idleStanceStore.attachDatabase(dsn);
+            log.info("idle stance store attached to MySQL role_idle_stance");
+        } catch (RuntimeException e) {
+            log.warn("idle stance store MySQL unavailable, JSON only: {}", e.getMessage());
         }
     }
 
@@ -528,6 +556,10 @@ public final class LoginFlow {
         pushEquipAppearance(connection, session, equips);
         // V3 风物志：装载角色皮肤存档（ClientReady 后推送，图鉴/挂载状态恢复）。
         session.skinState = skinStore.load(session.selected.id());
+        // 坐骑：装载拥有存档（ClientReady 推 NewRideRec 行 + NewRideID；骑乘态不跨登录）。
+        session.mountState = mountStore.load(session.selected.id());
+        // 待机站姿：装载存档（null=默认；ClientReady 后按需重推保持所选站姿）。
+        session.idleStance = idleStanceStore.load(session.selected.id());
         // 时装页签：已激活套装装载（role_fashion_suits；ClientReady 推 FashionSuitRec 行）。
         if (inventoryStore != null) {
             try {
@@ -741,6 +773,9 @@ public final class LoginFlow {
                 if (session.player.parryRecoveryTick()) {
                     connection.writeFrame(session.player.parryValueFrame());
                 }
+                // 待机站姿保持（每 4s 一拍）：受击/挖矿/技能结束会打断引擎动作，
+                // 闲时（LogicState=0 且不在马上/打坐）重推 PlayActionName 回站。
+                idleStanceTick(connection, session);
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
@@ -827,6 +862,8 @@ public final class LoginFlow {
             case "grant_item", "add_item" -> applyGrantItem(connection, session, command);
             // V3 风物志：皮肤收集/挂载/卸下（GM 网页直接驱动，不用点背包收集）。
             case "equip_card" -> applyMountSkin(connection, session, command);
+            // 风物志头发：仅纯发型卡（hairOnly），挂载前互斥卸下其他 Hat-only 卡。
+            case "equip_hair" -> applyEquipHair(connection, session, command);
             case "unequip_card" -> applyUnmountSkins(connection, session, command);
             case "grant_all_cards" -> applyGrantAllSkins(connection, session, command);
             // 配套：模板生成武器/防具/护腕（官方洗练池词条）+ 一键激活全部时装。
@@ -853,6 +890,10 @@ public final class LoginFlow {
             case "spawn_chest" -> applySpawnChest(connection, session, command);
             case "giftbox_merchant_here" -> applyGiftboxMerchantHere(connection, session, command);
             case "send_test_mail" -> applySendTestMail(connection, session, command);
+            // 坐骑管理：按道具 config 骑乘（再点同骑=下马），NewRideRec 记录 + Mount 属性族下发。
+            case "mount_ride" -> applyMountRide(connection, session, command);
+            // 待机站姿（持久化）：空参=重推当前档；写档 + PlayActionName 属性下发。
+            case "idle_stance_set" -> applyIdleStanceSet(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -2358,6 +2399,59 @@ public final class LoginFlow {
         log.info("session={} GM equip_card={} parts={}", session.machine.id(), skinId, skinPartSummary(skin));
     }
 
+    /**
+     * equip_hair：GM「风物志头发」——仅收纯发型卡（只含 Hat 部件），
+     * 挂载前互斥卸下已挂的其他 Hat-only 卡（发型一次一顶），其余部件挂载不受影响。
+     */
+    private void applyEquipHair(Connection connection, LoginSession session, GmCommand command) {
+        Integer skinId = command.intParam("cardId");
+        if (skinId == null || skinId <= 0) {
+            command.fail("cardId 必须正整数");
+            return;
+        }
+        var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
+        var skin = catalog.byId(skinId);
+        if (skin == null) {
+            command.fail("风物志皮肤不存在: " + skinId + "（rule/card.ini 未命中）");
+            return;
+        }
+        if (!skin.hairOnly()) {
+            command.fail("卡牌 " + skinId + " 不是纯发型卡（含非 Hat 部件："
+                    + skinPartSummary(skin) + "），请用「风物志卡牌」区块装备");
+            return;
+        }
+        var state = sessionSkinState(session);
+        List<Integer> collected = new ArrayList<>(state == null ? List.of() : state.collected());
+        if (!collected.contains(skinId)) {
+            collected.add(skinId);
+            java.util.Collections.sort(collected);
+        }
+        List<Integer> mounted = new ArrayList<>(state == null ? List.of() : state.mounted());
+        int replaced = 0;
+        // 同部件互斥：摘掉已挂的其他 Hat-only 卡（自身重复挂载=刷新到末位）。
+        for (var it = mounted.iterator(); it.hasNext(); ) {
+            Integer other = it.next();
+            if (other.equals(skinId)) {
+                it.remove();
+                continue;
+            }
+            var otherSkin = catalog.byId(other);
+            if (otherSkin != null && otherSkin.hairOnly()) {
+                it.remove();
+                replaced++;
+            }
+        }
+        mounted.add(skinId);
+        saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
+        for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
+            connection.writeFrame(frame);
+        }
+        command.succeed("已装备发型 " + skinId + "（" + skinPartSummary(skin) + "）"
+                + (replaced > 0 ? "，替换了 " + replaced + " 个旧发型" : "")
+                + "，其余风物志挂载保持不变");
+        log.info("session={} GM equip_hair={} replaced={}", session.machine.id(), skinId, replaced);
+    }
+
     /** unequip_card：清空挂载（收集保留；ShowEquipType 回 0）。 */
     private void applyUnmountSkins(Connection connection, LoginSession session, GmCommand command) {
         var state = sessionSkinState(session);
@@ -2393,6 +2487,112 @@ public final class LoginFlow {
         command.succeed("已收录全部风物志皮肤 " + collected.size() + " 张（图鉴点亮）");
         log.info("session={} GM grant_all_cards={} mounted={}",
                 session.machine.id(), collected.size(), mounted.size());
+    }
+
+    /**
+     * mount_ride：GM「坐骑管理」——按道具 config 直接激活并骑乘（未拥有自动补
+     * NewRideRec 行，ValidTime=0 永久口径）；骑乘中再点同一坐骑 = 下马。面板承诺
+     * 「已激活的坐骑再次使用不会消耗道具」，GM 通道零道具消耗。
+     */
+    private void applyMountRide(Connection connection, LoginSession session, GmCommand command) {
+        String mountConfig = command.strParam("mountConfig");
+        var catalog = com.nineyin.server.game.avatar.mount.MountCatalog.loadDefault();
+        var mount = catalog.byConfig(mountConfig);
+        if (mount == null) {
+            command.fail("坐骑道具不存在或不可骑: " + mountConfig
+                    + "（需 tool_item.ini script=Mount 且 itemartstatic 有模型映射）");
+            return;
+        }
+        var state = sessionMountState(session);
+        var current = state == null ? null : state.byPack(state.currentPack());
+        if (session.riding && current != null && current.packId() == mount.packId()) {
+            // 再点同骑 = 下马（选中保留，骑乘键可再上）。
+            applyRideState(connection, session, current, false);
+            command.succeed("已从 " + mount.name() + " [" + mount.configId() + "] 上下马（拥有保留）");
+            log.info("session={} GM mount_ride dismount pack={}", session.machine.id(), mount.packId());
+            return;
+        }
+        state = (state == null ? com.nineyin.server.game.avatar.mount.MountStore.State.empty() : state)
+                .withOwned(mount.packId(), mount.configId())
+                .withSelected(mount.packId());
+        saveMountState(session, state);
+        applyRideState(connection, session, state.byPack(mount.packId()), true);
+        command.succeed("已骑乘 " + mount.name() + " [" + mount.configId() + "] 模型 "
+                + mount.model() + "（NewRideRec 包 " + mount.packId() + "；再点同骑下马）");
+        log.info("session={} GM mount_ride pack={} model={}",
+                session.machine.id(), mount.packId(), mount.model());
+    }
+
+    /**
+     * idle_stance_set：GM「待机站姿（持久化）」——空参 = 重推当前存档站姿
+     * （恢复当前站姿按钮）；动作名须命中 b_action_index.ini。存档
+     * data/待机站姿.json + role_idle_stance；下发通道 = 0x10 属性 PlayActionName
+     * （备用通道 custom on_body_change ntype=1，真机不生效时切换）。
+     */
+    private void applyIdleStanceSet(Connection connection, LoginSession session, GmCommand command) {
+        String raw = command.strParam("stanceAction");
+        String action = raw == null ? "" : raw.trim();
+        if (action.isEmpty()) {
+            // 恢复当前站姿：不改档，按存档重推（受击/挖矿/技能结束把引擎动作打断后的手动恢复口）。
+            reapplyIdleStance(connection, session);
+            command.succeed(session.idleStance == null
+                    ? "当前为默认站姿（无存档），无需恢复"
+                    : "已重推当前站姿 [" + session.idleStance + "]");
+            return;
+        }
+        var catalog = com.nineyin.server.game.avatar.stance.StanceCatalog.loadDefault();
+        if (!catalog.exists(action)) {
+            command.fail("站姿动作名不存在: " + action + "（b_action_index.ini "
+                    + catalog.size() + " 节未命中，注意大小写）");
+            return;
+        }
+        session.idleStance = action;
+        try {
+            idleStanceStore.save(session.selected.id(), action);
+        } catch (RuntimeException e) {
+            log.warn("session={} save idle stance: {}", session.machine.id(), e.getMessage());
+        }
+        pushIdleStance(connection, session);
+        command.succeed("待机站姿已切换为 [" + action + "] 并持久化（重登/过图/技能回站保持）");
+        log.info("session={} GM idle_stance_set={}", session.machine.id(), action);
+    }
+
+    /** 站姿单帧 0x10：PlayActionName=动作名（空串=回默认站姿）。 */
+    private void pushIdleStance(Connection connection, LoginSession session) {
+        List<com.nineyin.server.protocol.PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "PlayActionName", com.nineyin.server.protocol.PropertyValues.Value.ofString(
+                session.idleStance == null ? "" : session.idleStance));
+        connection.writeFrame(SceneMessages.objectProperties(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, 0, properties));
+        session.idleStanceLastPushMs = clock.instant().toEpochMilli();
+    }
+
+    /** 回站重推：仅在有存档站姿时发（受击/挖矿/技能结束后引擎动作被打断）。 */
+    private void reapplyIdleStance(Connection connection, LoginSession session) {
+        if (session.idleStance == null || session.player == null) {
+            return;
+        }
+        pushIdleStance(connection, session);
+    }
+
+    /**
+     * 站姿保持拍（1s ticker 内 4s 一拍）：仅闲时（LogicState=0，非打坐/战斗/
+     * 骑乘）重推。出招/坐姿面板不带 PlayActionName（186 瘦集），骑乘时引擎
+     * 挂坐骑动画——这些态不推，回闲后 4s 内自愈回所选站姿。
+     */
+    private void idleStanceTick(Connection connection, LoginSession session) {
+        if (session.idleStance == null || session.player == null) {
+            return;
+        }
+        long now = clock.instant().toEpochMilli();
+        if (now - session.idleStanceLastPushMs < 4000) {
+            return;
+        }
+        if (session.player.effectiveLogicState(session.player.actorState()) != 0 || session.riding) {
+            return;
+        }
+        session.idleStanceLastPushMs = now;
+        pushIdleStance(connection, session);
     }
 
     /** 皮肤部件摘要（回执文案用，如 "Weapon blade_card_001"）。 */
@@ -4112,6 +4312,15 @@ public final class LoginFlow {
                 connection.writeFrame(frame);
             }
         }
+        if (session.player != null && !session.mountsPushed) {
+            // 坐骑：NewRideRec 拥有行 + NewRideID 当前选中（无存档零帧；
+            // Mount 属性不跨登录保持——重登即步行，骑乘键/骑术技能再上马）。
+            pushSavedMounts(connection, session);
+        }
+        if (session.player != null && session.idleStance != null && session.idleStanceLastPushMs == 0) {
+            // 待机站姿：ClientReady 首推（此后 1s ticker 的 4s 保持拍自愈）。
+            reapplyIdleStance(connection, session);
+        }
         if (session.player != null && !session.switchSyncPushed) {
             // 参考服 pushSwitchSync：登录收尾一次性 0x1E 414("sync", id×203) 批量开
             // 客户端 SwitchManager。2919 = 装备栏"新旧界面切换"门槛（真机 2026-11-05
@@ -4170,6 +4379,9 @@ public final class LoginFlow {
         session.meridianGranted = false;
         session.skinsPushed = false;
         session.fashionPushed = false;
+        session.mountsPushed = false;
+        // 站姿属性随玩家对象 0x0C 重建丢失：复位首推门（grantOnce 内重推）。
+        session.idleStanceLastPushMs = 0;
         session.keybindPushed = false;
         // 快捷栏记录行同属玩家对象挂接行，ExitScene 后必须按内存快照整表重放。
         session.shortcutRowsSent = false;
@@ -4324,6 +4536,11 @@ public final class LoginFlow {
             case 61 -> handleShowEquipType(connection, session, custom);
             case 19 -> handleFashionSuit(connection, session, custom);
             case 240 -> handleSitcross(connection, session, custom);
+            // 坐骑：243=custom_ride(int) 引擎骑乘键（1=骑当前选中坐骑 / 0=下马），
+            // 266=custom_new_ride(sub,...)（ride_util 子令 1=USE_ITEM / 2=SELECT_RIDE；
+            // 参数形状引擎侧不可见，tolerant 解析 + 未识别形状落 INFO 钓真机）。
+            case 243 -> handleRideToggle(connection, session, custom);
+            case 266 -> handleNewRide(connection, session, custom);
             case 217, 218 ->
                     log.info("session={} unimplemented custom msgId={} via {} (phase-4 backlog)",
                             session.machine.id(), messageId, route);
@@ -4424,6 +4641,70 @@ public final class LoginFlow {
             throw new IllegalStateException("arg " + position + " is not int32");
         }
         return (int) value.int32;
+    }
+
+    /** 243 custom_ride(int)：引擎骑乘键（>0=骑当前选中坐骑 / 0=下马）。 */
+    private void handleRideToggle(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        int flag = tolerantInt(custom, 1);
+        var state = sessionMountState(session);
+        var current = state == null ? null : state.byPack(state.currentPack());
+        if (flag == 0) {
+            if (!session.riding) {
+                log.info("session={} ride toggle 0 but not riding", session.machine.id());
+                return;
+            }
+            applyRideState(connection, session, current, false);
+            log.info("session={} dismounted via ride key", session.machine.id());
+            return;
+        }
+        if (current == null) {
+            log.info("session={} ride toggle {} but no selected mount", session.machine.id(), flag);
+            return;
+        }
+        applyRideState(connection, session, current, true);
+        log.info("session={} mounted pack {} via ride key", session.machine.id(), current.packId());
+    }
+
+    /**
+     * 266 custom_new_ride(sub,...)：sub=1 USE_ITEM（使用坐骑道具，参数形状未知——
+     * 先按 config 串 / 包 id int tolerant 命中）/ sub=2 SELECT_RIDE（选中并骑乘）。
+     * 使用坐骑道具不消耗（GM 口径：已激活的坐骑再次使用不消耗道具）。
+     */
+    private void handleNewRide(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        int sub = tolerantInt(custom, 1);
+        var catalog = com.nineyin.server.game.avatar.mount.MountCatalog.loadDefault();
+        com.nineyin.server.game.avatar.mount.MountCatalog.Mount mount = null;
+        if (custom.values.size() > 2) {
+            CustomC2S.Value arg = custom.values.get(2);
+            if (arg.tag == 6 || arg.tag == 7) {
+                mount = catalog.byConfig(arg.text);
+            } else if (arg.tag == 2) {
+                mount = catalog.byPack((int) arg.int32);
+            }
+        }
+        if (mount == null) {
+            log.info("session={} new_ride sub={} arg not resolved to a mount (values={}/{}), shape probe",
+                    session.machine.id(), sub,
+                    custom.values.size() > 2 ? custom.values.get(2).tag : -1,
+                    custom.values.size() > 2 ? custom.values.get(2).textOrNull() : "");
+            return;
+        }
+        switch (sub) {
+            case 1, 2 -> {
+                // USE_ITEM / SELECT_RIDE：拥有 + 骑乘（SELECT_RIDE 官方语义为切换当前坐骑）。
+                var state = (sessionMountState(session) == null
+                        ? com.nineyin.server.game.avatar.mount.MountStore.State.empty()
+                        : sessionMountState(session))
+                        .withOwned(mount.packId(), mount.configId())
+                        .withSelected(mount.packId());
+                saveMountState(session, state);
+                applyRideState(connection, session, state.byPack(mount.packId()), true);
+                log.info("session={} new_ride sub={} mounted {} [{}]",
+                        session.machine.id(), sub, mount.name(), mount.configId());
+            }
+            default -> log.info("session={} new_ride unhandled sub={} mount={}",
+                    session.machine.id(), sub, mount.configId());
+        }
     }
 
     /** 快捷栏 DB 持久化（inventoryStore 缺席或失败仅告警——内存态/帧已生效）。 */
@@ -5709,6 +5990,107 @@ public final class LoginFlow {
         log.info("session={} pushed saved skins collected={} mounted={}",
                 session.machine.id(), state.collected().size(), state.mounted().size());
     }
+
+    /** ClientReady 推送存档的坐骑状态（无存档零帧；NewRideRec 行 + NewRideID 选中项）。 */
+    void pushSavedMounts(Connection connection, LoginSession session) {
+        session.mountsPushed = true;
+        if (session.selected == null) {
+            return;
+        }
+        if (session.mountState == null) {
+            session.mountState = mountStore.load(session.selected.id());
+        }
+        var state = session.mountState;
+        if (state == null || state.mounts().isEmpty()) {
+            return;
+        }
+        for (byte[] frame : mountRefreshFrames(session, state.mounts())) {
+            connection.writeFrame(frame);
+        }
+        // 选中包单独 0x10（NewRideID；不在马上 Mount 恒空串——重登步行口径）。
+        connection.writeFrame(com.nineyin.server.game.avatar.mount.MountMessages.rideStateFrame(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                "", state.currentPack(), mountRiderTypeOf(state.currentPack())));
+        log.info("session={} pushed saved mounts owned={} current={}",
+                session.machine.id(), state.mounts().size(), state.currentPack());
+    }
+
+    /** 坐骑整刷帧组：清旧 NewRideRec 行 → 重推行（Selected 位随行）。 */
+    private List<byte[]> mountRefreshFrames(LoginSession session,
+                                            List<com.nineyin.server.game.avatar.mount.MountStore.Entry> mounts) {
+        int objectId = SceneMessages.PLAYER_OBJECT_ID;
+        int ownerId = SceneMessages.PLAYER_OWNER_ID;
+        List<byte[]> frames = new ArrayList<>();
+        frames.addAll(com.nineyin.server.game.avatar.mount.MountMessages.ownedClearFrames(
+                objectId, ownerId, session.mountRows));
+        frames.addAll(com.nineyin.server.game.avatar.mount.MountMessages.ownedFrames(
+                objectId, ownerId, mounts));
+        session.mountRows = mounts.size();
+        return frames;
+    }
+
+    /** 坐骑包 → CurRiderType（MountType；未知包 0）。 */
+    private int mountRiderTypeOf(int packId) {
+        if (packId <= 0) {
+            return 0;
+        }
+        var mount = com.nineyin.server.game.avatar.mount.MountCatalog.loadDefault().byPack(packId);
+        return mount == null ? 0 : mount.mountType();
+    }
+
+    /** 会话坐骑状态（首访问装载存档；无存档返回 null）。 */
+    private com.nineyin.server.game.avatar.mount.MountStore.State sessionMountState(LoginSession session) {
+        if (session.mountState != null || session.selected == null) {
+            return session.mountState;
+        }
+        try {
+            session.mountState = mountStore.load(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} load mount state: {}", session.machine.id(), e.getMessage());
+        }
+        return session.mountState;
+    }
+
+    private void saveMountState(LoginSession session,
+                                com.nineyin.server.game.avatar.mount.MountStore.State state) {
+        session.mountState = state;
+        try {
+            mountStore.save(session.selected.id(), state);
+        } catch (RuntimeException e) {
+            log.warn("session={} save mount state: {}", session.machine.id(), e.getMessage());
+        }
+    }
+
+    /**
+     * 上马/下马核心（GM mount_ride 与 C2S 骑乘链共用）：owned 增量行刷新 +
+     * 骑乘态 0x10（Mount 模型串/NewRideID/CurRiderType）+ 面板域 Mount 字段同步
+     * （防全量 0x10 用空串清骑乘态）。
+     */
+    private void applyRideState(Connection connection, LoginSession session,
+                                com.nineyin.server.game.avatar.mount.MountStore.Entry entry,
+                                boolean riding) {
+        var state = sessionMountState(session);
+        List<com.nineyin.server.game.avatar.mount.MountStore.Entry> mounts =
+                state == null ? List.of() : state.mounts();
+        for (byte[] frame : mountRefreshFrames(session, mounts)) {
+            connection.writeFrame(frame);
+        }
+        int packId = entry == null ? 0 : entry.packId();
+        String model = "";
+        if (riding && entry != null) {
+            String resolved = com.nineyin.server.game.avatar.mount.MountCatalog.loadDefault()
+                    .modelOf(entry.packId());
+            model = resolved == null ? "" : resolved;
+        }
+        connection.writeFrame(com.nineyin.server.game.avatar.mount.MountMessages.rideStateFrame(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                model, riding ? packId : 0, riding ? mountRiderTypeOf(packId) : 0));
+        session.riding = riding;
+        if (session.player != null) {
+            session.player.panel().mount = model;
+        }
+    }
+
 
     /** 风物志皮肤整刷帧组：清旧收集位图行 → 重推位图（显式行号）→ 挂载行 → 显示开关。 */
     private List<byte[]> skinRefreshFrames(LoginSession session,

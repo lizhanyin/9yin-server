@@ -440,12 +440,56 @@ public final class GmCatalog {
                     if (rows == null) {
                         rows = loadIdentitySuitsFromFile();
                     }
-                    fashionCatalog = groupIdentitySuits(rows);
+                    fashionCatalog = buildFashionCatalog(rows);
                 }
                 return fashionCatalog;
             }
         }
         return f;
+    }
+
+    /**
+     * 时装目录：EquipType 分件分类（equipment.ini/tool_item.ini——时装帽子/衣服/鞋子
+     * 分件与 FashionCoat 时装套装）在前，身份装套装（数据表 548 套，按适用性别）在后。
+     */
+    private JSONArray buildFashionCatalog(JSONArray suitRows) {
+        JSONArray out = new JSONArray();
+        appendEquipTypeCategory(out, "fashion-coat", "时装衣（FashionCoat 套装）",
+                java.util.Set.of("fashioncoat", "newfashioncoat"));
+        appendEquipTypeCategory(out, "fashion-hat", "时装帽子（分件）",
+                java.util.Set.of("fashionhat"));
+        appendEquipTypeCategory(out, "fashion-shoes", "时装鞋子（分件）",
+                java.util.Set.of("fashionshoes"));
+        out.addAll(groupIdentitySuits(suitRows));
+        return out;
+    }
+
+    /** 按EquipType 抽装备目录成分类（名称空行跳过；configId 原序保留）。 */
+    private void appendEquipTypeCategory(JSONArray out, String key, String label,
+                                         java.util.Set<String> equipTypes) {
+        JSONArray items = new JSONArray();
+        for (ItemRow row : itemRows()) {
+            if (!row.wearable() || row.equipType() == null
+                    || !equipTypes.contains(row.equipType().toLowerCase(java.util.Locale.ROOT))) {
+                continue;
+            }
+            String name = orEmpty(row.name());
+            if (name.isEmpty()) {
+                continue;
+            }
+            JSONObject item = new JSONObject();
+            item.put("name", name);
+            item.put("configId", row.configId());
+            items.add(item);
+        }
+        if (items.isEmpty()) {
+            return;
+        }
+        JSONObject cat = new JSONObject();
+        cat.put("key", key);
+        cat.put("label", label);
+        cat.put("items", items);
+        out.add(cat);
     }
 
     /** data/身份装数据.json → [{configId,name,needSex}]（与 DB 行形状对齐）。 */

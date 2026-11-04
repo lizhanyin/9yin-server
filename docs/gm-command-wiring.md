@@ -248,11 +248,13 @@ pay=2/4（官银/银票）本服未建档，暂免扣只发奖。团练疲劳 = 
 faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100/80000 反算剩余精力%。
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
-`learn_all_neigong, learn_all_taolu, forget_all_taolu, grant_all_cards, unequip_card,
+`learn_all_neigong, learn_all_taolu, forget_all_taolu,
 set_faction, set_jingmai_tier,
-worldboss_*, bot_*, equip_card, ninjiuzhi_*, set_pk_mode,
+worldboss_*, bot_*, ninjiuzhi_*, set_pk_mode,
 set_weather, story(剧情族剩余), custom_probe, keybind` 等。
-（add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线。）
+（add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线；
+equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_set
+已于 2026-11-05 随「外观与坐骑」六区块补全接线，详见 docs/坐骑与待机站姿.md。）
 
 五维属性一动作（2026-11-04，面板「五维属性」区块）：
 

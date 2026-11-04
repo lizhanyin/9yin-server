@@ -736,10 +736,10 @@
           data/待机站姿.json：重登、过图、受击/挖矿/技能结束后的回站都会保持所选站姿。动作名来自客户端
           index.ini 节名。
         </p>
-        <button onclick="story('idle_stance_stand')">默认站姿 [stand]</button><button
-          onclick="story('idle_stance_khbd')">
-          葵花站姿 [khbd_stand_01]</button><button onclick="story('idle_stance_tj')">无根站姿
-          [TJstand]</button><button onclick="story('action_state_stop')">恢复当前站姿</button><br />
+        <button onclick="setIdleStancePreset('stand')">默认站姿 [stand]</button><button
+          onclick="setIdleStancePreset('khbd_stand_01')">
+          葵花站姿 [khbd_stand_01]</button><button onclick="setIdleStancePreset('TJstand')">无根站姿
+          [TJstand]</button><button onclick="setIdleStancePreset('')">恢复当前站姿</button><br />
         <label>全部站姿
           <select id="idle-stance-list" size="8" style="min-width: 360px; height: 180px">
             <option>读取站姿列表中……</option>

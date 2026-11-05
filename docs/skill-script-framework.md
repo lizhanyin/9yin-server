@@ -147,9 +147,25 @@ GM 面板 `reload_scripts`（GmRemote 白名单 + applyGmCommand）：重建 Lua
 **ctx**（只读，Java 预填；`rand.r_proc` Java 预掷同 formula.lua 约定，脚本不掷骰）：
 `book_level/book_max_level/story_stage/now/damage/incoming/parried/crit/since_last_ms` +
 `self{hp,max_hp,mp,max_mp,attack}` + `target{oid,hp,max_hp}` + `attacker{oid}` +
-`state`（上一次有效触发返回的扁平表，Java 侧 PlayerActor 持有）+ `rand{r_proc}`。
+`state`（上一次有效触发返回的扁平表，Java 侧 PlayerActor 持有；**无 state 时不设该键，
+脚本侧须 `ctx.state or {}` 兜底**）+ `rand{r_proc}`。
 档位门（`tier_of`：cap=3+story_stage-1）随 `story_stage` 开档——九阴志系统落地前取
 `-Dnineyin.neigong.storyStage`（默认 1）。
+
+**rand 每调用仅 1 枚掷值（`r_proc`），数量按契约写死**（formula=2 `r_miss/r_crit`、
+item=2 `r_drop/r_proc`、neigong=1）。Lua 侧无回掷通道：不暴露 Java RNG 桥，`math.random`
+虽随 `openLibraries` 可用但脚本层禁用（会破坏可测试/与 Java 兜底逐位一致/无钩子零扰动
+三条契约，现有 155 本脚本零使用）；res1 语料 179 本逐本核对亦无一枚以上掷值需求。
+**效果需要多枚随机数时的两条路线（2026-11-05 记录，待定——出现真实需求前按 A 兜底）**：
+
+- **路线 A（契约内，不改 Java）**：①互斥分支区间法——互斥结果一枚够用
+  （`r<0.10`→效果甲、`r<0.25`→效果乙）；②派生第二掷
+  `r2 = (r*9301+49297) % 233280 / 233280`（同 `r_proc` 必同结果，确定性/可测试不破）；
+  ③magnitude 不吃随机——从 `book_level/damage/since_last_ms/state` 确定性算（现行脚本的普遍做法）。
+- **路线 B（扩契约，改 Java）**：`NeiGongCtx` 加字段 + `buildNeigongCtxTable` 多填 +
+  分发器多掷。硬约束：**每个 hook 的消费数量必须固定**（不得按脚本行为动态变，否则共享
+  RNG 序列被扰动、"无钩子书零消费"失效、parity 测试无从写），照 formula 固定数组模式
+  （如 on_attack 恒 2 枚）。
 
 **返回指令白名单**（非法条目 WARN 丢弃，不打断战斗链）：
 `extra_damage{amount,kind}`（并入当次落血值与飘字/真气；kind 现管线统一外功仅透传）、

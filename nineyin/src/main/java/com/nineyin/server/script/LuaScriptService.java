@@ -87,6 +87,7 @@ public final class LuaScriptService {
      * （scripts/neigong/&lt;buffId&gt;.lua；rand.r_proc Java 预掷同 formula.lua 约定）。
      * self/target/attacker 为嵌套表：self={hp,max_hp,mp,max_mp,attack}、
      * target/attacker={oid,hp,max_hp}（语料实际使用字段集）。
+     * state 为空（首次触发尚无回喂）时 ctx 不设该键——Lua 读 nil，脚本须 ctx.state or {} 兜底。
      */
     public record NeiGongCtx(int bookLevel, int bookMaxLevel, int storyStage, long nowMs,
                              double rProc, Map<String, Object> state,

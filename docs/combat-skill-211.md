@@ -263,7 +263,7 @@ Java 旧实现串在前已同批修正）+ `msg24[玩家,61,目标位置,2,'qg_f
 
 | 条件 | 判定值 |
 |---|---|
-| CanRush（含无 RushRange） | **TSP2（技能真实射程）——八轮统一口径，RushRange/15m/60m 放宽全废** |
+| CanRush（含无 RushRange） | **TSP2（技能真实射程）受理；TSP2 < d ≤ 15m 暂存带；>15m 拒（九轮三段式）** |
 | 否则 TargetShapePara2>0 | **TSP2（技能真实射程）** |
 | 全无值 | max(HitShape 半径, 近战身位 8m) 兜底 |
 
@@ -320,10 +320,15 @@ capture-players/out2 时间线（119.3.204.0 官方 IP，17k+ 帧）钉死真协
   msg19 v18/v19（官服 603/725、75/25 语义未定）暂 0。
 - **七轮（真机反馈「远距离也能触发」）**：超受理上限一律**静默拒**（零帧）；参考服
   暂存疾跑链**默认关**（`-Dnineyin.rush.stage=true` 显式回退）；「锁定族 60m 兜底」废。
-- **八轮（2026-11-06 真机反馈「还是没控制住释放距离」定稿）**：**全部技能（含冲锋族）
-  受理=TSP2 技能真实射程**（myjf02/03=6、yqq02=4、cqgf01=3；实测日志 myjf03 在 13m
-  仍放行=RushRange=15 放宽所致）——五~七轮的 max(RushRange,15m 回落) 一并废除；
-  冲刺只负责「射程内↔绑定距离」最后一小段位移，不再是超射程受理的借口。
+- **八轮**：全部技能（含冲锋族）受理=TSP2 技能真实射程（myjf02/03=6、yqq02=4、
+  cqgf01=3）——max(RushRange,15m)/60m 放宽全废。
+- **九轮（2026-11-06 用户拍板三段式终版）**：①距目标 ≤TSP2 → 立即受理（c61 冲刺+
+  msg19）；②TSP2 < d ≤ **15m 暂存带** → 暂存疾跑（msg25+msg24 c61 档2 去目标位），
+  msg15 上报**进入 TSP2 阈值 → 疾跑转 c61 冲刺**（档1+LockGRushAction+目标身前
+  BindDistance 终点+location 锚，issueStageRushDash，每暂存一次），**到目标面前
+  （到达半径 3m，5→3）才落地释放**（337+msg26+重组 211→msg19+伤害）；③>15m 静默拒。
+  PlayerActor.rushDashIssued 标记防重复转换；暂存带恒为接近语义（不用 LockSrcDist
+  背向脱离）。 可关暂存带（超射程一律拒）。
 - **测试**：RushStageFlowTest=rushInRangeDashesOutOfRangeRejected（12m 受理 c61+msg19、
   20m 静默拒）+ 暂存链两用例显式 setProperty(true)（回退链回归）；
   GroundChargeAndRageTest.msg19Target；SkillCastWiringTest sfgp01 贴身（0m 无 c61）

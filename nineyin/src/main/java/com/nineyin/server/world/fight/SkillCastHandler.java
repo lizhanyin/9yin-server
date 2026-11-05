@@ -75,12 +75,14 @@ public final class SkillCastHandler {
     /**
      * 冲锋到达半径（米，2026-11-05 用户拍板时序「到达限制阈值时下发冲锋标记、到达
      * 目标位置后才正式触发特效伤害」）：按下时距目标超过本半径 → 只发冲锋标记
-     * （msg25 暂存+msg24 c61 疾跑去目标位，不结算）；msg15/212 上报进入本半径
-     * （=到达目标身位）才落地续招正式出招。取值依据：61653 实证客户端疾跑终点
-     * =目标位、到过 1m 内；近战身位 8m 偏远（8m 出伤仍是「阈值处释放」），碰撞
-     * 停距 ~1-3m，5m 兼大体型 NPC 停距余量。
+     * （msg25 暂存+msg24 c61 疾跑去目标位，不结算）；msg15/212 上报进入技能射程
+     * （TSP2）→ 转 c61 冲刺（档1+LockGRushAction，九轮）；进入本半径（=到达目标
+     * 面前）才落地释放。九轮 5m→3m：冲刺终点≈BindDistance（1.5-2m）+大体型 NPC
+     * 停距余量，「到达面前再放」。
      */
-    public static final float RUSH_ARRIVAL_RADIUS_METERS = 5.0f;
+    public static final float RUSH_ARRIVAL_RADIUS_METERS = 3.0f;
+    /** 九轮三段式暂存带上限：TSP2 < 距离 ≤ 此值 → 暂存疾跑；超过 → 静默拒。 */
+    public static final float RUSH_STAGE_MAX_METERS = 15.0f;
     /** 战斗闲时退出扑空后的重查周期（毫秒）。 */
     public static final long COMBAT_IDLE_RETRY_MS = 2_000;
 
@@ -203,18 +205,17 @@ public final class SkillCastHandler {
             if (targetInfo != null) {
                 double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
                         + square(z - targetInfo.z()));
-                // 冲锋时序（2026-11-06 七轮，用户拍板「15m 内触发冲刺、远距离不触发」）：
-                // 锁定+冲锋族受理上限=max(RushRange,15m 回落)。①射程内按下 → 立即受理：
-                // c61 冲刺指令（LockGRushAction+终点）+location 终点锚+msg19 锁定帧
-                // （六轮，out2 官方协议，见 emitLockCast）。②超受理上限 → **静默拒**
-                // （与非冲锋技同语义，客户端面板本地变红）——暂存疾跑链（参考服方言）
-                // 真机体验=「远距离也能触发整套出招」，默认关闭，仅
-                // -Dnineyin.rush.stage=true 显式开启回退。旧「锁定族 60m 兜底」同为
-                // 猜测方言（官服超距行为无抓包），一并废除。
+                // 冲锋三段式（2026-11-06 九轮，用户拍板终版）：
+                // ①距目标 ≤ TSP2（技能真实射程）→ 立即受理：c61 冲刺（LockGRushAction+
+                // 终点）+location 终点锚+msg19 锁定帧（六轮 out2 官方协议，emitLockCast）。
+                // ②TSP2 < 距离 ≤ 15m（暂存带）→ 暂存疾跑（msg25+msg24 c61 档2 去目标位），
+                // msg15 上报进入 TSP2 阈值 → 转 c61 冲刺（档1+冲刺动画），到目标面前
+                // （≤3m）才落地释放（tryRushArrival）。③>15m → 静默拒（零帧）。
                 boolean stagedRushFamily = skill.canRush()
                         && "skilllock".equalsIgnoreCase(skill.script())
                         && rushStageEnabled();
-                if (stagedRushFamily && distance > castRange) {
+                if (stagedRushFamily && distance > castRange
+                        && distance <= RUSH_STAGE_MAX_METERS) {
                     stageRushCast(context, skill, targetInfo, distance);
                     return;
                 }
@@ -392,21 +393,21 @@ public final class SkillCastHandler {
     }
 
     /**
-     * 冲锋暂存链开关（**默认关**，2026-11-06 七轮用户拍板「15m 内触发冲刺、远距离
-     * 不触发」——超距一律静默拒；参考服 61653 的 msg25+msg24 疾跑链真机体验=远距离
-     * 也能触发整套出招，已废）。`-Dnineyin.rush.stage=true` 显式开启回退旧链。
+     * 冲锋暂存链开关（**默认开**，九轮三段式：TSP2 < 距离 ≤ 15m 暂存疾跑，进射程转
+     * c61 冲刺，到目标面前释放；>15m 静默拒）。`-Dnineyin.rush.stage=false` 关掉
+     * 暂存带（超射程一律静默拒）。
      */
     static boolean rushStageEnabled() {
-        return Boolean.parseBoolean(System.getProperty("nineyin.rush.stage", "false"));
+        return Boolean.parseBoolean(System.getProperty("nineyin.rush.stage", "true"));
     }
 
     /**
-     * 冲锋暂存（IDA stagePreCast 逐帧对齐 + 参考服 61653 抓包链路：msg25[30000,
-     * skill_pause]+msg24[玩家,61,目标位置,2,qg_fastruning_s_2h_01]；五轮起只对
-     * 超 max(RushRange,15m) 受理上限的真超距按下触发——射程内直接受理走客户端
-     * 原生冲刺）：CurSkillID 帧 + msg25 暂存 + msg24 c1=61 疾跑（目的地=目标位置）
-     * + 暂存出招 30s。RushTarget/PendingSkill 两属性名不在 0x09 协商表（exe 编码
-     * 失败静默跳过）——同样不发。CD/资源在落地续招时才结。
+     * 冲锋暂存（九轮：TSP2 < 距离 ≤ 15m 暂存带按下时触发；IDA stagePreCast 逐帧
+     * 对齐 + 参考服 61653 抓包链路）：CurSkillID 帧 + msg25 暂存 + msg24 c1=61
+     * 档2 疾跑（目的地=目标位置）+ 暂存出招 30s。msg15 上报进入 TSP2 → 转 c61
+     * 档1 冲刺（issueStageRushDash），到目标面前（≤3m）落地释放。
+     * RushTarget/PendingSkill 两属性名不在 0x09 协商表（exe 编码失败静默跳过）。
+     * CD/资源在落地释放时才结。
      */
     private static void stageRushCast(CastContext context, CombatSkill skill,
                                       SceneLifecycle.CombatNpcInfo target, double distance) {
@@ -493,12 +494,62 @@ public final class SkillCastHandler {
         }
         double distance = Math.sqrt(square(x - target.x()) + square(y - target.y())
                 + square(z - target.z()));
+        // 九轮三段式：进入技能射程（TSP2）阈值 → 疾跑转 c61 冲刺（档1+LockGRushAction+
+        // 目标身前终点+location 锚，每暂存只转一次）；到目标面前（≤到达半径 3m）才释放。
+        if (!player.rushDashIssued() && distance > RUSH_ARRIVAL_RADIUS_METERS) {
+            CombatSkill skill = CombatSkillCatalog.load().definition(pending.skillId(),
+                    Math.max(context.learnedSkills().getOrDefault(pending.skillId(), 1), 1));
+            CombatSkillCatalog.SkillRowData row = skill != null
+                    ? CombatSkillCatalog.load().skillRowData(skill.id(), skill.level()) : null;
+            float castRange = row != null && row.targetShapePara2() > 0
+                    ? row.targetShapePara2()
+                    : Math.max(SELECTED_RANGE_METERS, RUSH_RANGE_FALLBACK_METERS);
+            if (skill != null && skill.canRush() && distance <= castRange) {
+                issueStageRushDash(context, skill, target, x, y, z);
+                player.markRushDashIssued();
+            }
+            return;
+        }
         if (distance > RUSH_ARRIVAL_RADIUS_METERS) {
             return;
         }
         LOG.info("rush arrival at target skill id=" + pending.skillId() + " dist="
                 + (int) distance + "m <= " + (int) RUSH_ARRIVAL_RADIUS_METERS + "m");
         resumePendingCastAt(context, x, y, z, orient, "msg15-arrival");
+    }
+
+    /**
+     * 暂存疾跑 → 冲刺转换（九轮）：msg24 c1=61 档1+skill_lock_data 的 LockGRushAction
+     * 动画名，终点=目标朝玩家方向 BindDistance 处（暂存带语义恒为接近，不用
+     * LockSrcDist 背向脱离），随后 0x1F 终点锚——客户端疾跑动画切换为冲刺，把最后
+     * 一段冲完；释放仍等到达半径（≤3m）由 msg15/212 触发。
+     */
+    private static void issueStageRushDash(CastContext context, CombatSkill skill,
+                                           SceneLifecycle.CombatNpcInfo target,
+                                           float x, float y, float z) {
+        CombatSkillCatalog.LockData lock = CombatSkillCatalog.load().lockData(skill.id());
+        float bind = lock != null && lock.bindDistance() > 0 ? lock.bindDistance() : 1.5f;
+        float dx = x - target.x();
+        float dz = z - target.z();
+        double horiz = Math.sqrt((double) dx * dx + (double) dz * dz);
+        if (horiz < 0.01) {
+            dx = 1f;
+            horiz = 1;
+        }
+        float endX = (float) target.x() + (float) (dx / horiz) * bind;
+        float endZ = (float) target.z() + (float) (dz / horiz) * bind;
+        float endY = (float) target.y();
+        String anim = lock != null && !lock.groundRushAction().isEmpty()
+                ? lock.groundRushAction() : "qg_fastrun_0h_01";
+        Connection connection = context.connection();
+        connection.writeFrame(FightMessages.dashRushFrame(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                endX, endY, endZ, 1, anim));
+        connection.writeFrame(SceneMessages.serverLocation(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                new com.nineyin.server.db.role.Roles.Position(endX, endY, endZ, 0f)));
+        LOG.info("stage rush dash convert skill id=" + skill.id() + " dest=("
+                + (int) endX + "," + (int) endY + "," + (int) endZ + ") anim=" + anim);
     }
 
     /**

@@ -219,12 +219,11 @@ class RushStageFlowTest {
     }
 
     /**
-     * 默认语义（八轮：按技能真实射程 TSP2 控制）：射程内（3m ≤ yqq02 TSP2=4）立即
-     * 受理——0x1F+337 恒原地 + msg24 c61 冲刺指令 + location 终点锚 + msg19 锁定帧；
-     * 超射程（8m > TSP2=4，虽 < RushRange=15）静默拒（零帧）——RushRange 不再放宽受理。
+     * 九轮三段式（用户拍板终版）：≤TSP2（yqq02=4）立即受理（c61 冲刺+msg19）；
+     * TSP2 < 距离 ≤ 15m 暂存疾跑（msg25+c61 档2）；>15m 静默拒（零帧）。
      */
     @Test
-    void rushInRangeDashesOutOfRangeRejected() {
+    void rushThreeBandRangeModel() {
         Assumptions.assumeTrue(
                 java.nio.file.Files.isDirectory(PROD_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "生产 share/skill 资源不可用，跳过冲锋链");
@@ -264,11 +263,21 @@ class RushStageFlowTest {
         assertEquals(117f, vals.get(0), 0.01f, "337 x=出招原地（非终点）");
         assertEquals(100f, vals.get(2), 0.01f, "337 z=出招原地（非终点）");
 
-        // 8m（超 TSP2=4，虽 < RushRange=15）：静默拒（零帧）——RushRange 不放宽受理
+        // 8m（TSP2=4 < d ≤ 15）：暂存疾跑（msg25+c61 档2，进射程转冲刺见 msg15 用例）
+        Harness mid = new Harness();
+        assertTrue(mid.fight.selectTarget(mid.world, 2, 1), "combat NPC selectable");
+        mid.cast("CS_jh_yqq02", 112f, 100f);
+        List<byte[]> stagedBand = mid.drain();
+        String midSeq = describe(stagedBand);
+        assertTrue(midSeq.contains("m25"), "暂存带发 skill_pause: " + midSeq);
+        assertTrue(hasC61Dash(stagedBand), "暂存带发 c61 疾跑（档2）: " + midSeq);
+        assertTrue(mid.player.rushInFlight(), "暂存标记 rush in flight");
+
+        // 20m（> 15m 暂存带）：静默拒（零帧）
         Harness far = new Harness();
         assertTrue(far.fight.selectTarget(far.world, 2, 1), "combat NPC selectable");
-        far.cast("CS_jh_yqq02", 112f, 100f);
-        assertNull(far.channel.readOutbound(), "超技能射程静默拒（零帧）");
+        far.cast("CS_jh_yqq02", 100f, 100f);
+        assertNull(far.channel.readOutbound(), "超 15m 暂存带静默拒（零帧）");
     }
 
     /** 参考服 exe 复刻（默认开；显式 setProperty 保持自包含）：暂存 + 落地 212 续招。 */
@@ -311,38 +320,43 @@ class RushStageFlowTest {
         Harness harness = new Harness();
         assertTrue(harness.fight.selectTarget(harness.world, 2, 1), "combat NPC selectable");
 
-        // 20m 外按下（RushRange=15）→ 暂存
-        harness.cast("CS_jh_yqq02", 100f, 100f);
+        // 8m（暂存带）按下 → 暂存疾跑
+        harness.cast("CS_jh_yqq02", 112f, 100f);
         List<byte[]> staged = harness.drain();
         assertTrue(describe(staged).contains("m25"), "暂存必发 skill_pause: " + describe(staged));
         assertTrue(harness.player.rushInFlight(), "rush in flight");
 
-        // 疾跑过程 msg15 逐帧上报：距 NPC 16m / 10m（虽已进入 RushRange=15 阈值）
-        // → 仍不续招——「到达阈值就释放」已废，标记阶段只跑不结算
-        SkillCastHandler.tryRushArrival(harness.context(), 104f, 0f, 100f, 1.0f);
-        assertFalse(describe(harness.drain()).contains("m20"), "距 16m 不续招");
-        SkillCastHandler.tryRushArrival(harness.context(), 110f, 0f, 100f, 1.0f);
-        List<byte[]> mid = harness.drain();
-        assertFalse(describe(mid).contains("m20"), "距 10m（阈值内）仍不续招——伤害不到目标身位不发: " + describe(mid));
-        assertTrue(harness.player.rushInFlight(), "标记阶段持续（rush in flight）");
+        // msg15 上报 6m（> TSP2=4）：仍在疾跑带，不转冲刺不释放
+        SkillCastHandler.tryRushArrival(harness.context(), 114f, 0f, 100f, 1.0f);
+        List<byte[]> far1 = harness.drain();
+        assertFalse(describe(far1).contains("m19"), "距 6m（>TSP2）不释放");
+        assertFalse(harness.player.rushDashIssued(), "未进射程不转冲刺");
 
-        // msg15 上报到达目标身位（距 NPC 4m ≤ 到达半径 5m）→ 服务端主动落地续招（无 212）
-        SkillCastHandler.tryRushArrival(harness.context(), 116f, 0f, 100f, 1.0f);
+        // msg15 上报 3.5m（≤ TSP2=4，> 到达半径 3m）→ 转 c61 冲刺（档1+LockGRushAction）
+        SkillCastHandler.tryRushArrival(harness.context(), 116.5f, 0f, 100f, 1.0f);
+        List<byte[]> dash = harness.drain();
+        String dashSeq = describe(dash);
+        assertTrue(hasC61Dash(dash), "进射程转 c61 冲刺指令: " + dashSeq);
+        assertTrue(harness.player.rushDashIssued(), "冲刺转换标记");
+        assertFalse(dashSeq.contains("m19"), "冲刺途中未到面前不释放");
+        assertTrue(harness.player.rushInFlight(), "暂存保持（未到面前）");
+
+        // msg15 上报 2m（≤ 到达半径 3m=目标面前）→ 落地释放（337+msg26+msg19）
+        SkillCastHandler.tryRushArrival(harness.context(), 118f, 0f, 100f, 1.0f);
         List<byte[]> arrived = harness.drain();
         String seq = describe(arrived);
         assertTrue(seq.contains("m337"), "到位回显 337: " + seq);
         assertTrue(seq.contains("m26"), "到位解除 skill_pause msg26: " + seq);
-        assertTrue(seq.contains("m19"), "到位续招发 msg19 锁定帧（攻击目标帧簇）: " + seq);
+        assertTrue(seq.contains("m19"), "到位释放 msg19 锁定帧（攻击目标帧簇）: " + seq);
         assertFalse(harness.player.rushInFlight(), "到位清冲锋标记");
     }
 
     /**
-     * 冲锋族受理=技能真实射程 TSP2（2026-11-06 八轮，用户拍板「按技能射程控制释放
-     * 距离」）：myjf02（skilllock+CanRush=1，TSP2=6）目标 5m（射程内）→ 直接受理
-     * msg19+c61 冲刺；目标 8m（超 TSP2）→ 静默拒（零帧）。
+     * 冲锋三段式（九轮）：myjf02（skilllock+CanRush=1，TSP2=6）——5m（射程内）直接
+     * 受理 msg19+c61 冲刺；8m（暂存带）暂存疾跑；17m（>15m）静默拒。
      */
     @Test
-    void myjf02AcceptsWithinTsp2RejectsBeyond() {
+    void myjf02ThreeBandRangeModel() {
         Assumptions.assumeTrue(
                 java.nio.file.Files.isDirectory(PROD_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "生产 share/skill 资源不可用，跳过冲锋链");
@@ -369,8 +383,7 @@ class RushStageFlowTest {
         assertFalse(directSeq.contains("m25"), "射程内无 skill_pause: " + directSeq);
         assertFalse(near.player.rushInFlight(), "射程内不暂存");
 
-        // 场景 B：目标 8m（超 TSP2=6）——静默拒（零帧）；旧 15m 放宽/暂存链均废
-        // （-Dnineyin.rush.stage=true 显式回退见 rushStageAndLandingResume）
+        // 场景 B：目标 8m（TSP2=6 < d ≤ 15）——九轮暂存带：暂存疾跑（msg25+c61 档2）
         Harness far = new Harness();
         far.player.noteEquippedWeaponItemType(102);
         far.world.registerNpc(4, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 108f, 0f, 100f));
@@ -378,7 +391,20 @@ class RushStageFlowTest {
         far.skillRows.put("CS_jh_myjf02", 1);
         assertTrue(far.fight.selectTarget(far.world, 4, 1), "combat NPC selectable");
         far.cast("CS_jh_myjf02", 100f, 100f);
-        assertNull(far.channel.readOutbound(), "超技能射程静默拒（零帧）");
+        List<byte[]> stagedBand = far.drain();
+        String bandSeq = describe(stagedBand);
+        assertTrue(bandSeq.contains("m25"), "暂存带发 skill_pause: " + bandSeq);
+        assertTrue(far.player.rushInFlight(), "暂存标记 rush in flight");
+
+        // 场景 C：目标 17m（> 15m 暂存带）——静默拒（零帧）
+        Harness beyond = new Harness();
+        beyond.player.noteEquippedWeaponItemType(102);
+        beyond.world.registerNpc(5, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 117f, 0f, 100f));
+        beyond.learned.put("CS_jh_myjf02", 1);
+        beyond.skillRows.put("CS_jh_myjf02", 1);
+        assertTrue(beyond.fight.selectTarget(beyond.world, 5, 1), "combat NPC selectable");
+        beyond.cast("CS_jh_myjf02", 100f, 100f);
+        assertNull(beyond.channel.readOutbound(), "超 15m 暂存带静默拒（零帧）");
     }
 
     private void rushStageAndLandingResumeBody() {
@@ -389,8 +415,8 @@ class RushStageFlowTest {
         Harness harness = new Harness();
         assertTrue(harness.fight.selectTarget(harness.world, 2, 1), "combat NPC selectable");
 
-        // 20 米外按下 yqq02（RushRange=15）：暂存而非出招
-        harness.cast("CS_jh_yqq02", 100f, 100f);
+        // 8m（TSP2=4 < d ≤ 15 暂存带）按下 yqq02：暂存而非出招
+        harness.cast("CS_jh_yqq02", 112f, 100f);
         List<byte[]> staged = harness.drain();
         String stageSeq = describe(staged);
         assertTrue(stageSeq.contains("m25"), "暂存必发 skill_pause msg25: " + stageSeq);
@@ -423,7 +449,7 @@ class RushStageFlowTest {
 
         // 30s 窗口过期后落地：作废（无 msg26 无续招）
         harness.clock.advanceMillis(SkillCastHandler.RUSH_PENDING_WINDOW_MS + 1000);
-        harness.cast("CS_jh_yqq02", 100f, 100f); // 重新暂存（个人 CD 6s 已过：时钟推进 31s）
+        harness.cast("CS_jh_yqq02", 112f, 100f); // 重新暂存（个人 CD 6s 已过：时钟推进 31s）
         harness.drain();
         harness.clock.advanceMillis(SkillCastHandler.RUSH_PENDING_WINDOW_MS + 1000);
         harness.land(118f, 100f);

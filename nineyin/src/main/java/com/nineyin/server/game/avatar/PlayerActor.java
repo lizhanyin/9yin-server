@@ -919,6 +919,7 @@ public final class PlayerActor {
     private int pendingTargetOwner;
     private java.time.Instant pendingCastExpiresAt;
     private volatile boolean rushInFlight;
+    private volatile boolean rushDashIssued;
 
     /** 暂存出招（冲锋起跑时；IDA stagePendingCast）。 */
     public synchronized void stagePendingCast(String skillId, int targetObj, int targetOwner,
@@ -957,10 +958,20 @@ public final class PlayerActor {
 
     public void clearRushInFlight() {
         rushInFlight = false;
+        rushDashIssued = false;
     }
 
     public boolean rushInFlight() {
         return rushInFlight;
+    }
+
+    /** 九轮三段式：暂存疾跑进技能射程后已下发 c61 冲刺转换（每暂存只发一次）。 */
+    public void markRushDashIssued() {
+        rushDashIssued = true;
+    }
+
+    public boolean rushDashIssued() {
+        return rushDashIssued;
     }
 
     /** 暂存出招只读查看（msg15 到位探测用；过期/为空返回 null，不消费不清空）。 */

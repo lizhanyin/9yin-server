@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """扫描 res1 客户端资源包（share/ini/lua64/map），生成配置清单与结构摘要。
 
-输入：resources/modern/（盛大GM版客户端资源）
+输入：resources/modern/（客户端资源）
 输出：docs/text-extract/data/res1_inventory.json
   {
     "root": ...,

@@ -1,7 +1,7 @@
 # res1 客户端资源包总览（ini / lua64 / map / text）
 
 > 来源：`resources/`（完整客户端资源，共 777MB）。
-> 版本：**盛大 GM 版**（`ini/res_ver.ini` 中 `VersionType=1`，0=蜗牛GM 1=盛大GM 2=华人服GM）。
+> 版本：**官方版**（`ini/res_ver.ini` 中 `VersionType=1`，0=蜗牛GM 1=盛大GM 2=华人服GM）。
 > 清单数据：`data/res1_inventory.json`（overview / share / ini / map / lua64 五部分）。
 
 ## 顶层结构

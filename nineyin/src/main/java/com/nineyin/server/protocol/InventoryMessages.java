@@ -37,9 +37,49 @@ public final class InventoryMessages {
 
     /** bak uniqueId：MD5(roleId+":bag:/equip:"+slot) 前 8 字节 hex（16 字符，登录期稳定）。 */
     public static String uniqueId(long roleId, String kind, int slot) {
+        return md5Hex16(roleId + ":" + kind + ":" + slot);
+    }
+
+    /**
+     * 实例稳定 UID（2026-11-06 定稿）：入包/入装时生成全局随机 16 hex（SecureRandom
+     * 8 字节），与角色/槽位无关，穿脱跨表/同表换槽全程携带——对齐官服实例身份语义
+     * （61114 抓包镜像双视图同 UID；槽位寻址 UID 在物品移位后会命中同槽位的其他
+     * 物品，内功快捷栏图标漂移根因）。
+     */
+    public static String randomUid() {
+        byte[] bytes = new byte[8];
+        new java.security.SecureRandom().nextBytes(bytes);
+        StringBuilder hex = new StringBuilder(16);
+        for (byte b : bytes) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
+    }
+
+    /**
+     * 旧行（uid 列 NULL，0013 前写入/直插）读取时的表内稳定派生：MD5(role:kind:seq)
+     * 前 8 字节 hex。seq 是表内主键永不变化（同表换槽 UPDATE 不动 PK），派生值随行
+     * 稳定；跨表移动会显式携带/生成 uid，不走此路径。
+     */
+    public static String derivedUid(long roleId, String kind, long seq) {
+        return md5Hex16(roleId + ":" + kind + ":" + seq);
+    }
+
+    /** 物品行下发/反解 UID 的统一口径：列值 > 旧行按 seq 派生 > 兜底槽位方言。 */
+    public static String itemUid(long roleId, String kind, String uid, long seq, int slot) {
+        if (uid != null && !uid.isEmpty()) {
+            return uid;
+        }
+        if (seq > 0) {
+            return derivedUid(roleId, kind, seq);
+        }
+        return uniqueId(roleId, kind, slot);
+    }
+
+    private static String md5Hex16(String seed) {
         try {
             byte[] digest = MessageDigest.getInstance("MD5")
-                    .digest((roleId + ":" + kind + ":" + slot).getBytes(StandardCharsets.UTF_8));
+                    .digest(seed.getBytes(StandardCharsets.UTF_8));
             StringBuilder hex = new StringBuilder(16);
             for (int i = 0; i < 8; i++) {
                 hex.append(String.format("%02x", digest[i]));
@@ -254,7 +294,8 @@ public final class InventoryMessages {
                                           EquipmentResolver resolver) {
         EquipmentModels.ItemStatic stat = EquipmentModels.itemStatic(equip.configId());
         List<SceneMessages.ViewProperty> props = new ArrayList<>(16);
-        addCommon(props, equip.configId(), equip.itemType(), roleId, "equip", equip.slot());
+        addCommon(props, equip.configId(), equip.itemType(), roleId, "equip", equip.slot(),
+                equip.uid(), equip.seq());
         Props.addView(props, "EquipType", PropertyValues.Value.ofString(equip.equipType()));
         int maxBuild = stat != null ? stat.maxBuildCount() : 2;
         Props.addView(props, "MaxBuildCount", PropertyValues.Value.ofInt32(maxBuild));
@@ -283,7 +324,8 @@ public final class InventoryMessages {
         int view = bagViewOf(item.viewId());
         EquipmentModels.ItemStatic stat = EquipmentModels.itemStatic(item.configId());
         List<SceneMessages.ViewProperty> props = new ArrayList<>(16);
-        addCommon(props, item.configId(), item.itemType(), roleId, "bag", item.slot());
+        addCommon(props, item.configId(), item.itemType(), roleId, "bag", item.slot(),
+                item.uid(), item.seq());
         if (stat != null || item.equipType() != null && !item.equipType().isEmpty()) {
             String equipType = stat != null && !stat.equipType().isEmpty()
                     ? stat.equipType()
@@ -310,15 +352,16 @@ public final class InventoryMessages {
         return SceneMessages.viewAdd(view, item.slot(), props);
     }
 
-    /** 通用 6 项：ConfigID/Amount/MaxAmount=1/ItemType/BindStatus=0/UniqueID。 */
+    /** 通用 6 项：ConfigID/Amount/MaxAmount=1/ItemType/BindStatus=0/UniqueID（实例稳定口径）。 */
     private static void addCommon(List<SceneMessages.ViewProperty> props, String configId,
-                                  int itemType, long roleId, String kind, int slot) {
+                                  int itemType, long roleId, String kind, int slot,
+                                  String uid, long seq) {
         Props.addView(props, "ConfigID", PropertyValues.Value.ofString(configId));
         Props.addView(props, "Amount", PropertyValues.Value.ofInt32(1));
         Props.addView(props, "MaxAmount", PropertyValues.Value.ofInt32(1));
         Props.addView(props, "ItemType", PropertyValues.Value.ofInt32(itemType));
         Props.addView(props, "BindStatus", PropertyValues.Value.ofInt32(0));
         Props.addView(props, "UniqueID",
-                PropertyValues.Value.ofString(uniqueId(roleId, kind, slot)));
+                PropertyValues.Value.ofString(itemUid(roleId, kind, uid, seq, slot)));
     }
 }

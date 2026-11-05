@@ -52,6 +52,11 @@ public final class RoleStoreFacade implements AutoCloseable {
                 new Roles.Appearance(1, values), defaultRoleLocation()));
     }
 
+    /** 全服按名查角色摘要（GM send_mail 跨账号寻址，在线/离线投递裁决）；null = 不存在。 */
+    public Roles.RoleSummary findRoleByName(String name) {
+        return repository.findRoleByName(name);
+    }
+
     public static List<String> defaultRoleAppearance(List<String> appearance) {
         List<String> values = appearance == null ? new ArrayList<>() : new ArrayList<>(appearance);
         while (values.size() <= 8) {

@@ -165,8 +165,9 @@ public final class StarterSkills {
     }
 
     /**
-     * bak SkillPackets.skillRow 属性面（真机验证语义值）：内联值 + skill_init 目录行覆盖
-     * （staticData/itemType/等级/上限/total/coolDown）+ 属性族固定值——
+     * bak SkillPackets.skillRow 属性面（真机验证语义值）：内联值 + skill 目录行覆盖
+     * （SkillInitTable：skill_new 优先/skill_init 兜底，2026-11 数据整理后只有
+     * staticData/itemType 两列真实值）+ 属性族固定值——
      * Quality=1/WuXing（wuxuebaseinfo 目录值，缺省 5 太极）/HP·MP HealMul 与
      * 五系 DamageMul=1.0f/Flow=5/LeadTime=10000/LeadSepTime=1500（发 0 会导致面板显示空/零）。
      * 目录补集（CombatSkillCatalog.skillRowData，bug.txt「怒招的消耗没有下发」）：
@@ -201,9 +202,9 @@ public final class StarterSkills {
                 rowData != null ? rowData.varPropNo() : 0));
         Props.addView(properties, "Quality", PropertyValues.Value.ofByte(1));
         Props.addView(properties, "WuXing", PropertyValues.Value.ofInt32(skillWuXing(skill.configId())));
-        // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
-        // varprop 按级 CoolDownTime（官方 View40 行同源，客户端技能 CD 文本读它；
-        // 官方 skill_init 的 cooldown 全 0 → 生产恒走 varprop）。
+        // CoolDownTime 显示值：skill 目录 cooldown 显式 >0 时作覆盖，否则取
+        // varprop 按级 CoolDownTime（官方 View40 行同源；客户端技能 CD 文本读它；
+        // 官方两文件 cooldown 全 0 → 生产恒走 varprop）。
         long cdMs = row != null && row.coolDownMs() > 0 ? row.coolDownMs()
                 : com.nineyin.server.world.fight.CombatSkillCatalog.load().personalCdMs(
                         skill.configId(), level);

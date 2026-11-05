@@ -12,7 +12,8 @@
 | 路径 | 契约 | 状态 |
 |---|---|---|
 | `combat/formula.lua` | `M.calc(c) → {damage, miss, crit, parried, reduction_pct}` 伤害公式权威实现 | 战斗一期已接 |
-| `skill/<技能ID>.lua` | `M.compile(def) → overlay` 编译期增量覆盖 | 战斗一期已接（6 个） |
+| `skill/effects_data.lua` | **全技能效果汇总表**（生成器产出，`E["<技能ID>"] = {damage, self_buffs, target_effects, by_level}`） | 已接（2026-11-05 全技能效果接入，见下节） |
+| `skill/<技能ID>.lua` | `M.compile(def) → overlay` 编译期增量覆盖 + `M.on_hit(ctx) → {ratio=...}` 出招倍率钩子 | 战斗一期 6 个覆盖；on_hit 已接线（2026-11-05） |
 | `neigong/buf_ng_*.lua` | `M.on_attack/on_victim/on_parry/on_periodic|on_tick(ctx)` 内功 buff 特效运行期钩子 | 已接（战斗二期，2026-11-05，见下节） |
 | `item/*.lua` | useitem/box/yaopin 使用物效果 | 已接（msg31 使用链，2026-11-04） |
 
@@ -58,9 +59,45 @@
 - 当前守方侧输入（defense/闪避/暴击值等）取缺省 0——属性域补全后由
   `SkillCastHandler.rollDamage` 组装处接线（meleeDamageRange 已从装备+内功取攻方掷值区间）。
 
-## skill/<技能ID>.lua（编译覆盖）
+## skill/effects_data.lua（全技能效果汇总表，2026-11-05 接线）
 
-`CombatSkillCatalog` 编译每个技能时调用 `LuaScriptService.skillOverlay(id, exactBuff)`；
+**所有技能的效果接入 Lua 的主体路径**：`tools/skill-data/gen_skill_scripts.py` 从
+share/skill ini（与 `CombatSkillCatalog` 同一份表，语义逐条复刻
+`compileSkillDamage`/`compileExactSkillBuff`）生成单文件汇总表，启动时装载为全局
+`SkillEffectsData`（`LuaScriptService.initLocked`，装载失败仅降级 INI 编译不碰公式引擎）。
+
+条目形态（只收录有内容的技术——L1 有编译伤害或有精确 buff；6,697 条 ≈ 2.4MB）：
+
+```lua
+E["CS_wd_tjq01"] = {
+  damage      = { amount = 112, waves = 1 },   -- 编译伤害/正段数（damage_calculate r 段第 3 段求和）
+  target_effects = { { config_id = "buf_CS_wd_tjq01", static_data = 6069,
+                       level = 1, life_ms = 10000, control = true } },  -- 有害精确 buff → 目标控制
+  by_level    = {                              -- 仅与 L1 有差的级（3,103 技能伤害随级变/675 租约随级变）
+    [5] = { damage_amount = 205 },
+    [10] = { damage_amount = 341 },
+  },
+}
+-- 有益精确 buff → self_buffs = { { config_id=, static_data=, level=, life_ms= } }
+```
+
+- **by_level 字段 nil 判别**：`damage_amount = 0` 是显式有效值（该级无伤害，如
+  wx_jh_xl01@2 的 damage_calculate[61] 负段），Java 侧 `readOptionalLong` 区分
+  「显式 0」与「缺字段」——缺字段沿用 L1 基准。
+- **解析优先级**：逐技能 `<ID>.lua` M.compile（整组取代数据条目）→ effects_data
+  条目（含 by_level[level] 差集修补）→ null（INI 默认编译）。缓存键 `id@level`。
+- **parity 钉子**：`SkillEffectDataParityTest` 双根对照——同一份 share 表，
+  无 scripts 根（INI 兜底编译）vs 本仓 scripts 根（Lua 数据驱动编译），全部技能×
+  {1,2,5} 级逐字段 diff 必须为 0（手写覆盖技能除外，其覆盖行为由
+  `CombatSkillCatalogTest` 断言）。辅助勘验 `tools/skill-data/verify_skill_scripts.py`
+  对 res1 jsonl 交叉核对（结构差异非零退；res1 伤害数值 5 族系统性漂移 ~25% 为
+  表版本差异，仅列出）。
+- **重新生成**：`python tools/skill-data/gen_skill_scripts.py`（幂等；表更新后重跑
+  + `reload_scripts` 或重启生效）。
+
+## skill/<技能ID>.lua（编译覆盖 + on_hit 钩子）
+
+`CombatSkillCatalog` 编译每个技能时调用 `LuaScriptService.skillOverlay(id, level, exactBuff)`；
 `def` 输入 = INI 编译出的 `buf_<技能ID>` 精确 buff 快照（`config_id/static_data/level/lifetime_ms`），
 返回增量覆盖（对应 Go verifiedSkillEffectOverlays 硬编码的迁移）：
 
@@ -78,12 +115,39 @@ function M.compile(def)
           life_ms = 86400000, slot = 7 },
       },
     },
+    -- 完整效果集（2026-11-05）：
+    damage = { amount = 540, waves = 4 },        -- 伤害/段数覆盖（取整组时覆盖 INI 编译值）
+    self_buffs = {                                -- 多自 buff（整组取代精确 buff 的自增益效果）
+      { config_id = "buf_CS_xxx", static_data = 6013, level = 1, life_ms = 35000, slot = 5 },
+    },
+    target_effects = {                            -- 目标效果（整组取代有害精确 buff 的目标控制）
+      { config_id = "buf_CS_yyy", static_data = 7001, level = 1,
+        life_ms = 8000, control = true, frame = true },
+      -- control=true：受控到租约终点（fight.control，同 INI 有害精确 buff 语义）
+      -- frame=true：加发 msg169 目标 debuff 帧（武技 169 帧的脚本化泛化，默认关）
+    },
   }
 end
 ```
 
-已接脚本：`CS_yhwq_hsqs04`（35s/槽5）、`CS_yhwq_hsqs05`（槽6+红霸体）、`CS_wd_tjq04`（架势轮换）、
-`CS_wd_tjq05`（槽8）、`CS_wd_tjq07`（槽9）、`CS_wd_tjq08`（红霸体）。未列技能无脚本 → INI 默认编译。
+`M.on_hit(ctx)` 运行期倍率钩子（出招每次掷值时调用，`SkillCastHandler.rollDamage`）：
+`ctx = {ratio=本波倍率, level=技能等级, rand={r_adjust=Java 预掷}}`（每调用恒 1 枚掷值，
+无钩子技能 RNG 序列零扰动；随机数语义同 formula.lua 约定——互斥分支区间法/派生第二掷），
+返回 `{ratio = ...}`（夹 [0,100]，nil/非正数=不调整）：
+
+```lua
+function M.on_hit(ctx)
+  if ctx.level >= 5 and ctx.rand.r_adjust < 0.30 then
+    return { ratio = ctx.ratio * 1.5 }   -- 5 级以上 30% 概率本波 ×1.5
+  end
+end
+```
+
+坏脚本隔离：`on_hit` 运行期异常只禁用该技能脚本（`skillBroken` 集，WARN 一次），
+不 markBroken 公式引擎，compile 契约不受牵连。
+
+已接覆盖脚本：`CS_yhwq_hsqs04`（35s/槽5）、`CS_yhwq_hsqs05`（槽6+红霸体）、`CS_wd_tjq04`（架势轮换）、
+`CS_wd_tjq05`（槽8）、`CS_wd_tjq07`（槽9）、`CS_wd_tjq08`（红霸体）。未列技能走 effects_data → INI 默认编译。
 
 ## item/&lt;configId&gt;.lua（使用物效果，msg31）
 
@@ -184,7 +248,8 @@ item=2 `r_drop/r_proc`、neigong=1）。Lua 侧无回掷通道：不暴露 Java 
 `world/fight/NeiGongEffectsFlowTest`（管线：盾吸收/附伤窗/ticker/reflect 击杀/被击帧回归；
 临时根 junction 拼 GO 仓 resources + 本仓 scripts，AfterAll 还原）。
 
-## 运行期钩子（战斗二期预留）
+## 运行期钩子（已接线）
 
-- `M.on_hit(ctx)`：`ctx.caster.stance_static_data`（架势相位）、`ctx.ratio`，返回 `{ratio=...}` 调整本波倍率
-  （CS_wd_tjq04.lua 有注释示例，默认关闭）。
+- `M.on_hit(ctx)`：出招倍率钩子（上文 skill 节；`SkillCastHandler.rollDamage` 接线，
+  每调用 Java 预掷 1 枚 `r_adjust`，掷骰序固定在 miss/crit/区间掷值之后——无钩子
+  技能 RNG 序列零扰动）。CS_wd_tjq04.lua 的注释示例可参考。

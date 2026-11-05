@@ -68,6 +68,44 @@ class StarterSkillsPanelTest {
     }
 
     @Test
+    void loadSharePrefersSkillNewAndFallsBackToInit() throws IOException {
+        // 2026-11 数据整理：skill_init 并入 skill_new（CamelCase 键、样板键删除）
+        Path skillDir = tempDir.resolve("skill");
+        Files.createDirectories(skillDir);
+        Files.write(skillDir.resolve("skill_new.ini"), ("[CS_new_01]\r\n"
+                + "StaticData=20001\r\n"
+                + "ItemType=1000\r\n"
+                + "\r\n"
+                + "[CS_both_01]\r\n"
+                + "StaticData=20002\r\n"
+                + "ItemType=1001\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        Files.write(skillDir.resolve("skill_init.ini"), ("[CS_both_01]\r\n"
+                + "staticData=19999\r\n"
+                + "itemType=1999\r\n"
+                + "\r\n"
+                + "[CS_init_01]\r\n"
+                + "staticData=30001\r\n"
+                + "itemType=1000\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        SkillInitTable table = SkillInitTable.loadShare(tempDir);
+        assertEquals(3, table.size());
+        // 同名节冲突以 skill_new 为准；skill_init 只补缺
+        assertEquals(20002, table.row("CS_both_01").staticData());
+        assertEquals(1001, table.row("CS_both_01").itemType());
+        assertEquals(30001, table.row("CS_init_01").staticData());
+        // skill_new 无 level/maxlevel/total/coolDown 键 → 默认 1/1/0/0（=旧样板值语义）
+        assertEquals(1, table.row("CS_new_01").level());
+        assertEquals(1, table.row("CS_new_01").maxLevel());
+        assertEquals(0, table.row("CS_new_01").totalFill());
+        assertEquals(0, table.row("CS_new_01").coolDownMs());
+        // 只有 skill_new（server_new 根现状：skill_init 已删）→ 同样建表
+        // （须换目录：ResourceCache 按路径缓存，同路径删文件重读命中旧缓存）
+        Path onlyNew = tempDir.resolve("only-new");
+        Files.createDirectories(onlyNew.resolve("skill"));
+        Files.copy(skillDir.resolve("skill_new.ini"), onlyNew.resolve("skill").resolve("skill_new.ini"));
+        assertEquals(2, SkillInitTable.loadShare(onlyNew).size());
+    }
+
+    @Test
     void starterRowsCarryBakSemanticEffectFamily() {
         StarterSkills.LearnedSkill skill = new StarterSkills.LearnedSkill(
                 "CS_yhwq_hsqs01", 12636, 1000, 1, 11, 0, 156550, (float) (43 * 1000.0 / 30));

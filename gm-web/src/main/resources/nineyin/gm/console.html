@@ -61,8 +61,10 @@
       <section>
         <h2>所有道具与换装</h2>
         <p class="muted">
-          中文名来自 stringname.idres；目录合并 equipment.ini 与
-          tool_item.ini。ViewID 会把道具分别放入普通、装备、材料、任务背包。
+          目录合并 equipment.ini 与 tool_item.ini：中文名以 stringname.idres 为准
+          （与游戏内显示同源，可纠正表内抄错/占位名）；idres 无键回落表内 Name，
+          仍无则显示 ConfigID；注释节与身份装内件（ViewID≠1..4，走「时装/身份装发放」）
+          不进本列表。ViewID 会把道具分别放入普通、装备、材料、任务背包。
         </p>
         <input id="item-query" placeholder="输入中文名或 ConfigID，例如：久仙刀、药、礼包" />
         <select id="item-view">
@@ -855,6 +857,23 @@
         <button onclick="sendTestMail()">作为系统邮件附件发送</button>
       </section>
       <section>
+        <h2>GM 邮件</h2>
+        <p class="muted">
+          以系统邮件（发件人显示「系统邮件」）发自定义信息或物品附件；正文与物品
+          ConfigID 至少填一项，物品附件在邮箱中领取后入包。收件角色留空 =
+          发给当前选中会话的角色；填任意角色名可发给其他玩家——在线实时推送，
+          离线则写入信箱存档，对方下次登录在主界面邮件按钮查收。
+        </p>
+        <input id="mail-role" placeholder="收件角色名（留空=当前会话角色）" style="max-width: 260px" /><br />
+        <input id="mail-title" placeholder="标题（默认「系统邮件」）" style="max-width: 260px" /><br />
+        <textarea id="mail-content" placeholder="正文（与物品附件至少填一项）" rows="3"
+          style="min-width: 420px"></textarea><br />
+        <input id="mail-item" placeholder="物品 ConfigID（可选，如 yaopin_00100）"
+          style="max-width: 260px" /><input id="mail-amount" type="number" value="1" min="1"
+          max="9999" style="min-width: 90px" /><br />
+        <button onclick="sendMail()">发送邮件</button>
+      </section>
+      <section>
         <h2>场景任务验证</h2>
         <p class="muted">
           场景任务测试：前往成都厨师钱安康，点击 NPC 后选择任务项；该次真实
@@ -1081,7 +1100,7 @@
         <p class="muted">
           直接修改角色兵录（百晓生兵录集）：等级=伤害提高、进度=x/y、上限。修改即时落盘
           data/binglu.json
-          并实时推送到客户端面板。登录时若角色无存档会自动初始化全部 12 行。
+          并实时推送到客户端面板。登录时有进度的角色整域重放 12 行（零进度不推，官服对拍口径）。
         </p>
         <select id="binglu-row">
           <option value="0">徒手</option>

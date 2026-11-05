@@ -112,6 +112,40 @@ class LoginFlowGmCommandTest {
         assertEquals("角色尚未进入场景", reply(command).message());
     }
 
+    /** 称号所有权两动作在无 PanelDataStore 的会话（Env 注入 null store）应拒绝且零帧。 */
+    @Test
+    void titleOwnershipAndShortcutSaveFailWithoutStore() {
+        Env env = new Env();
+        GmCommand grant = env.enqueue("grant_title", Map.of("titleId", 3));
+        GmCommand clear = env.enqueue("clear_titles", Map.of());
+        GmCommand saveShortcuts = env.enqueue("save_shortcuts", Map.of());
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(grant).ok(), "无称号库应拒绝授予");
+        assertTrue(reply(grant).message().contains("称号库不可用"));
+        assertFalse(reply(clear).ok(), "无称号库应拒绝清空");
+        assertFalse(reply(saveShortcuts).ok(), "无快捷栏库应拒绝保存");
+        assertNull(env.channel.readOutbound(), "拒绝路径零帧");
+    }
+
+    /** set_pk_mode：合法值单帧 0x10（PKMode@437 按名），会话态生效；越界拒绝。 */
+    @Test
+    void pkModePushesSingleFrameAndRejectsOutOfRange() {
+        Env env = new Env();
+        GmCommand set = env.enqueue("set_pk_mode", Map.of("pkMode", 2));
+        GmCommand bad = env.enqueue("set_pk_mode", Map.of("pkMode", 9));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(set).ok(), "合法 PK 模式应成功");
+        assertEquals(2, env.session.player.panel().pkMode);
+        byte[] frame = env.channel.readOutbound();
+        assertTrue(frame != null && frame.length > 0, "应写出 PKMode 单帧");
+        assertEquals(0x10, frame[0] & 0xFF);
+        assertFalse(reply(bad).ok(), "越界 PK 模式应拒绝");
+    }
+
     /** 无命令时 drain 是静默空转（1s ticker 每秒调用）。 */
     @Test
     void drainIsNoopWithoutCommands() {
@@ -1059,7 +1093,8 @@ class LoginFlowGmCommandTest {
 
     /**
      * equip_card：挂载风物志皮肤成功——CardRec 位图行（0x11）+ UseCardRec 行 +
-     * ShowEquipType 属性帧（0x10）+ on_card_msg（0x1E），并落 data/skins.json。
+     * ShowEquipType 属性帧（0x10；不推 custom 180——S2C 180 是子操作分发，
+     * 收录状态由记录帧驱动），并落 data/skins.json。
      * 资源来自参考服 share（复制 card.ini 进临时根；LoginFlow 须在覆盖根之后
      * 构造——SkinStore 的 data/skins.json 路径在构造期解析）。
      */
@@ -1088,13 +1123,13 @@ class LoginFlowGmCommandTest {
             assertTrue(reply(mount).message().contains("blade_card_001"));
             assertFalse(reply(unknown).ok(), "目录外皮肤号应失败");
 
-            // 帧序：CardRec 行 0x11 → UseCardRec 行 0x11 → ShowEquipType 0x10 → on_card_msg 0x1E。
+            // 帧序：CardRec 行 0x11 → UseCardRec 行 0x11 → ShowEquipType 0x10。
             List<Byte> opcodes = new java.util.ArrayList<>();
             byte[] frame;
             while ((frame = env.channel.readOutbound()) != null) {
                 opcodes.add(frame[0]);
             }
-            assertEquals(List.of((byte) 0x11, (byte) 0x11, (byte) 0x10, (byte) 0x1E), opcodes);
+            assertEquals(List.of((byte) 0x11, (byte) 0x11, (byte) 0x10), opcodes);
             // 存档落临时根 data/skins.json（collected=[1] mounted=[1]）。
             assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "skins.json"))));
         } finally {
@@ -1504,5 +1539,108 @@ class LoginFlowGmCommandTest {
         } finally {
             com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
         }
+    }
+
+    /**
+     * binglu set：首推 binglu_rank_rec 12 行密集（0x11×12，无旧行不删）+
+     * MaxBingLuLevel 瘦 0x10；二次 set 整刷（0x12×12 逆删 → 0x11×12 重推 → 0x10）；
+     * data/binglu.json 落档 + 面板域 maxBingLuLevel 与行同源。
+     */
+    @Test
+    void bingluSetPushesRecordRowsAndPersists(@TempDir Path tempRoot) throws Exception {
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand set = env.enqueue("binglu", Map.of("bingluArgs", "set 2 5 100 10"));
+            GmCommand again = env.enqueue("binglu", Map.of("bingluArgs", "set 2 9 0"));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(set).ok(), "兵录设置应成功: " + reply(set).message());
+            assertTrue(reply(set).message().contains("单剑"), "文案带槽位名: " + reply(set).message());
+            assertTrue(reply(again).ok(), "二次设置应成功");
+
+            // 帧序：0x11×12 + 0x10 → 0x12×12 + 0x11×12 + 0x10。
+            List<Byte> opcodes = new java.util.ArrayList<>();
+            List<byte[]> propertyFrames = new java.util.ArrayList<>();
+            byte[] frame;
+            while ((frame = env.channel.readOutbound()) != null) {
+                opcodes.add(frame[0]);
+                if ((frame[0] & 0xFF) == 0x10) {
+                    propertyFrames.add(frame);
+                }
+            }
+            List<Byte> expect = new java.util.ArrayList<>();
+            for (int i = 0; i < 12; i++) {
+                expect.add((byte) 0x11);
+            }
+            expect.add((byte) 0x10);
+            for (int i = 0; i < 12; i++) {
+                expect.add((byte) 0x12);
+            }
+            for (int i = 0; i < 12; i++) {
+                expect.add((byte) 0x11);
+            }
+            expect.add((byte) 0x10);
+            assertEquals(expect, opcodes, "首推纯增 + 二次整刷删推");
+            assertEquals(2, propertyFrames.size(), "两次各一帧瘦 0x10");
+            assertTrue(containsInt32(propertyFrames.get(0), "MaxBingLuLevel", 5), "首推 Max=5");
+            assertTrue(containsInt32(propertyFrames.get(1), "MaxBingLuLevel", 9), "二次 Max=9");
+
+            assertTrue(java.nio.file.Files.exists(tempRoot.resolve(Path.of("data", "binglu.json"))),
+                    "落档 data/binglu.json");
+            assertEquals(9, env.session.binglu.get(2).curLevel(), "会话行 cur=9");
+            assertEquals(10, env.session.binglu.get(2).maxLevel(), "二次 set 缺省上限不改");
+            assertEquals(9, env.session.player.panel().maxBingLuLevel, "面板域 MaxBingLuLevel 随行");
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /** binglu max：全行升满（默认上限 10，含补写上限）；单行升满文案带槽位名。 */
+    @Test
+    void bingluMaxPromotesAllRows(@TempDir Path tempRoot) throws Exception {
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            GmCommand all = env.enqueue("binglu", Map.of("bingluArgs", "max"));
+            GmCommand single = env.enqueue("binglu", Map.of("bingluArgs", "max 5"));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(all).ok(), "全部升满应成功: " + reply(all).message());
+            assertTrue(reply(all).message().contains("全部升满"));
+            assertTrue(reply(single).ok(), "单行升满应成功");
+            assertTrue(reply(single).message().contains("双剑"), "文案带槽位名");
+
+            for (int i = 0; i < com.nineyin.server.game.avatar.panel.BingluStore.slotCount(); i++) {
+                assertEquals(10, env.session.binglu.get(i).curLevel(), "槽 " + i + " cur=10");
+                assertEquals(10, env.session.binglu.get(i).maxLevel(), "槽 " + i + " 上限补写 10");
+            }
+            assertEquals(10, env.session.player.panel().maxBingLuLevel);
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /** binglu 坏参（槽位越界/等级越界/进度超 u16/未知子命令/缺参）：拒绝且零帧。 */
+    @Test
+    void bingluRejectsBadArgs() {
+        Env env = new Env();
+        GmCommand row = env.enqueue("binglu", Map.of("bingluArgs", "set 12 5 0"));
+        GmCommand cur = env.enqueue("binglu", Map.of("bingluArgs", "set 2 16 0"));
+        GmCommand fill = env.enqueue("binglu", Map.of("bingluArgs", "set 2 5 70000"));
+        GmCommand sub = env.enqueue("binglu", Map.of("bingluArgs", "bump 2"));
+        GmCommand missing = env.enqueue("binglu", Map.of("bingluArgs", "set 2 5"));
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(row).ok(), "槽位越界应拒绝");
+        assertFalse(reply(cur).ok(), "等级越界应拒绝");
+        assertFalse(reply(fill).ok(), "进度超 u16 应拒绝");
+        assertFalse(reply(sub).ok(), "未知子命令应拒绝");
+        assertFalse(reply(missing).ok(), "缺参应拒绝");
+        assertNull(env.channel.readOutbound(), "拒绝路径零帧");
     }
 }

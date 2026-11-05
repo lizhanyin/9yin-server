@@ -54,6 +54,13 @@ public final class LoginSession {
     /** 坐骑：已推送的 NewRideRec 行数（整刷前删行的口径）；riding=当前是否在马上。 */
     int mountRows;
     boolean riding;
+    /**
+     * 兵录：会话内 12 行密集进度（binglu_rank_rec 行号=槽位；选角时装载，GM binglu
+     * 原地改写）；bingluRows=已推记录行数（整刷前逆序删行口径）；ClientReady 首推旗。
+     */
+    java.util.List<com.nineyin.server.game.avatar.panel.BingluStore.Row> binglu;
+    int bingluRows;
+    boolean bingluPushed;
     /** 待机站姿：b_action_index.ini 动作名（null=默认站姿）；最近一次保持拍时间（ms）。 */
     String idleStance;
     long idleStanceLastPushMs;
@@ -92,6 +99,12 @@ public final class LoginSession {
     java.util.Map<String, Integer> learnedSkills = new java.util.HashMap<>();
     /** View40 行号表（id → 行，CanUse 行帧寻址，授予时与 View40 行同序固化）。 */
     java.util.Map<String, Integer> skillRows = new java.util.HashMap<>();
+    /**
+     * 秘籍学得的轻功追加集（role_skills qinggong 行 + starter 集外目标；选角时
+     * 装载，msg31 大轻功/身法书原地追加）——View46 行号接 starter 52 行之后，
+     * 幂等重放按本表去重。
+     */
+    java.util.List<String> qingGongExtras = new java.util.ArrayList<>();
     java.util.Random combatRandom = new java.util.Random();
     /** 道具使用节流基准（msg31 useItemEffect 800ms 防连点；0=未使用过）。 */
     long lastItemUseMs;
@@ -106,6 +119,12 @@ public final class LoginSession {
     java.util.List<com.nineyin.server.game.avatar.mail.LetterStore.Letter> letters =
             new java.util.ArrayList<>();
     boolean lettersGranted;
+    /**
+     * GM send_mail 跨会话投递暂存：目标在线但非命令消费会话时入队（避免跨线程
+     * 直写他人连接/信箱），由本会话 1s ticker 合并入 letters + 推帧 + 落盘。
+     */
+    final java.util.concurrent.ConcurrentLinkedQueue<com.nineyin.server.game.avatar.mail.LetterStore.Letter> pendingGmLetters =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     /**
      * 声望域（Repute_Record 44 行服务端镜像）：行序=下发序（LinkedHashMap，

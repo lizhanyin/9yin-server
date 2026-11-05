@@ -19,8 +19,11 @@ import com.nineyin.server.game.avatar.skin.SkinMessages;
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
 import com.nineyin.server.game.avatar.equipment.ToolItemCatalog;
 import com.nineyin.server.game.avatar.equipment.RecastCatalog;
+import com.nineyin.server.game.item.BoxContents;
 import com.nineyin.server.game.item.DropPacks;
 import com.nineyin.server.game.item.ItemUseCatalog;
+import com.nineyin.server.game.item.SkillBookCatalog;
+import com.nineyin.server.game.item.SkillGateTable;
 import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.world.fight.SkillCastHandler;
@@ -149,6 +152,10 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.mount.MountStore mountStore =
             com.nineyin.server.game.avatar.mount.MountStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "坐骑.json"));
+    /** 兵录存档（data/binglu.json 主档；DB 经 {@link #attachBingluDatabase} 可选挂接）。 */
+    private final com.nineyin.server.game.avatar.panel.BingluStore bingluStore =
+            com.nineyin.server.game.avatar.panel.BingluStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "binglu.json"));
     /** 待机站姿存档（data/待机站姿.json 主档；DB 经 {@link #attachIdleStanceDatabase} 可选挂接）。 */
     private final com.nineyin.server.game.avatar.stance.IdleStanceStore idleStanceStore =
             com.nineyin.server.game.avatar.stance.IdleStanceStore.open(
@@ -264,6 +271,16 @@ public final class LoginFlow {
         }
     }
 
+    /** 兵录存档 DB 双源挂接（role_binglu；失败仅告警，JSON 仍为主档）。 */
+    public void attachBingluDatabase(String dsn) {
+        try {
+            bingluStore.attachDatabase(dsn);
+            log.info("binglu store attached to MySQL role_binglu");
+        } catch (RuntimeException e) {
+            log.warn("binglu store MySQL unavailable, JSON only: {}", e.getMessage());
+        }
+    }
+
     /** 待机站姿存档 DB 双源挂接（role_idle_stance；失败仅告警，JSON 仍为主档）。 */
     public void attachIdleStanceDatabase(String dsn) {
         try {
@@ -291,8 +308,19 @@ public final class LoginFlow {
             case SessionMachine.CLIENT_ACTIVITY -> onClientActivity(connection, session, plain);
             case 0x1E, 0x27 -> onCustomDirect(connection, session, plain);
             case 0x07 -> onObjectRequest(connection, session, plain);
+            case 0x18 -> onPing(connection, session, plain);
             default -> true; // 未分类 opcode 放行业务层（一期无业务层）
         };
+    }
+
+    /**
+     * 客户端 ~1s 一发的 12B 0x18 ping → 0x38 heartbeatReply（tick/seq 回显，仅按 ping 回）。
+     * 无回包时客户端 RTT 配对恒超时，时序补偿劣化（真机：出招特效延迟出现/HUD 延时封顶）。
+     */
+    private boolean onPing(Connection connection, LoginSession session, byte[] plain) {
+        connection.writeFrame(com.nineyin.server.protocol.HeartbeatMessages.heartbeatReply(
+                plain, System.currentTimeMillis()));
+        return true;
     }
 
     private boolean onLogin(Connection connection, LoginSession session, byte[] plain) {
@@ -622,7 +650,8 @@ public final class LoginFlow {
             return null;
         }
         try {
-            return inventoryStore.skills(session.selected.id(), "wuxue");
+            // wuxue+anqi（暗器手法）同入 View40——秘籍学习链两类都会成为战斗技能行。
+            return inventoryStore.skills(session.selected.id(), List.of("wuxue", "anqi"));
         } catch (RuntimeException e) {
             log.warn("session={} load db skills: {}", session.machine.id(), e.getMessage());
             return null;
@@ -640,6 +669,47 @@ public final class LoginFlow {
             log.warn("session={} load db shortcuts: {}", session.machine.id(), e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * DB 基线装载迁移（每连接一次）：item 行历史存的是槽位寻址 UID（0013 前），
+     * 反解到现行物品后改写为**实例稳定 UID** 并回写 DB；两域都解析不出的悬空行按
+     * 遗忘技能同款删除（内存删 + DB 删，防悬空行重登复活）。实例 UID 跨槽位/穿脱/
+     * 重登稳定，行原样透传即永续有效——官服实例身份语义。
+     */
+    private List<PlayerActor.PlayerShortcut> migrateDbShortcutRows(
+            LoginSession session, java.util.List<RoleInventoryStore.Shortcut> dbShortcuts) {
+        List<PlayerActor.PlayerShortcut> rows = new ArrayList<>(dbShortcuts.size());
+        int migrated = 0;
+        int dropped = 0;
+        for (RoleInventoryStore.Shortcut row : dbShortcuts) {
+            String id = row.id();
+            if ("item".equals(row.kind()) && looksLikeItemUid(id)) {
+                String stable = stableUidForLegacy(session, id);
+                if (stable == null) {
+                    dropped++;
+                    if (inventoryStore != null) {
+                        try {
+                            inventoryStore.deleteShortcut(session.selected.id(), row.shortcutIndex());
+                        } catch (RuntimeException e) {
+                            log.warn("session={} drop dangling item shortcut {}: {}",
+                                    session.machine.id(), row.shortcutIndex(), e.getMessage());
+                        }
+                    }
+                    continue;
+                }
+                id = stable;
+                migrated++;
+                persistShortcut(() -> inventoryStore.upsertShortcut(
+                        session.selected.id(), row.shortcutIndex(), row.kind(), stable));
+            }
+            rows.add(new PlayerActor.PlayerShortcut(row.shortcutIndex(), row.kind(), id));
+        }
+        if (migrated > 0 || dropped > 0) {
+            log.info("session={} item shortcut baseline uid-migrated={} dropped={}",
+                    session.machine.id(), migrated, dropped);
+        }
+        return rows;
     }
 
     /** 键位主串（role_keybinds.bind_value）；库缺席/无行回 null（客户端保持默认 QWES）。 */
@@ -723,9 +793,12 @@ public final class LoginFlow {
             log.warn("session={} load worn title: {}", session.machine.id(), e.getMessage());
         }
         try {
+            // 兵录 12 行（binglu_rank_rec 密集行号=槽位；BingluStore 双源，缺行补默认）
+            // → 面板域 MaxBingLuLevel = 各槽 cur 最大值（与 GM binglu/ClientReady 推行同源）。
+            session.binglu = bingluStore.load(roleId);
             int max = 0;
-            for (PanelDataStore.Binglu slot : panelStore.binglu(roleId)) {
-                max = Math.max(max, slot.curLevel());
+            for (var row : session.binglu) {
+                max = Math.max(max, row.curLevel());
             }
             panel.maxBingLuLevel = max;
         } catch (RuntimeException e) {
@@ -775,6 +848,7 @@ public final class LoginFlow {
         session.facultyTicker = scheduler.scheduleWithFixedDelay(() -> {
             try {
                 drainGmCommands(connection, session);
+                drainPendingGmLetters(connection, session);
                 connection.writeFrame(timeSyncFrame(clock.instant()));
                 // 官方分档轻功回复先结算再推帧（101-150 每3s+10 / 51-100 +5 / 0-50 +3）；
                 // 缓降/持续轻功租约消耗中暂停。
@@ -879,8 +953,18 @@ public final class LoginFlow {
             case "set_five_attributes" -> applyFiveAttributes(connection, session, command);
             case "wear_title" -> applyWearTitle(connection, session, command, true);
             case "cancel_title" -> applyWearTitle(connection, session, command, false);
+            // 称号所有权：授予（role_titles INSERT IGNORE 幂等，不动佩戴位；身份奖励链同款）/
+            // 清空全部（DELETE 全行 + 佩戴位复位帧）。
+            case "grant_title" -> applyGrantTitle(connection, session, command);
+            case "clear_titles" -> applyClearTitles(connection, session, command);
+            // 快捷栏整表对账落库 + PK 模式位（PKMode@437 单帧）。
+            case "save_shortcuts" -> applySaveShortcuts(connection, session, command);
+            case "set_pk_mode" -> applySetPkMode(connection, session, command);
             // 经脉：每日真气硬闸（是否开启 + 每日阈值，角色级持久化）。
             case "set_zhenqi_cap" -> applyZhenqiCap(connection, session, command);
+            // 经脉周天直设（View45 行帧+总等级属性帧+存档）+ 内功全书收录（View43 整视图重建）。
+            case "set_jingmai_tier" -> applySetJingmaiTier(connection, session, command);
+            case "learn_all_neigong" -> applyLearnAllNeigong(connection, session, command);
             // 修炼：修为总量（Faculty）+ 修速基础值×倍率 + 当前内功本层修炼度填满。
             case "set_faculty" -> applyFacultyValue(connection, session, command);
             case "set_fill_speed" -> applyFillSpeed(connection, session, command);
@@ -951,8 +1035,14 @@ public final class LoginFlow {
             case "worldboss_list" -> applyWorldBossList(connection, session, command);
             case "giftbox_merchant_here" -> applyGiftboxMerchantHere(connection, session, command);
             case "send_test_mail" -> applySendTestMail(connection, session, command);
+            // GM 邮件（send_mail 与 send_test_mail 同帧域，差异=自定义标题/正文 +
+            // 任意收件人：roleName 留空=本会话，在线他人走 pendingGmLetters 暂存，
+            // 离线角色直写 LetterStore 下次登录收信）。
+            case "send_mail" -> applySendMail(connection, session, command);
             // 坐骑管理：按道具 config 骑乘（再点同骑=下马），NewRideRec 记录 + Mount 属性族下发。
             case "mount_ride" -> applyMountRide(connection, session, command);
+            // 兵录设置：binglu_rank_rec 独立记录帧域（12 行密集，行号=槽位）+ MaxBingLuLevel 属性。
+            case "binglu" -> applyBinglu(connection, session, command);
             // 待机站姿（持久化）：空参=重推当前档；写档 + PlayActionName 属性下发。
             case "idle_stance_set" -> applyIdleStanceSet(connection, session, command);
             // 伙伴系统（bot_*，预设闭名单 GmBotPresets）：幂等创建/校验、拉到身边、
@@ -1231,7 +1321,7 @@ public final class LoginFlow {
             }
         }
         if (removed > 0) {
-            rebuildShortcutRecord(connection, session.player, snapshot.size());
+            rebuildShortcutRecord(connection, session, snapshot.size());
         }
     }
 
@@ -2277,6 +2367,78 @@ public final class LoginFlow {
                 session.machine.id(), enabled, value);
     }
 
+    /**
+     * GM set_jingmai_tier：直设单条经脉周天（{@link PlayerMeridian#setLevel} 钳
+     * 1..目录上限、fill 归零）→ View45 升级行帧 + CurJingMai/JingMaiTotalLevel
+     * 属性帧 + 存档。未收录/未开通的经脉拒绝；超上限值钳到上限（回执注明）。
+     */
+    private void applySetJingmaiTier(Connection connection, LoginSession session, GmCommand command) {
+        String id = command.strParam("jingMaiId");
+        Integer tier = command.intParam("jingMaiTier");
+        var state = session.player.meridian();
+        var catalog = com.nineyin.server.game.avatar.jingmai.MeridianCatalog.load();
+        var definition = catalog.definition(id);
+        if (definition == null) {
+            command.fail("未收录的经脉: " + id);
+            return;
+        }
+        if (state.meridian(id) == null) {
+            command.fail("尚未开通该经脉: " + id);
+            return;
+        }
+        if (tier == null || tier < 1) {
+            command.fail("周天 jingMaiTier 必须 ≥1");
+            return;
+        }
+        int old = state.setLevel(id, tier);
+        var meridian = state.meridian(id);
+        connection.writeFrame(com.nineyin.server.game.avatar.jingmai.JingMaiMessages.levelUpFrame(
+                state.rowOf(id), meridian.level(), meridian.fill(), catalog.totalFillPerLevel(id)));
+        connection.writeFrame(
+                com.nineyin.server.game.avatar.jingmai.JingMaiMessages.playerPropsFrame(state));
+        persistMeridian(session);
+        String action = String.format(java.util.Locale.ROOT, "经脉 %s 周天 %d → %d（目录上限 %d）",
+                id, old, meridian.level(), definition.maxLevel());
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_jingmai_tier {} {} -> {} (max {})",
+                session.machine.id(), id, old, meridian.level(), definition.maxLevel());
+    }
+
+    /**
+     * GM learn_all_neigong：neigong.ini 全目录补书（level 1 / fill 0，曲线首级
+     * total/power；varprop 效果 best-effort 回填）→ View43 整视图重建
+     * （0x16 删视图 → 0x15 容器 → 全部行帧）→ role_faculty 快照落库。
+     * 已有书等级/修为不动；重登按快照恢复（BookSnapshot 列表）。
+     */
+    private void applyLearnAllNeigong(Connection connection, LoginSession session, GmCommand command) {
+        var catalog = com.nineyin.server.game.avatar.neigong.NeiGongCatalog.load();
+        java.util.List<com.nineyin.server.game.avatar.neigong.NeiGongCatalog.NeiGongDef> defs =
+                catalog.allBooks();
+        if (defs.isEmpty()) {
+            command.fail("内功目录为空（share 资源不可用）");
+            return;
+        }
+        var progress = session.player.progress();
+        java.util.List<com.nineyin.server.game.avatar.neigong.PlayerProgress.Book> added =
+                progress.addMissingBooks(defs);
+        if (!added.isEmpty()) {
+            connection.writeFrame(SceneMessages.deleteView(
+                    com.nineyin.server.game.avatar.neigong.PlayerProgress.VIEWPORT_NEI_GONG));
+            for (byte[] frame : progress.viewFrames()) {
+                connection.writeFrame(frame);
+            }
+            persistFaculty(session);
+        }
+        String action = added.isEmpty()
+                ? "全部内功已收录（共 " + progress.bookCount() + " 本，无新增）"
+                : "已收录全部内功：新增 " + added.size() + " 本（共 " + progress.bookCount() + " 本）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM learn all neigong added={} total={}",
+                session.machine.id(), added.size(), progress.bookCount());
+    }
+
     /** GM set_faculty：修炼点余额（Faculty@798，内修按分钟折半消耗）。改值 → 0x10 全量 → 快照落库。 */
     private void applyFacultyValue(Connection connection, LoginSession session, GmCommand command) {
         Integer value = command.intParam("value");
@@ -2699,6 +2861,127 @@ public final class LoginFlow {
     }
 
     /** 称号佩戴/取消：DB（store 可用时校验拥有并事务写）+ TitleID 单帧。 */
+    /**
+     * GM grant_title：授予称号所有权（role_titles INSERT IGNORE，重复幂等、不动佩戴位；
+     * 身份奖励链 prize_title 同款存储路径）。授予后用 wear_title 佩戴；客户端称号集合
+     * 无服务端行帧（与 prize_title 同口径，收集界面下次打开按库重读）。
+     */
+    private void applyGrantTitle(Connection connection, LoginSession session, GmCommand command) {
+        Integer titleId = command.intParam("titleId");
+        if (titleId == null || titleId <= 0) {
+            command.fail("titleId 必须正整数");
+            return;
+        }
+        if (session.selected == null || panelStore == null) {
+            command.fail("称号库不可用（角色未进场景或无 PanelDataStore）");
+            return;
+        }
+        try {
+            panelStore.grantTitle(session.selected.id(), titleId);
+        } catch (RuntimeException e) {
+            log.warn("session={} grant title db: {}", session.machine.id(), e.getMessage());
+            command.fail("授予称号失败：" + e.getMessage());
+            return;
+        }
+        String action = "已授予称号 " + titleId + " 所有权（在称号管理中佩戴）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM grant_title={}", session.machine.id(), titleId);
+    }
+
+    /** GM clear_titles：清空全部称号所有权（role_titles DELETE 全行）+ 佩戴位复位帧。 */
+    private void applyClearTitles(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || panelStore == null) {
+            command.fail("称号库不可用（角色未进场景或无 PanelDataStore）");
+            return;
+        }
+        try {
+            panelStore.clearTitles(session.selected.id());
+        } catch (RuntimeException e) {
+            log.warn("session={} clear titles db: {}", session.machine.id(), e.getMessage());
+            command.fail("清空称号失败：" + e.getMessage());
+            return;
+        }
+        session.player.panel().wornTitleId = 0;
+        pushTitleId(connection, 0);
+        String action = "已清空全部称号并取消佩戴";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM clear_titles", session.machine.id());
+    }
+
+    /**
+     * GM save_shortcuts：内存快捷栏整表对账落库（role_shortcuts：补写内存全部行 +
+     * 删除内存已不存在的 DB 行）。平时 C2S 200/201 已逐行同步，此动作用于兜底修复
+     * （DB 写失败积压 / starter 回退切换后对账）。starter 无库模式拒绝。
+     */
+    private void applySaveShortcuts(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || inventoryStore == null) {
+            command.fail("快捷栏库不可用（角色未进场景或无 RoleInventoryStore）");
+            return;
+        }
+        long roleId = session.selected.id();
+        List<PlayerActor.PlayerShortcut> snapshot = session.player.shortcutSnapshot();
+        java.util.Set<Integer> live = new java.util.HashSet<>();
+        for (PlayerActor.PlayerShortcut shortcut : snapshot) {
+            live.add(shortcut.index());
+        }
+        int removed = 0;
+        List<RoleInventoryStore.Shortcut> dbRows = loadDbShortcuts(session);
+        if (dbRows != null) {
+            for (RoleInventoryStore.Shortcut row : dbRows) {
+                if (live.contains(row.shortcutIndex())) {
+                    continue;
+                }
+                try {
+                    inventoryStore.deleteShortcut(roleId, row.shortcutIndex());
+                    removed++;
+                } catch (RuntimeException e) {
+                    log.warn("session={} delete stale shortcut {}: {}",
+                            session.machine.id(), row.shortcutIndex(), e.getMessage());
+                }
+            }
+        }
+        int written = 0;
+        for (PlayerActor.PlayerShortcut shortcut : snapshot) {
+            try {
+                inventoryStore.upsertShortcut(roleId, shortcut.index(), shortcut.kind(), shortcut.id());
+                written++;
+            } catch (RuntimeException e) {
+                log.warn("session={} upsert shortcut {}: {}",
+                        session.machine.id(), shortcut.index(), e.getMessage());
+            }
+        }
+        String action = String.format(java.util.Locale.ROOT, "快捷栏已对账落库：写入 %d 行，清理失效 %d 行",
+                written, removed);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM save_shortcuts written={} removed={}",
+                session.machine.id(), written, removed);
+    }
+
+    /**
+     * GM set_pk_mode：PK 模式位（官方表 PKMode@437，i32）单帧下发。服务端无攻击
+     * 门控逻辑——值驱动客户端 UI/本地渲染（与 PKValue 红名同口径）；会话态不落库，
+     * 官方玩法链 C2S 291 custom_set_pkmode 接通后改为同源状态机写入。
+     */
+    private void applySetPkMode(Connection connection, LoginSession session, GmCommand command) {
+        Integer mode = command.intParam("pkMode");
+        if (mode == null || mode < 0 || mode > 8) {
+            command.fail("pkMode 必须在 0 至 8 之间");
+            return;
+        }
+        PanelState panel = session.player.panel();
+        panel.pkMode = mode;
+        List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(1);
+        Props.add(properties, "PKMode", PropertyValues.Value.ofInt32(mode));
+        pushPanelProperties(connection, properties);
+        String action = String.format(java.util.Locale.ROOT, "PK 模式已设为 %d（会话态，重登复位）", mode);
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM set_pk_mode={}", session.machine.id(), mode);
+    }
+
     private void applyWearTitle(Connection connection, LoginSession session,
                                 GmCommand command, boolean wear) {
         PanelState panel = session.player.panel();
@@ -3155,7 +3438,7 @@ public final class LoginFlow {
                 RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
                         oldSlot, old.configId(), old.itemType(), 1, 2, "",
                         old.equipType(), 0, "", null, null, old.artPack(),
-                        old.hardiness(), old.maxHardiness());
+                        old.hardiness(), old.maxHardiness(), old.seq(), old.uid());
                 pushBagItemFrames(connection, session, landed);
             }
             pushWearFrames(connection, session, equip);
@@ -3187,20 +3470,16 @@ public final class LoginFlow {
         RoleInventoryStore.BagItem item = new RoleInventoryStore.BagItem(
                 0, info.configId(), info.itemType(), amount, viewId, info.name(),
                 info.equipType(), 0, info.script(), null, null, null, 0, 0);
-        int bagSlot;
+        RoleInventoryStore.BagItem inserted;
         try {
-            bagSlot = inventoryStore.insertBagItem(session.selected.id(), item);
+            inserted = inventoryStore.insertBagItem(session.selected.id(), item);
         } catch (RuntimeException e) {
             log.warn("session={} insert bag item {}: {}", session.machine.id(),
                     info.configId(), e.getMessage());
             return null;
         }
-        item = new RoleInventoryStore.BagItem(bagSlot, item.configId(), item.itemType(),
-                item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
-                item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
-                item.hardiness(), item.maxHardiness());
-        pushBagItemFrames(connection, session, item);
-        return bagSlot;
+        pushBagItemFrames(connection, session, inserted);
+        return inserted.slot();
     }
 
     // ===================== 邮件域（RecvLetterRec 319） =====================
@@ -3276,6 +3555,133 @@ public final class LoginFlow {
         command.succeed(message);
         log.info("session={} GM send_test_mail {} x{} serial={}",
                 session.machine.id(), info.configId(), amount, serial);
+    }
+
+    /** send_mail 序列号去重（同毫秒多目标发信）；与 send_test_mail 的 size+1 方案独立。 */
+    private static final java.util.concurrent.atomic.AtomicLong GM_MAIL_SEQ =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * GM send_mail：系统邮件（type=101，发件人空串显示「系统邮件」）发自定义
+     * 标题/正文，可带物品附件（itemConfig 可选；与 send_test_mail 同 359 领取链）。
+     * 收件人三档：roleName 留空=本会话角色；在线他人=pendingGmLetters 暂存由其
+     * 自身 1s ticker 合并推帧（避免跨线程直写他人连接）；离线=按名查角色库直写
+     * LetterStore，下次登录收信。
+     */
+    private void applySendMail(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null) {
+            command.fail("角色尚未选定");
+            return;
+        }
+        String roleName = command.strParam("roleName").trim();
+        String title = command.strParam("title").trim();
+        String content = command.strParam("content").trim();
+        String itemConfig = command.strParam("itemConfig").trim();
+        int amount = Math.max(1, command.intParam("amount", 1));
+        if (content.isEmpty() && itemConfig.isEmpty()) {
+            command.fail("content 与 itemConfig 至少填一项");
+            return;
+        }
+        if (title.isEmpty()) {
+            title = "系统邮件";
+        }
+        String appendixXml = "";
+        String itemLabel = "";
+        if (!itemConfig.isEmpty()) {
+            if (inventoryStore == null) {
+                command.fail("物品 DB 未接入（MySQL inventory 源缺失）");
+                return;
+            }
+            ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(itemConfig);
+            if (info == null) {
+                command.fail("物品不存在: " + itemConfig + "（equipment.ini/tool_item.ini 均未命中）");
+                return;
+            }
+            appendixXml = letterAppendixXml(info.configId(), amount);
+            itemLabel = (info.name().isEmpty() ? info.configId() : info.name()) + " x" + amount;
+        }
+        String serial = "gm" + clock.instant().toEpochMilli() + "-" + GM_MAIL_SEQ.incrementAndGet();
+        com.nineyin.server.game.avatar.mail.LetterStore.Letter letter =
+                new com.nineyin.server.game.avatar.mail.LetterStore.Letter(
+                        serial, LETTER_TYPE_SYSTEM_POST, "", "gm", title, content,
+                        "0", "0", appendixXml, clock.instant().getEpochSecond(), false);
+
+        String targetLabel;
+        if (roleName.isEmpty() || roleName.equals(session.selected.name())) {
+            // 本会话：letters 已是活档（命令消费前提 player!=null 在选角装档之后）。
+            session.letters.add(letter);
+            persistLetters(session);
+            if (session.lettersGranted) {
+                connection.writeFrame(letterRowFrame(letter));
+            }
+            targetLabel = session.selected.name();
+        } else {
+            LoginSession online = findOnlineSessionByName(roleName);
+            if (online != null) {
+                online.pendingGmLetters.add(letter);
+                targetLabel = roleName + "（在线，≤1s 推送）";
+            } else {
+                if (roleStore == null) {
+                    command.fail("角色库未接入，无法按名投递离线角色: " + roleName);
+                    return;
+                }
+                com.nineyin.server.db.role.Roles.RoleSummary target;
+                try {
+                    target = roleStore.findRoleByName(roleName);
+                } catch (RuntimeException e) {
+                    command.fail("查询角色失败: " + e.getMessage());
+                    return;
+                }
+                if (target == null) {
+                    command.fail("角色不存在: " + roleName);
+                    return;
+                }
+                if (target.deleteRequested()) {
+                    command.fail("角色已删除: " + roleName);
+                    return;
+                }
+                // 离线直写主档（load 为该角色当前全量信箱；null=空邮箱首信）。
+                List<com.nineyin.server.game.avatar.mail.LetterStore.Letter> current =
+                        letterStore.load(target.id());
+                List<com.nineyin.server.game.avatar.mail.LetterStore.Letter> next =
+                        new ArrayList<>(current != null ? current : List.of());
+                next.add(letter);
+                letterStore.save(target.id(), next);
+                targetLabel = roleName + "（离线，下次登录查收）";
+            }
+        }
+        String message = "邮件已发给 " + targetLabel + "：「" + title + "」"
+                + (itemLabel.isEmpty() ? "" : " 附 " + itemLabel);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM send_mail target={} title={} item={} serial={}",
+                session.machine.id(), targetLabel, title, itemConfig, serial);
+    }
+
+    /** 按角色名找在线会话（player!=null 保证信箱活档已载；角色名全服唯一）。 */
+    private LoginSession findOnlineSessionByName(String roleName) {
+        for (LoginSession candidate : activeSessions) {
+            if (candidate.player != null && candidate.selected != null
+                    && roleName.equals(candidate.selected.name())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 跨会话发信暂存合并（≤1s）：并入 letters + 落盘 + 已授予行域则推帧。 */
+    void drainPendingGmLetters(Connection connection, LoginSession session) {
+        if (session.pendingGmLetters.isEmpty()) {
+            return;
+        }
+        com.nineyin.server.game.avatar.mail.LetterStore.Letter letter;
+        while ((letter = session.pendingGmLetters.poll()) != null) {
+            session.letters.add(letter);
+            if (session.lettersGranted) {
+                connection.writeFrame(letterRowFrame(letter));
+            }
+        }
+        persistLetters(session);
     }
 
     private void persistLetters(LoginSession session) {
@@ -3401,7 +3807,8 @@ public final class LoginFlow {
         if (mirror != equip.slot()) {
             RoleInventoryStore.Equip mirrored = new RoleInventoryStore.Equip(equip.configId(),
                     equip.itemType(), equip.equipType(), mirror, equip.hardiness(),
-                    equip.maxHardiness(), equip.artPack(), equip.propBuilt());
+                    equip.maxHardiness(), equip.artPack(), equip.propBuilt(),
+                    equip.seq(), equip.uid());
             connection.writeFrame(SceneMessages.viewRemove(InventoryMessages.VIEW_DOLL, mirror));
             connection.writeFrame(InventoryMessages.equipmentViewAdd(
                     InventoryMessages.VIEW_DOLL, roleId, mirrored, resolver));
@@ -3454,8 +3861,9 @@ public final class LoginFlow {
         for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
             connection.writeFrame(frame);
         }
-        command.succeed("已挂载风物志皮肤 " + skinId + "（" + skinPartSummary(skin) + "）ShowEquipType=2");
-        log.info("session={} GM equip_card={} parts={}", session.machine.id(), skinId, skinPartSummary(skin));
+        int sex = sessionSex(session);
+        command.succeed("已挂载风物志皮肤 " + skinId + "（" + skinPartSummary(skin, sex) + "）ShowEquipType=2");
+        log.info("session={} GM equip_card={} parts={}", session.machine.id(), skinId, skinPartSummary(skin, sex));
     }
 
     /**
@@ -3476,7 +3884,7 @@ public final class LoginFlow {
         }
         if (!skin.hairOnly()) {
             command.fail("卡牌 " + skinId + " 不是纯发型卡（含非 Hat 部件："
-                    + skinPartSummary(skin) + "），请用「风物志卡牌」区块装备");
+                    + skinPartSummary(skin, sessionSex(session)) + "），请用「风物志卡牌」区块装备");
             return;
         }
         var state = sessionSkinState(session);
@@ -3505,7 +3913,7 @@ public final class LoginFlow {
         for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
             connection.writeFrame(frame);
         }
-        command.succeed("已装备发型 " + skinId + "（" + skinPartSummary(skin) + "）"
+        command.succeed("已装备发型 " + skinId + "（" + skinPartSummary(skin, sessionSex(session)) + "）"
                 + (replaced > 0 ? "，替换了 " + replaced + " 个旧发型" : "")
                 + "，其余风物志挂载保持不变");
         log.info("session={} GM equip_hair={} replaced={}", session.machine.id(), skinId, replaced);
@@ -4099,17 +4507,22 @@ public final class LoginFlow {
         }
     }
 
-    /** 皮肤部件摘要（回执文案用，如 "Weapon blade_card_001"）。 */
+    /** 皮肤部件摘要（回执文案用，如 "Weapon blade_card_001"；按会话性别取部件列）。 */
     private static String skinPartSummary(
-            com.nineyin.server.game.avatar.skin.SkinCatalog.Skin skin) {
+            com.nineyin.server.game.avatar.skin.SkinCatalog.Skin skin, int sex) {
         StringBuilder summary = new StringBuilder();
-        for (var partModel : skin.models(0)) {
+        for (var partModel : skin.models(sex)) {
             if (summary.length() > 0) {
                 summary.append(';');
             }
             summary.append(partModel.part()).append(' ').append(partModel.model());
         }
         return summary.length() == 0 ? "无模型" : summary.toString();
+    }
+
+    /** 会话性别（未进世界无 visual 时按男处理，与历史行为一致）。 */
+    private static int sessionSex(LoginSession session) {
+        return session.visual == null ? 0 : session.visual.sex();
     }
 
     /** 会话皮肤状态（首访问装载存档；无存档返回 null）。 */
@@ -4212,7 +4625,7 @@ public final class LoginFlow {
         RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
                 slot, item.configId(), item.itemType(), 1, category, "",
                 item.equipType(), 0, "", null, null, item.artPack(),
-                item.hardiness(), item.maxHardiness());
+                item.hardiness(), item.maxHardiness(), item.seq(), item.uid());
         pushBagItemFrames(connection, session, landed);
         refreshAfterEquipChange(connection, session);
         log.info("session={} move 30 equip[{}]->bag[{}:{}] config={}",
@@ -4285,7 +4698,7 @@ public final class LoginFlow {
             RoleInventoryStore.BagItem landed = new RoleInventoryStore.BagItem(
                     oldSlot, old.configId(), old.itemType(), 1, 2, "",
                     old.equipType(), 0, "", null, null, old.artPack(),
-                    old.hardiness(), old.maxHardiness());
+                    old.hardiness(), old.maxHardiness(), old.seq(), old.uid());
             pushBagItemFrames(connection, session, landed);
         }
         RoleInventoryStore.Equip worn = equipAt(loadEquips(session), slot);
@@ -4293,7 +4706,7 @@ public final class LoginFlow {
             worn = new RoleInventoryStore.Equip(item.configId(), item.itemType(), equipType, slot,
                     item.hardiness() > 0 ? item.hardiness() : 100,
                     item.maxHardiness() > 0 ? item.maxHardiness() : 100,
-                    item.artPack(), "");
+                    item.artPack(), "", item.seq(), item.uid());
         }
         pushWearFrames(connection, session, worn);
         log.info("session={} wear config={} -> slot={}{}", session.machine.id(), item.configId(), slot,
@@ -4337,7 +4750,7 @@ public final class LoginFlow {
                 slot, item.configId(), item.itemType(), item.amount(), toCategory,
                 item.name(), item.equipType(), item.colorLevel(), item.script(),
                 item.anchorSlot(), item.expiresAt(), item.artPack(),
-                item.hardiness(), item.maxHardiness());
+                item.hardiness(), item.maxHardiness(), item.seq(), item.uid());
         pushBagItemFrames(connection, session, moved);
         log.info("session={} move 30 bag[{}:{}]{}->bag[{}:{}] config={}",
                 session.machine.id(), fromView, fromSlot, fromCategory, toView, slot,
@@ -4449,7 +4862,318 @@ public final class LoginFlow {
             collectSkin(connection, session, item, true);
             return;
         }
+        if (info != null && SkillBookCatalog.isLearnScript(info.script())) {
+            useSkillBook(connection, session, item, info);
+            return;
+        }
         useItemEffect(connection, session, item, view);
+    }
+
+    /**
+     * 秘籍使用链（msg31 script=SkillBook/SkillPage/SkillScroll）：tool_item.ini
+     * {@code LearnSkillPack} → item_learn_skill_static.ini {@code TragetID}（官方拼写）
+     * 目标 1..N 个，按 game_skills.skill_type 分发——wuxue/anqi 走 View40 整视图重开
+     * （0x16→0x15→行帧，GM forget_all_taolu 同款真机验证路径）+ role_skills 落库；
+     * neigong 走 {@link PlayerProgress#learnOrRaiseBook} + View43 重建 + role_faculty
+     * 快照；qinggong 走 View46 追加行（{@link StarterQingGong#learnedFrames}）+
+     * role_skills 落库。
+     *
+     * <p>分层/门槛（官方修炼上限模型，2026-11-05 二期）：
+     * <ul>
+     *   <li>门槛=道具 {@code UseCondition} → rule/condition.ini：Type3
+     *       Skill/NeiGongContainer MaxLevel（目标<b>修炼上限</b> ∈ [min,max]，即
+     *       「由低到高逐层解锁」——第X页=上限 X-1、篇章汇总=前篇顶层~本篇前一层）、
+     *       Type1 School（门派编码）；Type19 Func/Type4 九阴志时代未接放行；
+     *       条件表缺席放行（宁松勿锁）；</li>
+     *   <li>{@code SkillMaxLevel=N}：wuxue/anqi（无修炼链）直达该层并落 skillLevelStore；
+     *       neigong 只抬修炼上限（层由修炼链自涨）；</li>
+     *   <li>SkillScroll 传承 {@code AddLevel/AddMaxLevel}：neigong 上限抬至 AddMaxLevel
+     *       且直升 AddLevel 层（自然曲线 total+200/maxPower+20）。</li>
+     * </ul>
+     * 门槛未满足/全部目标已学或不可解析 → 不消耗防白吃；任一目标生效即消耗 1 本。
+     */
+    private void useSkillBook(Connection connection, LoginSession session,
+                              RoleInventoryStore.BagItem item, ToolItemCatalog.ItemInfo info) {
+        if (inventoryStore == null || session.selected == null || session.player == null) {
+            log.info("session={} use skill book {}: inventory store unavailable",
+                    session.machine.id(), item.configId());
+            return;
+        }
+        SkillBookCatalog.BookEntry entry = SkillBookCatalog.loadDefault().resolve(item.configId());
+        if (entry == null || entry.targets().isEmpty()) {
+            log.info("session={} use skill book {}: no LearnSkillPack target (pack table gap)",
+                    session.machine.id(), item.configId());
+            return;
+        }
+        String deny = checkSkillBookGate(session, entry);
+        if (deny != null) {
+            log.info("session={} use skill book {} ({}): 门槛未满足：{}",
+                    session.machine.id(), item.configId(),
+                    info.name().isEmpty() ? item.configId() : info.name(), deny);
+            return;
+        }
+        List<String> targets = entry.targets();
+        long roleId = session.selected.id();
+        java.util.Map<String, RoleInventoryStore.Skill> catalogRows =
+                inventoryStore.gameSkillRows(targets);
+        int smax = entry.skillMaxLevel();
+        int addMax = entry.addMaxLevel();
+        int addLevel = entry.addLevel();
+        // 分类：View40 行集（wuxue+anqi，带目标层）/ 内功书（带上限/直升层）/ 轻功；zhenfa 暂未接。
+        record WuxueLearn(RoleInventoryStore.Skill skill, int level) { }
+        List<WuxueLearn> newWuxue = new java.util.ArrayList<>();
+        List<com.nineyin.server.game.avatar.neigong.NeiGongCatalog.NeiGongDef> newNeigong =
+                new java.util.ArrayList<>();
+        List<String> newQingGong = new java.util.ArrayList<>();
+        List<String> skipped = new java.util.ArrayList<>();
+        var neigongCatalog = com.nineyin.server.game.avatar.neigong.NeiGongCatalog.load();
+        var progress = session.player.progress();
+        var skillCatalog = com.nineyin.server.world.fight.CombatSkillCatalog.load();
+        for (String target : targets) {
+            RoleInventoryStore.Skill row = catalogRows.get(target);
+            if (row == null) {
+                skipped.add(target + "(目录缺席)");
+                continue;
+            }
+            switch (row.skillType()) {
+                case "wuxue", "anqi" -> {
+                    // 无修炼链：书直达 SkillMaxLevel 层（夹到 varprop 满级；无字段=学会 1 级）。
+                    int wanted = smax > 0 ? smax : 1;
+                    int maxLevel = skillCatalog.maxLevelOf(target);
+                    if (maxLevel > 0 && wanted > maxLevel) {
+                        wanted = maxLevel;
+                    }
+                    int current = session.learnedSkills.getOrDefault(target, 0);
+                    if (wanted <= current) {
+                        skipped.add(target + "(已学至 " + current + " 层)");
+                    } else {
+                        newWuxue.add(new WuxueLearn(row, wanted));
+                    }
+                }
+                case "neigong" -> {
+                    var def = neigongCatalog.book(target);
+                    if (def == null) {
+                        skipped.add(target + "(内功无varprop区间)");
+                        continue;
+                    }
+                    var existing = progress.book(target);
+                    int cap = smax > 0 ? smax : addMax;
+                    if (cap > def.maxLevel()) {
+                        cap = def.maxLevel();
+                    }
+                    int setLevel = 0;
+                    if (addMax > 0 && existing != null) {
+                        // 传承心法：直升 AddLevel 层（夹到新上限）。
+                        setLevel = Math.min(existing.level + Math.max(addLevel, 0), cap);
+                    }
+                    if (existing == null || cap > existing.maxLevel || setLevel > existing.level) {
+                        newNeigong.add(def);
+                    } else {
+                        skipped.add(target + "(已至 " + existing.maxLevel + " 层上限)");
+                    }
+                }
+                case "qinggong" -> {
+                    if (!session.qingGongExtras.contains(target)
+                            && !inStarterQingGong(target)) {
+                        newQingGong.add(target);
+                    }
+                }
+                default -> skipped.add(target + "(" + row.skillType() + " 暂未接)");
+            }
+        }
+        if (newWuxue.isEmpty() && newNeigong.isEmpty() && newQingGong.isEmpty()) {
+            log.info("session={} use skill book {} ({}): 全部目标已学或不可解析 skipped={}",
+                    session.machine.id(), item.configId(),
+                    info.name().isEmpty() ? item.configId() : info.name(), skipped);
+            return;
+        }
+        session.lastItemUseMs = System.currentTimeMillis();
+        // ① 武学/暗器手法：role_skills 落库 + 已学表/行号表原地追加 + View40 整视图重开。
+        if (!newWuxue.isEmpty()) {
+            // starter 回退会话首学（DB 无 wuxue 行）：先把当前已学基线物化落库，
+            // 否则重登切 DB 模式只剩新学行——starter 套路（花神/心佛掌/太极拳）全丢。
+            try {
+                if (inventoryStore.skills(roleId, List.of("wuxue", "anqi")).isEmpty()
+                        && !session.learnedSkills.isEmpty()) {
+                    java.util.Map<String, RoleInventoryStore.Skill> baseline =
+                            inventoryStore.gameSkillRows(session.learnedSkills.keySet());
+                    for (String id : session.learnedSkills.keySet()) {
+                        RoleInventoryStore.Skill row = baseline.get(id);
+                        inventoryStore.upsertSkill(roleId, id,
+                                row != null ? row.skillType() : "wuxue");
+                    }
+                    log.info("session={} materialized {} starter skills into role_skills "
+                            + "(first book learn, db baseline was empty)",
+                            session.machine.id(), session.learnedSkills.size());
+                }
+            } catch (RuntimeException e) {
+                log.warn("session={} materialize starter skill baseline: {}",
+                        session.machine.id(), e.getMessage());
+            }
+            int nextRow = 0;
+            for (Integer row : session.skillRows.values()) {
+                nextRow = Math.max(nextRow, row == null ? 0 : row);
+            }
+            java.util.Map<String, Integer> raisedLevels = new java.util.LinkedHashMap<>();
+            for (WuxueLearn learn : newWuxue) {
+                String skillId = learn.skill().skillId();
+                try {
+                    inventoryStore.upsertSkill(roleId, skillId, learn.skill().skillType());
+                } catch (RuntimeException e) {
+                    log.warn("session={} upsert skill {}: {}",
+                            session.machine.id(), skillId, e.getMessage());
+                }
+                if (!session.learnedSkills.containsKey(skillId)) {
+                    session.skillRows.put(skillId, ++nextRow);
+                }
+                session.learnedSkills.put(skillId, learn.level());
+                raisedLevels.put(skillId, learn.level());
+            }
+            try {
+                skillLevelStore.apply(roleId, raisedLevels);
+            } catch (RuntimeException e) {
+                log.warn("session={} persist wuxue levels from book: {}",
+                        session.machine.id(), e.getMessage());
+            }
+            rebuildWuxueSkillView(connection, session);
+        }
+        // ② 内功书：PlayerProgress 建书/抬上限（传承直升）+ View43 整视图重建 + 快照落库。
+        if (!newNeigong.isEmpty()) {
+            for (var def : newNeigong) {
+                var existing = progress.book(def.configId());
+                int cap = smax > 0 ? Math.min(smax, def.maxLevel())
+                        : addMax > 0 ? Math.min(addMax, def.maxLevel()) : 0;
+                int setLevel = 0;
+                if (addMax > 0 && existing != null) {
+                    setLevel = Math.min(existing.level + Math.max(addLevel, 0), cap);
+                }
+                progress.learnOrRaiseBook(def, cap, setLevel);
+            }
+            connection.writeFrame(SceneMessages.deleteView(
+                    com.nineyin.server.game.avatar.neigong.PlayerProgress.VIEWPORT_NEI_GONG));
+            for (byte[] frame : progress.viewFrames()) {
+                connection.writeFrame(frame);
+            }
+            persistFaculty(session);
+            connection.writeFrame(session.player.vitalUpdate());
+        }
+        // ③ 轻功：会话追加集 + role_skills 落库 + View46 追加行（类目补 QingGongRec）。
+        if (!newQingGong.isEmpty()) {
+            for (String id : newQingGong) {
+                try {
+                    inventoryStore.upsertSkill(roleId, id, "qinggong");
+                } catch (RuntimeException e) {
+                    log.warn("session={} upsert qinggong {}: {}",
+                            session.machine.id(), id, e.getMessage());
+                }
+                session.qingGongExtras.add(id);
+            }
+            for (byte[] frame : StarterQingGong.learnedFrames(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                    newQingGong)) {
+                connection.writeFrame(frame);
+            }
+        }
+        // ④ 消耗 1 本 + 背包帧对。
+        if (!consumeBagItemCount(connection, session, item, 1)) {
+            log.info("use skill book {}: consume failed (row missing/changed)", item.configId());
+        }
+        log.info("use skill book {} ({}): wuxue={} neigong={} qinggong={} skipped={}",
+                item.configId(), info.name().isEmpty() ? item.configId() : info.name(),
+                newWuxue.stream().map(l -> l.skill().skillId() + "@" + l.level()).toList(),
+                newNeigong.stream().map(
+                        com.nineyin.server.game.avatar.neigong.NeiGongCatalog.NeiGongDef::configId).toList(),
+                newQingGong, skipped);
+    }
+
+    /**
+     * 秘籍官方门槛（UseCondition → rule/condition.ini）：返回 null=放行，
+     * 否则返回拒绝原因（不消耗）。Type19 Func/Type4 九阴志时代等未接条件放行
+     * （单机服宁松勿锁，日志在调用侧统一）。
+     */
+    private String checkSkillBookGate(LoginSession session, SkillBookCatalog.BookEntry entry) {
+        int cond = entry.useCondition();
+        if (cond <= 0) {
+            return null;
+        }
+        SkillGateTable.Gate gate = SkillGateTable.loadDefault().gate(cond);
+        if (gate == null) {
+            return null; // 条件表缺席（1,222 个引用）：放行
+        }
+        if ("3".equals(gate.type()) && gate.para2() != null
+                && gate.para2().equalsIgnoreCase("MaxLevel")) {
+            int cap = trainableCapOf(session, gate.para1());
+            if (!gate.containerCapInRange(cap)) {
+                return gate.para1() + " 修炼上限需 " + gate.min() + "~" + gate.max()
+                        + "，当前 " + cap + "（需先用前序篇章解锁）";
+            }
+            return null;
+        }
+        if ("1".equals(gate.type())) {
+            String expect = gate.schoolCode();
+            String actual = session.player != null ? session.player.faction() : null;
+            if (expect != null && actual != null && !expect.equals(actual)) {
+                return "门派不符（需 " + expect + "，当前 " + actual + "）";
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /** 目标当前修炼上限：wuxue/anqi=已学等级（无修炼链，层即上限）；neigong=书 maxLevel；未学 0。 */
+    private int trainableCapOf(LoginSession session, String skillId) {
+        Integer level = session.learnedSkills.get(skillId);
+        if (level != null) {
+            return level;
+        }
+        if (session.player != null) {
+            var book = session.player.progress().book(skillId);
+            if (book != null) {
+                return book.maxLevel;
+            }
+        }
+        return 0;
+    }
+
+    /** View40 整视图重开（forget_all_taolu 同款：0x16 删 → 0x15 容器 → 行帧 → CanUse 批 → 心跳批重建）。行序按行号升序（skillRows 可能是 HashMap，迭代序不可倚）。 */
+    private void rebuildWuxueSkillView(Connection connection, LoginSession session) {
+        if (session.skillRows.isEmpty()) {
+            return;
+        }
+        java.util.Map<String, RoleInventoryStore.Skill> catalogRows;
+        try {
+            catalogRows = inventoryStore != null && session.selected != null
+                    ? inventoryStore.gameSkillRows(session.skillRows.keySet())
+                    : java.util.Map.of();
+        } catch (RuntimeException e) {
+            log.warn("session={} load skill catalog rows for view rebuild: {}",
+                    session.machine.id(), e.getMessage());
+            catalogRows = java.util.Map.of();
+        }
+        java.util.List<String> orderedIds = new java.util.ArrayList<>(session.skillRows.keySet());
+        orderedIds.sort(java.util.Comparator.comparingInt(
+                id -> session.skillRows.getOrDefault(id, 0)));
+        java.util.List<RoleInventoryStore.Skill> ordered = new java.util.ArrayList<>();
+        for (String id : orderedIds) {
+            RoleInventoryStore.Skill row = catalogRows.get(id);
+            ordered.add(row != null ? row
+                    : new RoleInventoryStore.Skill(id, "wuxue", 0, 1000));
+        }
+        connection.writeFrame(SceneMessages.deleteView(SkillCastHandler.SKILL_VIEW_ID));
+        StarterGrants.grantWuxueSkillView(connection, ordered, session.learnedSkills);
+        for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+            if (row.getValue() != null && row.getValue() > 0) {
+                connection.writeFrame(FightMessages.skillRowCanUse(
+                        SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
+            }
+        }
+        startSkillCanUseTicker(connection, session);
+    }
+
+    /** 目标是否已在 starter 轻功集（View46 类目+实例合集）。 */
+    private static boolean inStarterQingGong(String id) {
+        return StarterQingGong.STARTER_QING_GONG_IDS.contains(id)
+                || StarterQingGong.STARTER_QING_GONG_SKILL_IDS.contains(id);
     }
 
     /**
@@ -4505,15 +5229,25 @@ public final class LoginFlow {
             }
             switch (entry.kind()) {
                 case BOX -> {
-                    DropPacks packs = DropPacks.loadDefault();
-                    grants = new ArrayList<>();
-                    for (String dropId : entry.dropIds()) {
-                        grants.addAll(packs.roll(dropId, 1, random::nextDouble));
-                    }
-                    if (grants.isEmpty()) {
-                        log.info("item use {}: drop packs {} empty/missing", item.configId(),
-                                entry.dropIds());
-                        return;
+                    // 描述重建对照优先（按箱子介绍固定全发，box_contents.json）；
+                    // 未命中回落 DropPacks 权重包（authored 真实包 → FALLBACK_LADDER 兜底）。
+                    List<DropPacks.GrantItem> described =
+                            BoxContents.loadDefault().byBox(item.configId());
+                    if (described != null) {
+                        grants = new ArrayList<>(described);
+                        log.info("item use {}: box_contents hit ({} entries)", item.configId(),
+                                described.size());
+                    } else {
+                        DropPacks packs = DropPacks.loadDefault();
+                        grants = new ArrayList<>();
+                        for (String dropId : entry.dropIds()) {
+                            grants.addAll(packs.roll(dropId, 1, random::nextDouble));
+                        }
+                        if (grants.isEmpty()) {
+                            log.info("item use {}: drop packs {} empty/missing", item.configId(),
+                                    entry.dropIds());
+                            return;
+                        }
                     }
                 }
                 case USE_SKILL -> {
@@ -4585,7 +5319,9 @@ public final class LoginFlow {
         }
         long roleId = session.selected.id();
         for (RoleInventoryStore.BagItem item : bagItems) {
-            if (InventoryMessages.uniqueId(roleId, "bag", item.slot()).equals(uid)) {
+            String stable = InventoryMessages.itemUid(
+                    roleId, "bag", item.uid(), item.seq(), item.slot());
+            if (stable.equals(uid) || InventoryMessages.uniqueId(roleId, "bag", item.slot()).equals(uid)) {
                 log.info("session={} onestep equip uid={} config={}",
                         session.machine.id(), uid, item.configId());
                 wearFromBag(connection, session, InventoryMessages.bagViewOf(item.viewId()),
@@ -4702,7 +5438,7 @@ public final class LoginFlow {
                     item.slot(), item.configId(), item.itemType(), remaining, item.viewId(),
                     item.name(), item.equipType(), item.colorLevel(), item.script(),
                     item.anchorSlot(), item.expiresAt(), item.artPack(),
-                    item.hardiness(), item.maxHardiness());
+                    item.hardiness(), item.maxHardiness(), item.seq(), item.uid());
             connection.writeFrame(SceneMessages.viewRemove(view, item.slot()));
             connection.writeFrame(InventoryMessages.bagViewAdd(
                     session.selected.id(), updated, EquipmentResolver.loadDefault()));
@@ -4715,58 +5451,103 @@ public final class LoginFlow {
     }
 
     /**
-     * C2S 180 custom_card（衣橱卡牌 UI，`custom_card(int,...)`）。
-     * 子操作布局无抓包——按皮肤当前状态推进（幂等状态机，真机日志校准）：
-     * 未收录 → 收录（背包有对应卡片则消耗 1 张）；已收录未挂载 → 挂载
-     * （同部件互斥换装：新皮肤覆盖部件与已挂载重叠时替换，发型等新部件叠加）；
-     * 已挂载 → 卸下。
+     * C2S 180 custom_card（lua64 钉死子操作方言：`CustomSend(180, sub, card_id)`，
+     * form_card/form_collect_card/form_attire_card 三处发源）：
+     * <ul>
+     *   <li>sub 0 USE（衣橱/风物志「使用」=挂载）：须已收录；同部件互斥换装
+     *       （武器换武器、衣服换衣服），发型等新部件叠加；</li>
+     *   <li>sub 1 CANCEL（卸下）：清挂载留图鉴；</li>
+     *   <li>sub 7 COLLECT（收集界面请求收录）：未收录则收录（背包有对应卡片
+     *       则消耗 1 张）；</li>
+     *   <li>其余 sub（2 武技/3 兑换/5 替换/6 显隐/8 领奖/12 套装）记日志待接。</li>
+     * </ul>
      */
     void handleWardrobeCard(Connection connection, LoginSession session, CustomC2S.Message custom) {
         if (session.player == null || session.selected == null) {
             return;
         }
         List<Integer> args = customIntArgs(custom);
-        log.info("session={} custom 180 card args={} (子操作待真机校准)", session.machine.id(), args);
-        Integer skinId = firstKnownSkinArg(args);
-        if (skinId == null) {
+        if (args.isEmpty()) {
             return;
         }
+        int sub = args.get(0);
+        int skinId = args.size() > 1 ? args.get(1) : 0;
+        if (sub == SkinMessages.CARD_SUB_USE || sub == SkinMessages.CARD_SUB_CANCEL
+                || sub == SkinMessages.CARD_SUB_COLLECT) {
+            wardrobeCardAction(connection, session, sub, skinId);
+        } else {
+            log.info("session={} custom 180 card sub={} card={}（子操作 {} 待接）",
+                    session.machine.id(), sub, skinId,
+                    switch (sub) {
+                        case 2 -> "武技使用";
+                        case 3 -> "兑换";
+                        case 5 -> "替换";
+                        case 6 -> "显隐";
+                        case 8 -> "领奖";
+                        case 12 -> "套装";
+                        default -> "未知";
+                    });
+        }
+    }
+
+    /** 衣橱卡牌动作分发（USE/CANCEL/COLLECT；皮肤号未知忽略）。 */
+    private void wardrobeCardAction(Connection connection, LoginSession session, int sub, int skinId) {
         var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
         var skin = catalog.byId(skinId);
         if (skin == null) {
+            log.info("session={} custom 180 card sub={} 皮肤号 {} 不在目录，忽略",
+                    session.machine.id(), sub, skinId);
             return;
         }
         var state = sessionSkinState(session);
         List<Integer> collected = new ArrayList<>(state == null ? List.of() : state.collected());
         List<Integer> mounted = new ArrayList<>(state == null ? List.of() : state.mounted());
         String action;
-        if (!collected.contains(skinId)) {
-            // 收录：背包有对应卡片则消耗（「使用后进入衣橱」的卡片链入口）。
-            consumeCardItemOfSkin(connection, session, skinId);
-            collected.add(skinId);
-            java.util.Collections.sort(collected);
-            action = "收录";
-        } else if (mounted.contains(skinId)) {
-            mounted.remove(Integer.valueOf(skinId));
-            action = "卸下";
-        } else {
-            // 换装：同部件互斥（武器换武器、衣服换衣服），不同部件叠加（发型卡口径）。
-            int sex = session.visual == null ? 0 : session.visual.sex();
-            java.util.Set<String> parts = skin.parts(sex);
-            mounted.removeIf(id -> {
-                var other = catalog.byId(id);
-                return other != null
-                        && !java.util.Collections.disjoint(other.parts(sex), parts);
-            });
-            mounted.add(skinId);
-            action = "挂载";
+        switch (sub) {
+            case SkinMessages.CARD_SUB_COLLECT -> {
+                if (collected.contains(skinId)) {
+                    return; // 幂等：已收录不重复消耗
+                }
+                // 收录：背包有对应卡片则消耗（「使用后进入衣橱」的卡片链入口）。
+                consumeCardItemOfSkin(connection, session, skinId);
+                collected.add(skinId);
+                java.util.Collections.sort(collected);
+                action = "收录";
+            }
+            case SkinMessages.CARD_SUB_USE -> {
+                if (!collected.contains(skinId)) {
+                    log.info("session={} 衣橱挂载未收录皮肤 {}，忽略", session.machine.id(), skinId);
+                    return;
+                }
+                if (mounted.contains(skinId)) {
+                    return; // 幂等：重复使用已挂载皮肤
+                }
+                // 换装：同部件互斥（武器换武器、衣服换衣服），不同部件叠加（发型卡口径）。
+                int sex = session.visual == null ? 0 : session.visual.sex();
+                java.util.Set<String> parts = skin.parts(sex);
+                mounted.removeIf(id -> {
+                    var other = catalog.byId(id);
+                    return other != null
+                            && !java.util.Collections.disjoint(other.parts(sex), parts);
+                });
+                mounted.add(skinId);
+                action = "挂载";
+            }
+            default -> {
+                // CANCEL：卸下（未挂载幂等跳过）。
+                if (!mounted.contains(skinId)) {
+                    return;
+                }
+                mounted.remove(Integer.valueOf(skinId));
+                action = "卸下";
+            }
         }
         saveSkinState(session, new com.nineyin.server.game.avatar.skin.SkinStore.State(collected, mounted));
         for (byte[] frame : skinRefreshFrames(session, collected, mounted)) {
             connection.writeFrame(frame);
         }
         log.info("session={} 衣橱{}风物志皮肤 {}（{}）mounted={}",
-                session.machine.id(), action, skinId, skinPartSummary(skin), mounted);
+                session.machine.id(), action, skinId, skinPartSummary(skin, sessionSex(session)), mounted);
     }
 
     /** 皮肤号对应的背包卡片（card_item_*，CardID 字段直连）存在则消耗 1 张。 */
@@ -4804,17 +5585,6 @@ public final class LoginFlow {
             }
         }
         return args;
-    }
-
-    /** 首个命中皮肤目录的整型参数（衣橱操作的皮肤号定位）。 */
-    private static Integer firstKnownSkinArg(List<Integer> args) {
-        var catalog = com.nineyin.server.game.avatar.skin.SkinCatalog.loadDefault();
-        for (int arg : args) {
-            if (arg > 0 && catalog.byId(arg) != null) {
-                return arg;
-            }
-        }
-        return null;
     }
 
     /** 背包行装载（DB 不可用/异常返回 null）。 */
@@ -5089,22 +5859,18 @@ public final class LoginFlow {
         RoleInventoryStore.BagItem item = new RoleInventoryStore.BagItem(
                 0, template.configId(), template.itemType(), 1, viewId, template.name(),
                 template.equipType(), 0, template.script(), null, null, null, 0, 0);
-        int bagSlot;
+        RoleInventoryStore.BagItem inserted;
         try {
-            bagSlot = inventoryStore.insertBagItem(session.selected.id(), item);
+            inserted = inventoryStore.insertBagItem(session.selected.id(), item);
         } catch (RuntimeException e) {
             command.fail("入包失败: " + e.getMessage());
             return;
         }
-        item = new RoleInventoryStore.BagItem(bagSlot, item.configId(), item.itemType(),
-                item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
-                item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
-                item.hardiness(), item.maxHardiness());
-        pushBagItemFrames(connection, session, item);
-        command.succeed("已生成" + kind + " " + template.configId() + " 入背包第 " + bagSlot
+        pushBagItemFrames(connection, session, inserted);
+        command.succeed("已生成" + kind + " " + template.configId() + " 入背包第 " + inserted.slot()
                 + " 格（饰品穿戴槽位未证，词条不随行）");
         log.info("session={} GM generate {} {} to bag slot {}",
-                session.machine.id(), kind, template.configId(), bagSlot);
+                session.machine.id(), kind, template.configId(), inserted.slot());
     }
 
     /** grant_all_fashion：激活全部时装（EquipType=FashionCoat）→ role_fashion_suits + FashionSuitRec 行 + JSON 存档。 */
@@ -5649,6 +6415,9 @@ public final class LoginFlow {
      * CD 灰由客户端 cooldown_rec 扫描独立承担（官方批对 CD 中的行也恒推可用）。
      */
     private void startSkillCanUseTicker(Connection connection, LoginSession session) {
+        if (scheduler == null) {
+            return; // 测试装配（无调度器）静默跳过心跳批
+        }
         if (session.skillCanUseTicker != null) {
             session.skillCanUseTicker.cancel(false);
         }
@@ -5736,6 +6505,31 @@ public final class LoginFlow {
             log.info("session={} granted {} QingGongRec rows and {} View=46 items after explicit ClientReady",
                     session.machine.id(), StarterQingGong.STARTER_QING_GONG_IDS.size(),
                     StarterQingGong.STARTER_QING_GONG_IDS.size() + StarterQingGong.STARTER_QING_GONG_SKILL_IDS.size());
+            // 秘籍学得的轻功（role_skills qinggong 行，starter 集外）：QingGongRec
+            // 类目行 + View46 追加行重放（大轻功/身法书，行号接 starter 之后）。
+            if (inventoryStore != null && session.selected != null) {
+                try {
+                    for (RoleInventoryStore.Skill skill : inventoryStore.skills(
+                            session.selected.id(), "qinggong")) {
+                        if (!inStarterQingGong(skill.skillId())
+                                && !session.qingGongExtras.contains(skill.skillId())) {
+                            session.qingGongExtras.add(skill.skillId());
+                        }
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("session={} load learned qinggong: {}",
+                            session.machine.id(), e.getMessage());
+                }
+                if (!session.qingGongExtras.isEmpty()) {
+                    for (byte[] frame : StarterQingGong.learnedFrames(
+                            SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                            session.qingGongExtras)) {
+                        connection.writeFrame(frame);
+                    }
+                    log.info("session={} replayed {} learned QingGong rows",
+                            session.machine.id(), session.qingGongExtras.size());
+                }
+            }
             // 任务恢复帧：必须排在 starter 功能解锁行（15 行 Task_Accepted +
             // 位图 0..1593）之后——客户端 Task_Accepted 记录行号 = starter 行数 +
             // 玩家已接序（删行按此口径计算，见 taskAcceptedRowNumber）。
@@ -5748,10 +6542,7 @@ public final class LoginFlow {
                 java.util.List<RoleInventoryStore.Shortcut> dbShortcuts = loadDbShortcuts(session);
                 session.starterShortcutFallback = dbShortcuts == null || dbShortcuts.isEmpty();
                 if (!session.starterShortcutFallback) {
-                    session.player.resetShortcuts(dbShortcuts.stream()
-                            .map(row -> new PlayerActor.PlayerShortcut(
-                                    row.shortcutIndex(), row.kind(), row.id()))
-                            .toList());
+                    session.player.resetShortcuts(migrateDbShortcutRows(session, dbShortcuts));
                 }
                 session.shortcutsLoaded = true;
             }
@@ -5879,6 +6670,17 @@ public final class LoginFlow {
             // Mount 属性不跨登录保持——重登即步行，骑乘键/骑术技能再上马）。
             pushSavedMounts(connection, session);
         }
+        if (session.player != null && !session.bingluPushed) {
+            // 兵录：binglu_rank_rec 密集 12 行（行号=槽位，客户端按行 QueryRecord）。
+            // 官服对拍口径：零进度角色 0 帧不推（全部捕获均无 binglu 行），有进度
+            // （DB/JSON 存档或 GM 已设）才整域重放——与坐骑"无存档零帧"同款。
+            session.bingluPushed = true;
+            if (bingluHasProgress(session)) {
+                for (byte[] frame : bingluRefreshFrames(session)) {
+                    connection.writeFrame(frame);
+                }
+            }
+        }
         if (session.player != null && session.idleStance != null && session.idleStanceLastPushMs == 0) {
             // 待机站姿：ClientReady 首推（此后 1s ticker 的 4s 保持拍自愈）。
             reapplyIdleStance(connection, session);
@@ -5942,6 +6744,9 @@ public final class LoginFlow {
         session.skinsPushed = false;
         session.fashionPushed = false;
         session.mountsPushed = false;
+        // 兵录行同属玩家挂接行：复位首推门 + 已推行数（客户端行已清，重入纯增推）。
+        session.bingluPushed = false;
+        session.bingluRows = 0;
         // 站姿属性随玩家对象 0x0C 重建丢失：复位首推门（grantOnce 内重推）。
         session.idleStanceLastPushMs = 0;
         session.keybindPushed = false;
@@ -6142,7 +6947,8 @@ public final class LoginFlow {
      * C2S 200 设置快捷栏（shortcut_game.lua set_shortcut：`[200, index, kind, id]`，
      * kind∈skill/item/neigong/zhenfa）。变更后走 {@link #rebuildShortcutRecord} 清空重推
      * （menu2 rebuildShortcutRecord 语义，非增量 del+add）；幂等不变零帧。DB 模式同步写
-     * role_shortcuts（重登回放）。
+     * role_shortcuts（重登回放）。item 类 id 是 ViewAdd 下发的背包 UID，翻译成
+     * configId 语义绑定（UID 槽位寻址会随移位漂移），下发时再解析回现行 UID。
      */
     void handleSetShortcut(Connection connection, LoginSession session,
                                    CustomC2S.Message custom) {
@@ -6167,7 +6973,7 @@ public final class LoginFlow {
         if (update.unchanged()) {
             return;
         }
-        rebuildShortcutRecord(connection, session.player, preCount);
+        rebuildShortcutRecord(connection, session, preCount);
         persistShortcut(() -> inventoryStore.upsertShortcut(session.selected.id(), index, kind, id));
         log.info("session={} shortcut set index={} kind={} id={} replaced={} rebuilt={}",
                 session.machine.id(), index, kind, id, update.existed(), preCount);
@@ -6195,7 +7001,7 @@ public final class LoginFlow {
         if (removed == null) {
             return;
         }
-        rebuildShortcutRecord(connection, session.player, preCount);
+        rebuildShortcutRecord(connection, session, preCount);
         persistShortcut(() -> inventoryStore.deleteShortcut(session.selected.id(), index));
         log.info("session={} shortcut removed index={} row={} kind={} id={} rebuilt={}",
                 session.machine.id(), index, removed.row(),
@@ -6291,7 +7097,7 @@ public final class LoginFlow {
     /**
      * 快捷栏变更全量重建（menu2 9yin-game-native-menu.exe rebuildShortcutRecord 逐指令
      * 移植）：先按变更前行数从 preCount-1 递减到 0 逐行 0x12 清空客户端 shortcut_rec，
-     * 再按内存快照全量重推 0x11。
+     * 再按内存快照全量重推 0x11（item 行经 {@link #shortcutForPush} 解析为现行背包 UID）。
      *
      * <p>为何不做增量 del：真机客户端对记录表中段删行的方言不可靠——按服务端行号发
      * 0x12 会出现拖拽后图标残留（幽灵）/同槽双行（重叠）/拖出无法删除（2026-11-04
@@ -6301,7 +7107,8 @@ public final class LoginFlow {
      * （61114）中 shortcut_rec 也只有 0x11 追加、从未出现中段 0x12。递减序保证每个
      * 0x12 行号在删行收缩后仍指向有效行。
      */
-    private void rebuildShortcutRecord(Connection connection, PlayerActor player, int preCount) {
+    private void rebuildShortcutRecord(Connection connection, LoginSession session, int preCount) {
+        PlayerActor player = session.player;
         for (int row = preCount - 1; row >= 0; row--) {
             connection.writeFrame(RecordMessages.recordDelRow(
                     SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
@@ -6310,6 +7117,45 @@ public final class LoginFlow {
         for (PlayerActor.PlayerShortcut shortcut : player.shortcutSnapshot()) {
             connection.writeFrame(StarterGrants.shortcutAddFrame(shortcut));
         }
+    }
+
+    // ============ item 快捷方式实例 UID（2026-11-06 定稿） ============
+
+    /** ViewAdd 下发 UID 的形态：16 位小写 hex。 */
+    private static final java.util.regex.Pattern ITEM_UID_SHAPE =
+            java.util.regex.Pattern.compile("[0-9a-f]{16}");
+
+    private static boolean looksLikeItemUid(String id) {
+        return id != null && ITEM_UID_SHAPE.matcher(id).matches();
+    }
+
+    /**
+     * 旧槽位寻址 UID → 物品行（背包+装备栏两域，兼容 0013 前槽位方言反解）。
+     * 命中返回该行现行实例 UID（itemUid 口径），未命中 null。
+     */
+    private String stableUidForLegacy(LoginSession session, String uid) {
+        if (uid == null || session.selected == null) {
+            return null;
+        }
+        long roleId = session.selected.id();
+        List<RoleInventoryStore.BagItem> bagItems = safeBagItems(session);
+        if (bagItems != null) {
+            for (RoleInventoryStore.BagItem item : bagItems) {
+                String stable = InventoryMessages.itemUid(
+                        roleId, "bag", item.uid(), item.seq(), item.slot());
+                if (uid.equals(stable) || uid.equals(InventoryMessages.uniqueId(roleId, "bag", item.slot()))) {
+                    return stable;
+                }
+            }
+        }
+        for (RoleInventoryStore.Equip equip : loadEquips(session)) {
+            String stable = InventoryMessages.itemUid(
+                    roleId, "equip", equip.uid(), equip.seq(), equip.slot());
+            if (uid.equals(stable) || uid.equals(InventoryMessages.uniqueId(roleId, "equip", equip.slot()))) {
+                return stable;
+            }
+        }
+        return null;
     }
 
     /** msg211 USE_SKILL → 战斗编排（拒绝路径静默记日志，抓包实证不回帧）。 */
@@ -6792,12 +7638,8 @@ public final class LoginFlow {
                 0, info.configId(), info.itemType(), amount, viewId, info.name(),
                 info.equipType(), 0, info.script(), null, null, null, 0, 0);
         try {
-            int slot = inventoryStore.insertBagItem(session.selected.id(), item);
-            item = new RoleInventoryStore.BagItem(slot, item.configId(), item.itemType(),
-                    item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
-                    item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
-                    item.hardiness(), item.maxHardiness());
-            pushBagItemFrames(connection, session, item);
+            pushBagItemFrames(connection, session,
+                    inventoryStore.insertBagItem(session.selected.id(), item));
         } catch (RuntimeException e) {
             log.warn("task prize bag insert {}: {}", configId, e.getMessage());
         }
@@ -7010,22 +7852,18 @@ public final class LoginFlow {
         RoleInventoryStore.BagItem item = new RoleInventoryStore.BagItem(
                 0, info.configId(), info.itemType(), count, viewId, info.name(),
                 info.equipType(), 0, info.script(), null, null, null, 0, 0);
-        int bagSlot;
+        RoleInventoryStore.BagItem bought;
         try {
-            bagSlot = inventoryStore.insertBagItem(roleId, item);
+            bought = inventoryStore.insertBagItem(roleId, item);
         } catch (RuntimeException e) {
             log.info("session={} buy insert failed: {}", session.machine.id(), e.getMessage());
             return;
         }
-        item = new RoleInventoryStore.BagItem(bagSlot, item.configId(), item.itemType(),
-                item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
-                item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
-                item.hardiness(), item.maxHardiness());
-        pushBagItemFrames(connection, session, item);
+        pushBagItemFrames(connection, session, bought);
         session.player.setSilver((int) (session.player.silver() - cost));
         connection.writeFrame(session.player.silverUpdate());
         log.info("session={} bought {} x{} for {} (bag slot {})", session.machine.id(),
-                goods.itemId(), count, cost, bagSlot);
+                goods.itemId(), count, cost, bought.slot());
     }
 
     /** giveitem 选项：目标形如 Box_qyjl_gcd_009*1，复用 GM 发放入包链路。 */
@@ -7044,20 +7882,16 @@ public final class LoginFlow {
         RoleInventoryStore.BagItem item = new RoleInventoryStore.BagItem(
                 0, info.configId(), info.itemType(), option.itemCount(), viewId, info.name(),
                 info.equipType(), 0, info.script(), null, null, null, 0, 0);
-        int bagSlot;
+        RoleInventoryStore.BagItem given;
         try {
-            bagSlot = inventoryStore.insertBagItem(session.selected.id(), item);
+            given = inventoryStore.insertBagItem(session.selected.id(), item);
         } catch (RuntimeException e) {
             log.info("session={} giveitem insert failed: {}", session.machine.id(), e.getMessage());
             return;
         }
-        item = new RoleInventoryStore.BagItem(bagSlot, item.configId(), item.itemType(),
-                item.amount(), item.viewId(), item.name(), item.equipType(), item.colorLevel(),
-                item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
-                item.hardiness(), item.maxHardiness());
-        pushBagItemFrames(connection, session, item);
+        pushBagItemFrames(connection, session, given);
         log.info("session={} dialog giveitem {} x{} (bag slot {})", session.machine.id(),
-                option.itemId(), option.itemCount(), bagSlot);
+                option.itemId(), option.itemCount(), given.slot());
     }
 
     private OptionTalkCatalog optionTalk() {
@@ -7640,6 +8474,174 @@ public final class LoginFlow {
     }
 
     /**
+     * binglu：GM「兵录设置」——bingluArgs="set <row> <cur> <fill> [max]" /
+     * "max [row]"（不填 row=全部 12 行升满）。兵录域 = binglu_rank_rec 记录表
+     * （官方下标 178，列 [2,2,2]=3×u16：CurLevel/FillValue/MaxLevel），客户端
+     * form_binglu.lua 按密集行号=槽位 QueryRecord → 整域刷新（0x12 逆删旧行 +
+     * 0x11×12 重推）+ 瘦 0x10 MaxBingLuLevel（=各槽 cur 最大值）；落
+     * BingluStore（data/binglu.json 主档 + role_binglu 双源）。
+     */
+    private void applyBinglu(Connection connection, LoginSession session, GmCommand command) {
+        String args = command.strParam("bingluArgs");
+        String[] parts = args == null ? new String[0] : args.trim().split("\\s+");
+        var rows = new ArrayList<>(sessionBinglu(session));
+        int slotCount = com.nineyin.server.game.avatar.panel.BingluStore.slotCount();
+        int changed;
+        switch (parts[0]) {
+            case "set" -> {
+                // set <row> <cur> <fill> [max]：上限缺省=不改（无上限行保持 0）。
+                if (parts.length < 4 || parts.length > 5) {
+                    command.fail("用法: set <row> <cur> <fill> [max]");
+                    return;
+                }
+                Integer row = parseInt(parts[1]);
+                Integer cur = parseInt(parts[2]);
+                Long fill = parseLong(parts[3]);
+                Integer max = parts.length == 5 ? parseInt(parts[4]) : null;
+                if (row == null || row < 0 || row >= slotCount) {
+                    command.fail("row 须为 0-" + (slotCount - 1) + " 槽位（9=ditze 客户端不展示）");
+                    return;
+                }
+                if (cur == null || cur < 0 || cur > 15) {
+                    command.fail("cur(等级) 须为 0-15");
+                    return;
+                }
+                if (fill == null || fill < 0 || fill > 0xFFFF) {
+                    command.fail("fill(进度) 须为 0-65535（binglu_rank_rec 列宽 u16）");
+                    return;
+                }
+                if (max != null && (max < 0 || max > 15)) {
+                    command.fail("max(上限) 须为 0-15");
+                    return;
+                }
+                var old = rows.get(row);
+                rows.set(row, new com.nineyin.server.game.avatar.panel.BingluStore.Row(
+                        row, cur, fill, max != null ? max : old.maxLevel()));
+                changed = row;
+            }
+            case "max" -> {
+                // max [row]：升满=cur 置有效上限（无上限行按默认 10 补写上限，进度清零）。
+                Integer row = parts.length >= 2 ? parseInt(parts[1]) : null;
+                if (parts.length > 2 || (row != null && (row < 0 || row >= slotCount))) {
+                    command.fail("用法: max [row]（row 0-" + (slotCount - 1) + "，缺省=全部）");
+                    return;
+                }
+                int from = row != null ? row : 0;
+                int to = row != null ? row + 1 : slotCount;
+                for (int i = from; i < to; i++) {
+                    int cap = rows.get(i).effectiveMax();
+                    rows.set(i, new com.nineyin.server.game.avatar.panel.BingluStore.Row(i, cap, 0, cap));
+                }
+                changed = from;
+            }
+            default -> {
+                command.fail("未知子命令: " + parts[0] + "（支持 set / max）");
+                return;
+            }
+        }
+        session.binglu = List.copyOf(rows);
+        // 帧域整刷：记录行 + MaxBingLuLevel 属性（面板域同步，防后续全量 0x10 回退）。
+        int maxCur = 0;
+        for (var row : rows) {
+            maxCur = Math.max(maxCur, row.curLevel());
+        }
+        session.player.panel().maxBingLuLevel = maxCur;
+        for (byte[] frame : bingluRefreshFrames(session)) {
+            connection.writeFrame(frame);
+        }
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "MaxBingLuLevel", PropertyValues.Value.ofInt32(maxCur));
+        pushPanelProperties(connection, properties);
+        // 落档（失败仅告警，会话内存仍权威）。
+        try {
+            bingluStore.save(session.selected.id(), session.binglu);
+        } catch (RuntimeException e) {
+            log.warn("session={} save binglu: {}", session.machine.id(), e.getMessage());
+        }
+        var target = session.binglu.get(changed);
+        String text = parts[0].equals("max") && parts.length < 2
+                ? "兵录 12 行已全部升满（等级上限 " + target.curLevel() + "）"
+                : "兵录 " + com.nineyin.server.game.avatar.panel.BingluStore.slotName(changed)
+                        + "[" + changed + "] " + target.curLevel() + "/" + target.effectiveMax()
+                        + " 进度 " + target.fillValue();
+        final int domainMax = maxCur;
+        gmHub.update(session.machine.id(), s -> {
+            s.bingluMax = domainMax;
+            s.lastAction = text;
+        });
+        command.succeed(text);
+        log.info("session={} GM binglu {} rows changed, maxCur={}",
+                session.machine.id(), parts[0], maxCur);
+    }
+
+    /** 十进制整数解析（null=非数字；GM 子命令参数用）。 */
+    private static Integer parseInt(String text) {
+        try {
+            return Integer.valueOf(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 十进制长整数解析（null=非数字；GM 子命令参数用）。 */
+    private static Long parseLong(String text) {
+        try {
+            return Long.valueOf(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 会话兵录 12 行（首访问装载存档；缺档=默认 [0,0,10]）。 */
+    private List<com.nineyin.server.game.avatar.panel.BingluStore.Row> sessionBinglu(LoginSession session) {
+        if (session.binglu != null) {
+            return session.binglu;
+        }
+        long roleId = session.selected == null ? 0 : session.selected.id();
+        session.binglu = bingluStore.load(roleId);
+        if (session.player != null) {
+            // 面板域 MaxBingLuLevel 与行同源（panelStore 缺席的懒装载路径补算）。
+            int max = 0;
+            for (var row : session.binglu) {
+                max = Math.max(max, row.curLevel());
+            }
+            session.player.panel().maxBingLuLevel = max;
+        }
+        return session.binglu;
+    }
+
+    /** 兵录是否有可推内容（任一槽 cur/进度>0 或上限偏离默认；全默认=零帧不推，官服口径）。 */
+    private boolean bingluHasProgress(LoginSession session) {
+        for (var row : sessionBinglu(session)) {
+            if (row.curLevel() > 0 || row.fillValue() > 0
+                    || row.maxLevel() != com.nineyin.server.game.avatar.panel.BingluStore.DEFAULT_MAX_LEVEL) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 兵录整刷帧组：逆序删旧行 → 12 行密集重推（binglu_rank_rec；行号=槽位）。 */
+    private List<byte[]> bingluRefreshFrames(LoginSession session) {
+        int objectId = SceneMessages.PLAYER_OBJECT_ID;
+        int ownerId = SceneMessages.PLAYER_OWNER_ID;
+        int record = RecordSchemas.indexByName("binglu_rank_rec");
+        List<com.nineyin.server.game.avatar.panel.BingluStore.Row> rows = sessionBinglu(session);
+        List<byte[]> frames = new ArrayList<>(session.bingluRows + rows.size());
+        for (int row = session.bingluRows - 1; row >= 0; row--) {
+            frames.add(RecordMessages.recordDelRow(objectId, ownerId, record, row));
+        }
+        for (var row : rows) {
+            frames.add(RecordMessages.recordAddCells(objectId, ownerId, record,
+                    RecordMessages.Cell.ofInt(row.curLevel()),
+                    RecordMessages.Cell.ofInt(row.fillValue()),
+                    RecordMessages.Cell.ofInt(row.maxLevel())));
+        }
+        session.bingluRows = rows.size();
+        return frames;
+    }
+
+    /**
      * 上马/下马核心（GM mount_ride 与 C2S 骑乘链共用）：owned 增量行刷新 +
      * 骑乘态 0x10（Mount 模型串/NewRideID/CurRiderType）+ 面板域 Mount 字段同步
      * （防全量 0x10 用空串清骑乘态）。
@@ -7687,7 +8689,8 @@ public final class LoginFlow {
                         ? SkinMessages.SHOW_EQUIP_TYPE_NORMAL : session.showEquipTypePref)
                 : SkinMessages.SHOW_EQUIP_TYPE_SKIN;
         frames.add(SkinMessages.showEquipTypeFrame(objectId, ownerId, showType, lastSkin));
-        frames.add(SkinMessages.skinMsgFrame(lastSkin));
+        // 不发 custom 180：S2C 180 是子操作分发（开窗/回执），收录状态由 CardRec
+        // 位图行本身驱动客户端 CollectCardManager（IsGetCard）与 data_binder 刷新。
         session.skinRows = SkinMessages.collectedRowCount(collected);
         session.skinMountedRows = mounted.size();
         return frames;

@@ -24,8 +24,9 @@ import com.nineyin.server.transport.Connection;
 import io.netty.channel.embedded.EmbeddedChannel;
 
 /**
- * 风物志衣橱（custom 180）状态机测试：使用收录 → 挂载换装（同部件互斥、
- * 异部件叠加）→ 卸下；卡片形态（背包 CardItem）经 GM 发放后由 30/180 收录。
+ * 风物志衣橱（custom 180 子操作方言 `CustomSend(180, sub, card_id)`，lua64 钉死：
+ * 0=USE 挂载 / 1=CANCEL 卸下 / 7=COLLECT 收录）测试：收录 → 挂载换装
+ * （同部件互斥、异部件叠加）→ 卸下；卡片形态（背包 CardItem）由 msg31 收录。
  * 资源来自参考服 share（card.ini 复制进临时根，SkinStore 落档不污染仓库）。
  */
 class SkinWardrobeFlowTest {
@@ -81,9 +82,10 @@ class SkinWardrobeFlowTest {
         }
     }
 
-    private void wardrobe(int skinId) {
+    private void wardrobe(int sub, int skinId) {
         CustomC2S.Message message = CustomC2S.parseDirect(
-                CustomMessages.customIntMessage(180, CustomMessages.Value.ofInt32(skinId)));
+                CustomMessages.customIntMessage(180,
+                        CustomMessages.Value.ofInt32(sub), CustomMessages.Value.ofInt32(skinId)));
         flow.handleWardrobeCard(new Connection(channel), session, message);
         channel.releaseOutbound(); // 帧方言由 SkinMessagesTest 覆盖，此处只验状态机
     }
@@ -98,17 +100,26 @@ class SkinWardrobeFlowTest {
 
     @Test
     void collectMountUnmountStateMachine() {
-        // 未收录 → 收录（不自动挂载——衣橱内玩家自行换装）
-        wardrobe(1);
+        // sub 7 COLLECT：收录（不自动挂载——衣橱内玩家自行换装）
+        wardrobe(7, 1);
         assertEquals(List.of(1), collected());
         assertEquals(List.of(), mounted());
-        // 已收录未挂载 → 挂载
-        wardrobe(1);
+        // sub 0 USE：已收录 → 挂载
+        wardrobe(0, 1);
         assertEquals(List.of(1), mounted());
-        // 已挂载 → 卸下
-        wardrobe(1);
+        // 重复 USE 幂等
+        wardrobe(0, 1);
+        assertEquals(List.of(1), mounted());
+        // sub 1 CANCEL：卸下（不清图鉴）；再卸幂等
+        wardrobe(1, 1);
+        assertEquals(List.of(), mounted());
+        wardrobe(1, 1);
         assertEquals(List.of(), mounted());
         assertEquals(List.of(1), collected(), "卸下不清图鉴");
+        // 未收录直接 USE 忽略
+        wardrobe(0, 2);
+        assertFalse(mounted().contains(2));
+        assertFalse(collected().contains(2), "USE 不代收录");
         // 存档落临时根（重登恢复源）
         assertTrue(Files.exists(tempRoot.resolve(Path.of("data", "skins.json"))));
     }
@@ -121,18 +132,18 @@ class SkinWardrobeFlowTest {
         assertTrue(catalog.byId(1).parts(0).contains("weapon"));
         assertTrue(catalog.byId(2).parts(0).contains("weapon"));
 
-        wardrobe(1); // 收录
-        wardrobe(1); // 挂载
+        wardrobe(7, 1); // 收录
+        wardrobe(0, 1); // 挂载
         assertEquals(List.of(1), mounted());
-        wardrobe(2); // 收录 2
-        wardrobe(2); // 挂载 2：同部件（武器）互斥替换 1
+        wardrobe(7, 2); // 收录 2
+        wardrobe(0, 2); // 挂载 2：同部件（武器）互斥替换 1
         assertEquals(List.of(2), mounted(), "同部件（武器）换装互斥替换");
 
         // 发型卡（Hat 部件）叠加在武器皮肤之上（GM 面板「风物志头发」口径）。
         SkinCatalog.Skin hair = catalog.all().stream().filter(SkinCatalog.Skin::hairOnly).findFirst().orElse(null);
         org.junit.jupiter.api.Assumptions.assumeTrue(hair != null, "目录无纯发型卡，跳过叠加断言");
-        wardrobe(hair.id()); // 收录
-        wardrobe(hair.id()); // 挂载：异部件叠加
+        wardrobe(7, hair.id()); // 收录
+        wardrobe(0, hair.id()); // 挂载：异部件叠加
         assertEquals(List.of(2, hair.id()), mounted(), "异部件（武器+发型）叠加");
         assertTrue(mounted().contains(2), "已挂武器外形不被发型卡替换");
 
@@ -141,15 +152,17 @@ class SkinWardrobeFlowTest {
                 .filter(s -> !s.hairOnly() && s.parts(0).contains("weapon") && s.id() != 2)
                 .findFirst().orElse(null);
         org.junit.jupiter.api.Assumptions.assumeTrue(otherWeapon != null, "目录无第三把武器卡，跳过");
-        wardrobe(otherWeapon.id()); // 收录
-        wardrobe(otherWeapon.id()); // 挂载：替换武器位
+        wardrobe(7, otherWeapon.id()); // 收录
+        wardrobe(0, otherWeapon.id()); // 挂载：替换武器位
         assertFalse(mounted().contains(2), "武器位被新武器替换");
         assertTrue(mounted().contains(hair.id()), "发型位保留");
     }
 
     @Test
     void unknownSkinIgnored() {
-        wardrobe(999_999);
+        wardrobe(0, 999_999);
+        wardrobe(1, 999_999);
+        wardrobe(7, 999_999);
         assertEquals(List.of(), collected());
         assertEquals(List.of(), mounted());
     }

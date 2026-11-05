@@ -237,4 +237,21 @@ class ShortcutCustomFlowTest {
         assertNull(env.channel.readOutbound(), "非法参数零帧");
         assertTrue(env.session.player.shortcutSnapshot().isEmpty());
     }
+
+    /**
+     * item 快捷方式逐字透传（实例稳定 UID 语义，2026-11-06 定稿）：客户端上行的
+     * UID 原样入库原样下发——UID 由物品行携带（入包生成/穿脱携带），与槽位无关，
+     * 服务端无需任何翻译/重推。
+     */
+    @Test
+    void itemShortcutUidPassthroughWithoutStore() {
+        Env env = new Env();
+        String uid = "4501131ef54b2063";
+        env.flow.handleSetShortcut(new Connection(env.channel), env.session,
+                message(200, 300, "item", uid));
+        List<byte[]> frames = env.drain();
+        assertEquals(1, frames.size());
+        assertEquals(0x11, frames.get(0)[0]);
+        assertEquals(uid, env.session.player.shortcutSnapshot().get(0).id(), "原样透传");
+    }
 }

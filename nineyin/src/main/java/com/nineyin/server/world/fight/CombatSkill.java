@@ -78,15 +78,25 @@ public record CombatSkill(
         DAMAGE, PLAYER_BUFF, TARGET_CONTROL, RED_ARMOR, STANCE_CYCLE
     }
 
-    /** kind=DAMAGE 用 amount；PLAYER_BUFF/TARGET_CONTROL 用 buff；STANCE_CYCLE 用 buffVariants。 */
-    public record Effect(EffectKind kind, int amount, Buff buff, List<Buff> buffVariants) {
+    /**
+     * kind=DAMAGE 用 amount；PLAYER_BUFF 用 buff；STANCE_CYCLE 用 buffVariants；
+     * TARGET_CONTROL 用 buff + control/frame（control=控制到租约终点——有害精确
+     * buff 与脚本 target_effects；frame=加发 msg169 目标 debuff 帧——武技 169 帧
+     * 的数据/脚本化泛化，脚本显式开启，默认关保持与 INI 编译行为逐位一致）。
+     */
+    public record Effect(EffectKind kind, int amount, Buff buff, List<Buff> buffVariants,
+                         boolean control, boolean frame) {
 
         static Effect damage(int amount) {
-            return new Effect(EffectKind.DAMAGE, amount, null, null);
+            return new Effect(EffectKind.DAMAGE, amount, null, null, false, false);
         }
 
         static Effect buff(EffectKind kind, Buff buff) {
-            return new Effect(kind, 0, buff, null);
+            return new Effect(kind, 0, buff, null, false, false);
+        }
+
+        static Effect targetControl(Buff buff, boolean control, boolean frame) {
+            return new Effect(EffectKind.TARGET_CONTROL, 0, buff, null, control, frame);
         }
     }
 

@@ -131,6 +131,60 @@ class GmCatalogTest {
         assertEquals("school07_WuDang", wudang.getString("resource"));
     }
 
+    /**
+     * 「所有道具」列表清理（2026-11-05 真机反馈列表有错）：注释节泄漏
+     * （//修炼药剂）、**名字以 stringname.idres 为准**（INI Name 列有抄错/占位——
+     * 无妄 _9th 篇章名抄成"精修"、武器名抄成 xt_50301、页书名抄成"书"；
+     * 空名/数字占位名无 idres 时回落有效 INI Name）、身份装内件 ViewID=11 不进背包目录。
+     */
+    @Test
+    void itemsSkipCommentsResolveNamesAndDropNonBagViews(@TempDir Path modern) throws IOException {
+        Path share = Files.createDirectories(modern.resolve("share"));
+        Files.write(Files.createDirectories(share.resolve("item")).resolve("equipment.ini"), (
+                "[sword_01]\nName=久仙刀\nViewID=2\nEquipType=Weapon\nscript=Equipment\n"
+                        + "[amulet_10101]\nName=10101\nViewID=2\nEquipType=Treasure\n"
+                        + "[helm_b019]\nViewID=2\nEquipType=Hat\n"
+                        + "[inner_cloth_01]\nName=内件\nViewID=11\nEquipType=InnerCloth\n"
+                        + "[//注释节]\nName=修炼药剂\nViewID=1\n").getBytes(Charset.forName("GBK")));
+        Files.write(share.resolve("item").resolve("tool_item.ini"), (
+                "[//包裹]\nName=包裹\nViewID=1\n"
+                        + "[potion_01]\nName=金疮药\nViewID=1\nscript=ToolItem\n"
+                        + "[book_9th]\nName=神功(精修)\nViewID=1\nscript=SkillBook\n"
+                        + "[orphan_01]\nViewID=1\nscript=ToolItem\n").getBytes(Charset.forName("GBK")));
+        Path chineses = Files.createDirectories(modern.resolve("text").resolve("chineses"));
+        Files.writeString(chineses.resolve("stringname.idres"),
+                "amulet_10101=龙纹护符\nhelm_b019=铁盔\n"
+                        + "book_9th=神功(拾遗篇·一)\npotion_01=金疮药(大)\n",
+                StandardCharsets.UTF_8);
+        GmCatalog fileCatalog = GmCatalog.createForTest(share, dataDir);
+
+        JSONArray items = fileCatalog.items("", 0);
+        java.util.Map<String, JSONObject> byId = new java.util.LinkedHashMap<>();
+        for (Object o : items) {
+            JSONObject row = (JSONObject) o;
+            byId.put(row.getString("configId"), row);
+        }
+        // 注释节与 ViewID=11 内件不进目录
+        assertFalse(byId.containsKey("//注释节"));
+        assertFalse(byId.containsKey("//包裹"));
+        assertFalse(byId.containsKey("inner_cloth_01"), "身份装内件（view 11）应跳过");
+        // idres 优先（与游戏内客户端名字同源；INI 抄错的篇章名以此纠正）
+        assertEquals("神功(拾遗篇·一)", byId.get("book_9th").getString("name"),
+                "INI 抄错名应被 idres 覆盖");
+        assertEquals("金疮药(大)", byId.get("potion_01").getString("name"),
+                "两有效名并存时 idres 优先");
+        assertEquals("龙纹护符", byId.get("amulet_10101").getString("name"),
+                "数字占位名由 idres 纠正");
+        assertEquals("铁盔", byId.get("helm_b019").getString("name"), "空名由 idres 补齐");
+        // idres 无键：回落有效 INI Name；数字/空占位保持空
+        assertEquals("久仙刀", byId.get("sword_01").getString("name"));
+        assertTrue(byId.containsKey("orphan_01")
+                        && byId.get("orphan_01").getString("name").isEmpty(),
+                "idres 也没有的保持空名（面板显示 ConfigID）");
+        // 分类过滤正常（view=2 只剩装备三件）
+        assertEquals(3, fileCatalog.items("", 2).size());
+    }
+
     private void write(String relative, String json) throws IOException {
         Path file = dataDir.resolve(relative);
         if (file.getParent() != null) {

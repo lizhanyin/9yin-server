@@ -135,6 +135,16 @@ public class GmRemote {
                 }
                 yield intRange(params, "value", 1, 10_000_000);
             }
+            // 经脉周天直设（面板档 36..216；游戏侧按目录上限逐条钳制）。
+            case "set_jingmai_tier" -> {
+                String idBad = nonEmpty(params, "jingMaiId");
+                if (idBad != null) {
+                    yield idBad;
+                }
+                yield intRange(params, "jingMaiTier", 1, 216);
+            }
+            // 内功全书收录（无参）：neigong.ini 目录补书 level 1，已有书等级/修为不动。
+            case "learn_all_neigong" -> null;
             // 修炼：修为总量（Faculty 修炼点余额）+ 修速基础值×倍率 + 当前内功本层修炼度填满。
             case "set_faculty" -> intRange(params, "value", 0, 2_000_000_000);
             case "set_fill_speed" -> {
@@ -197,6 +207,12 @@ public class GmRemote {
                 yield fadeSec == null ? null : intRange(params, "fadeSec", 0, 600);
             }
             case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
+            // 称号所有权：授予（幂等 INSERT，不动佩戴位）/ 清空全部（游戏侧补佩戴位复位帧）。
+            case "grant_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
+            case "clear_titles" -> null;
+            // 快捷栏整表对账落库（无参）+ PK 模式位（0..8 宽域，语义由客户端渲染）。
+            case "save_shortcuts" -> null;
+            case "set_pk_mode" -> intRange(params, "pkMode", 0, 8);
             // V2 装备外观挂载：物品发放（wearNow 可选 0/1；不可穿戴由游戏侧降级入背包）。
             case "grant_item", "add_item" -> {
                 String configBad = nonEmpty(params, "itemConfig");
@@ -213,6 +229,34 @@ public class GmRemote {
                     yield configBad;
                 }
                 yield intRange(params, "amount", 1, 9999);
+            }
+            // GM 邮件：任意角色系统信（自定义标题/正文 + 可选物品附件；content 与
+            // itemConfig 至少一项）。roleName/title/content 可选限长；物品存在性与
+            // 投递路由（本会话/在线他人/离线直写信箱）在游戏侧 applySendMail。
+            case "send_mail" -> {
+                String content = params != null ? params.getString("content") : null;
+                String itemConfig = params != null ? params.getString("itemConfig") : null;
+                boolean hasContent = content != null && !content.trim().isEmpty();
+                boolean hasItem = itemConfig != null && !itemConfig.trim().isEmpty();
+                if (!hasContent && !hasItem) {
+                    yield "content 与 itemConfig 至少填一项";
+                }
+                String titleBad = lengthLimit(params, "title", 64);
+                if (titleBad != null) {
+                    yield titleBad;
+                }
+                String contentBad = lengthLimit(params, "content", 1024);
+                if (contentBad != null) {
+                    yield contentBad;
+                }
+                String roleBad = lengthLimit(params, "roleName",
+                        com.nineyin.server.db.role.Roles.MAX_ROLE_NAME_RUNES);
+                if (roleBad != null) {
+                    yield roleBad;
+                }
+                // amount 可选（缺省游戏侧取 1）；带值才校验域（intRange 对 null 直接拒）。
+                Integer amount = params != null ? params.getInteger("amount") : null;
+                yield amount == null ? null : intRange(params, "amount", 1, 9999);
             }
             case "giftbox_merchant_here" -> null;
             // V3 风物志：卡牌挂载/卸下/全量收录（GM 网页直接驱动）。
@@ -375,6 +419,9 @@ public class GmRemote {
             }
             // 坐骑管理：按道具 config 骑乘/再点同骑下马（pack 解析与记录帧由游戏侧）。
             case "mount_ride" -> nonEmpty(params, "mountConfig");
+            // 兵录设置：bingluArgs="set <row> <cur> <fill> [max]" / "max [row]"
+            // （binglu_rank_rec 独立记录帧域，子命令细校验由游戏侧）。
+            case "binglu" -> nonEmpty(params, "bingluArgs");
             // 武学套路两动作：无参——满级档值与遗忘基线全部由游戏侧（LoginFlow）处理。
             case "learn_all_taolu", "forget_all_taolu" -> null;
             // 待机站姿（持久化）：b_action_index.ini 节名；空串 = 恢复默认站姿。

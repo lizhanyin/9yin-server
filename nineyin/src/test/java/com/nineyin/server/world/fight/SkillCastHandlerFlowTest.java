@@ -2,6 +2,7 @@ package com.nineyin.server.world.fight;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -18,6 +19,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -201,6 +203,7 @@ public class SkillCastHandlerFlowTest {
             learned.put("CS_jh_sfgp01", 1);
             learned.put("CS_jh_sfgp04", 1);
             learned.put("CS_yhwq_hsqs04", 1);
+            learned.put("CS_wd_tjq01", 1);
             skillRows = new LinkedHashMap<>();
             skillRows.put("CS_jh_sfgp01", 1);
             skillRows.put("CS_jh_sfgp04", 2);
@@ -227,11 +230,39 @@ public class SkillCastHandlerFlowTest {
     }
 
     @BeforeAll
-    static void needsSharedSkillResources() {
+    static void needsSharedSkillResources() throws Exception {
         Assumptions.assumeTrue(java.nio.file.Files.isDirectory(
                 GO_SERVER_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "share/skill 资源不可用，跳过出招全链");
-        com.nineyin.util.ServerPaths.overrideServerRoot(GO_SERVER_ROOT);
+        // 单根拼装（表→GO 仓 / 脚本→本仓含 effects_data）：出招链跑在完整
+        // 「Lua 权威」形态下，帧序断言同时钉死数据驱动编译与 INI 兜底逐位一致。
+        Path scriptsRoot = Path.of("").toAbsolutePath().normalize().getParent();
+        Assumptions.assumeTrue(java.nio.file.Files.isRegularFile(
+                scriptsRoot.resolve(Path.of("scripts", "skill", "effects_data.lua"))),
+                "scripts/skill/effects_data.lua missing");
+        combinedRoot = java.nio.file.Files.createTempDirectory("cast-flow-root");
+        junction(combinedRoot.resolve("resources"), GO_SERVER_ROOT.resolve("resources"));
+        junction(combinedRoot.resolve("scripts"), scriptsRoot.resolve("scripts"));
+        com.nineyin.util.ServerPaths.overrideServerRoot(combinedRoot);
+        com.nineyin.server.script.LuaScriptService.getInstance().reload();
+    }
+
+    @AfterAll
+    static void restoreRepoRoot() {
+        if (combinedRoot != null) {
+            com.nineyin.util.ServerPaths.overrideServerRoot(
+                    Path.of("").toAbsolutePath().normalize().getParent());
+            com.nineyin.server.script.LuaScriptService.getInstance().reload();
+        }
+    }
+
+    private static Path combinedRoot;
+
+    /** Windows 目录 junction（免管理员）；失败则跳过本类。 */
+    private static void junction(Path link, Path target) throws Exception {
+        Process process = new ProcessBuilder("cmd", "/c", "mklink", "/J",
+                link.toString(), target.toString()).inheritIO().start();
+        Assumptions.assumeTrue(process.waitFor() == 0, "mklink /J 不可用，跳过（link=" + link + "）");
     }
 
     @Test
@@ -316,6 +347,27 @@ public class SkillCastHandlerFlowTest {
         harness.clock.advanceMillis(8100); // 过个人 CD 8s 与 GCD 7s
         harness.cast("CS_jh_sfgp01");
         assertFalse(harness.drain().isEmpty(), "cast recovers after cooldown window");
+    }
+
+    /**
+     * 数据驱动目标控制全链（effects_data tjq01：有害精确 buff → target_effects
+     * control=true，10s 租约）：命中后 NPC 受控到租约终点——单段/多段两路径
+     * 均经 applyTargetEffects（多段在首段命中后落点，runAll 触发）。
+     */
+    @Test
+    void controlSkillControlsNpcFromEffectsData() {
+        Harness harness = new Harness(1_000_000); // 高血量防段内击杀干扰
+        assertTrue(harness.fight.selectTarget(harness.world, 2, 1), "combat NPC selectable");
+        harness.cast("CS_wd_tjq01");
+        harness.scheduler.runAll(); // 多段（若有）判定拍全量触发；单段无任务
+        FightState.SelectedTarget target = harness.fight.livingSelectedTarget(harness.world);
+        assertNotNull(target, "npc still alive");
+        assertTrue(target.combat().controlled(harness.clock.instant()),
+                "tjq01 target_effects control=true → controlled until lease end");
+        // 租约终点（10s）后解除
+        harness.clock.advanceMillis(10_001);
+        assertFalse(target.combat().controlled(harness.clock.instant()),
+                "control released after 10s lease");
     }
 
     @Test

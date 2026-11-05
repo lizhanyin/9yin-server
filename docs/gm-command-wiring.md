@@ -97,21 +97,29 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 | 0x18 View43 书行 | `progress.bookFrame(slot)`（16 属性；**Level 是 byte，视图域 1465，勿用 CurLevel 索引**） | 升级/选书/ticker 变化时，**先 0x18 后 0x10**（面板先重读等级） |
 | 0x1E msg191 | `FacultyCustomHandler.facultyMessage(sub, arg2)`：14=升级（arg2=满级标记）/ 22=演武开始 / 23=退出 / 24=续开卡 | 升级必发 14；演武链 22→(14)→23，绝不出 24 |
 
-## 5. 动作清单（2026-11-04）
+## 5. 动作清单（2026-11-05 晚）
 
-已实现（白名单+case 双接线，47 个）：
+已实现（白名单+case 双接线，82 个 action 名）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
 reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, set_five_attributes,
 wear_title, cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
 add_livepoint, set_hold_faculty, set_live_speed_power,
 set_act_day_limit, clear_team_fatigue, set_team_faculty_last,
-switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here,
+switch_scene_preset, switch_scene, teleport, grant_item(add_item 别名), send_test_mail, send_mail, giftbox_merchant_here,
 spawn_combat_dummy, clear_combat_dummies, worldboss_spawn, worldboss_clear, worldboss_list,
 set_faction, bot_ensure, bot_pull_here, bot_follow_start, bot_follow_stop, bot_revive,
 bot_support_configure, yufeng_add, yufeng_remove, set_weather, repute_apply,
-origin_activate_all`
+origin_activate_all,
+equip_card, equip_hair, unequip_card, grant_all_cards, grant_all_fashion, set_showequip_type, grant_identity_suits,
+gm_generate_weapon, gm_generate_armor, gm_generate_bracer,
+recast_slot_prop/dire/polish/skill, recast_add_affix, recast_clear_affix,
+spawn_dummy, spawn_chest, mount_ride, idle_stance_set, popup_gm_panel,
+learn_all_taolu, forget_all_taolu, enter_clone, reenter_clone, destroy_clone,
+set_jingmai_tier, learn_all_neigong, grant_title, clear_titles, save_shortcuts, set_pk_mode`
 （2026-11-05 追加 worldboss 三动作、set_faction、bot_* 六动作、御风两动作、场景天气、
-repute_apply 与 origin_activate_all；其余批次——洗练/外观坐骑/生成族等见各节）
+repute_apply 与 origin_activate_all；同日晚批再接 set_jingmai_tier/learn_all_neigong/
+grant_title/clear_titles/save_shortcuts/set_pk_mode 六动作，见下文「晚批六动作」节；
+其余批次——洗练/外观坐骑/生成族等见各节）
 
 修为三动作参数：
 
@@ -335,7 +343,18 @@ origin = 官方「出身/身份」成长体系，1197 个身份，bak SceneFlow 
 | action | 参数 | 落库 |
 | --- | --- | --- |
 | `send_test_mail` | `itemConfig` + `amount` 1..9999（与 add_item 同域） | data/letters.json + role_letters 快照 |
+| `send_mail` | `roleName` 可选（留空=本会话角色）+ `title` 可选 ≤64（默认「系统邮件」）+ `content` ≤1024 + `itemConfig`/`amount` 可选（与 content 至少填一项） | data/letters.json + role_letters 快照（目标角色键） |
 | `giftbox_merchant_here` | 无参（人形商人拉到身前，重复拉先摘旧；切图随 world.begin 清空） | 无（会话内实体） |
+
+**GM 邮件 send_mail（2026-11-05，面板「GM 邮件」区块）**：发自定义标题/正文的系统信，
+可带物品附件（领取链复用 359）。投递三档路由（`LoginFlow.applySendMail`）：
+① `roleName` 留空或=本会话角色 → 直接 append + lettersGranted 则推 0x11 行帧；
+② 在线他人（`findOnlineSessionByName` 遍历 activeSessions，player!=null 即信箱活档已载）
+→ 入目标会话 `pendingGmLetters` 暂存，由其自身 1s ticker `drainPendingGmLetters`
+合并推帧（避免跨线程直写他人连接）；
+③ 离线 → `RoleStoreFacade.findRoleByName`（**接口 2026-11-05 新增**，MySQL 按名查 roles /
+JSON 扫 accounts；已删除角色明确拒绝）→ LetterStore load→append→save 直写主档，
+下次登录收信。序列号=`gm+毫秒+AtomicLong`（跨目标去重，与 send_test_mail 的 size+1 方案独立）。
 
 - **邮件域速查**：邮箱=玩家记录表 **RecvLetterRec（官方 447 表 idx 319，16 列）**，
   行帧走 `letterRowFrame` 全 16 格。列型：0/3/4 宽串、1/5/6/7/10/11 窄串（金/银/交易金
@@ -426,19 +445,57 @@ pay=2/4（官银/银票）本服未建档，暂免扣只发奖。团练疲劳 = 
 faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100/80000 反算剩余精力%。
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
-`learn_all_neigong, learn_all_taolu, forget_all_taolu,
-set_jingmai_tier,
-ninjiuzhi_*, set_pk_mode,
-story(剧情族剩余), custom_probe, keybind` 等。
+`keybind,
+ninjiuzhi_set/event/reset/status,
+scene_task_start/submit_ready/remove, twilight_mechanism_start/remove,
+twilight_npc_move_start/remove, twilight_stages_start/remove, twilight_difficulty,
+custom_probe, fightword_probe, chat_broadcast, speech_nul, speech_len,
+npc_bubble, drama_prompt, red_super_armor, action_state_sgmd/hsqs05/stop` 共 26 个。
 （add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线；
 equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_set
 已于 2026-11-05 随「外观与坐骑」六区块补全接线，详见 docs/坐骑与待机站姿.md；
+binglu 已于 2026-11-05 接线，见下文「兵录一动作」节；
 worldboss_spawn/clear/list 已于 2026-11-05 接线，见上文世界 BOSS 三动作节；
 set_faction 已于 2026-11-05 接线，见下文门派一动作节；
 bot_* 六动作已于 2026-11-05 接线，见上文伙伴系统六动作节；
 yufeng_add/yufeng_remove 已于 2026-11-05 接线，见上文御风神水两动作节；
 set_weather 已于 2026-11-05 接线，见下文场景天气一动作节；
-origin_activate_all 已于 2026-11-05 接线，见上文身份系统节。）
+origin_activate_all 已于 2026-11-05 接线，见上文身份系统节；
+learn_all_taolu/forget_all_taolu、enter/reenter/destroy_clone、spawn_combat_dummy/
+clear_combat_dummies、repute_apply 已于 2026-11-05 接线，见上文各节；
+learn_all_neigong、set_jingmai_tier、set_pk_mode、grant_title、clear_titles、
+save_shortcuts 已于 2026-11-05 晚接线，见下文「晚批六动作」节。）
+
+晚批六动作（2026-11-05）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_jingmai_tier` | `jingMaiId` + `jingMaiTier` 1..216（游戏侧钳 1..目录上限、fill 归零；帧=View45 levelUp 行帧 + CurJingMai/JingMaiTotalLevel 属性帧） | role_meridian 快照 |
+| `learn_all_neigong` | 无参（neigong.ini QName 全目录补书 level 1/fill 0，total/power 取 wuxuelevelinfo r=1 曲线（缺档回退 700/120），varprop 效果 applyModernEffect 回填；已有书不动；View43 整视图重建 0x16→0x15→0x18） | role_faculty 快照 |
+| `grant_title` | `titleId`（role_titles INSERT IGNORE 幂等、不动佩戴位；身份奖励链 prize_title 同款，客户端无行帧） | role_titles |
+| `clear_titles` | 无参（DELETE 全行 + 佩戴位复位帧 TitleID=0） | role_titles |
+| `save_shortcuts` | 无参（内存快捷栏对账落库：补写全部行 + 删内存已无的 DB 行；平时 C2S 200/201 已逐行写，此为兜底修复） | role_shortcuts |
+| `set_pk_mode` | `pkMode` 0..8（PKMode@437 单帧；会话态不落库——服务端攻击门控未接，C2S 291 custom_set_pkmode 玩法链接通后改同源状态机） | 无 |
+
+兵录一动作（2026-11-05，独立记录帧域 binglu_rank_rec）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `binglu` | `bingluArgs` = `set <row> <cur> <fill> [max]` / `max [row]`（row 0-11 槽位、cur/max 0-15、fill 0-65535=u16 列宽；max 缺省=不改，无上限行升满按默认 10 补写上限、进度清零） | BingluStore：data/binglu.json 主档 + role_binglu 双源（MountStore 同款） |
+
+- **独立帧域**：`binglu_rank_rec`（官方下标 178，列 [2,2,2]=3×u16：CurLevel/FillValue/
+  MaxLevel）。客户端 form_binglu.lua 按**密集行号=槽位** QueryRecord(rows,0/1/2) → 任何
+  变更=整域刷新（0x12 逆序删旧行 + 0x11×12 重推，mountRefreshFrames 同款方言，
+  `session.bingluRows` 记账）+ 瘦 0x10 MaxBingLuLevel（=各槽 cur 最大值；面板域
+  maxBingLuLevel 同步，防后续全量 0x10 回退）。
+- **槽位序** = binglubaseinfo.ini 节序（"勿改配置顺序"）：0 徒手/1 单刀/2 单剑/3 匕首/
+  4 双刀/5 双剑/6 双刺/7 长棍/8 短棍/**9 ditze(笛，客户端 UI 跳过但行保留)**/10 暗器/
+  11 奇门。
+- **登录/重入口径（官服对拍）**：零进度角色 ClientReady **0 帧不推**（全部官方捕获均无
+  binglu 行，golden ready_chain 1775 帧基线不动）；有进度（DB/JSON 存档）才整域重放。
+  0x0C 重入 bingluPushed/bingluRows 复位（玩家挂接行已清，重入纯增推）。
+- 未接：943 提管升层 / 984 查看他人兵录 custom 链、binglulimit/expand 配置上限钳制、
+  BingLuType 数据源（仍发 0，另案）。
 
 门派一动作（2026-11-05，Go gm_factions.go 闭名单移植）：
 
@@ -497,7 +554,9 @@ origin_activate_all 已于 2026-11-05 接线，见上文身份系统节。）
 - 回环门禁：`nineyin/src/test/java/com/nineyin/server/gm/GmRemoteRoundTripTest.java`
   ——进程内起真实 summer（main+minor.gm），**Summer.hot 整个 JVM 只允许一次**，
   所有断言必须合在单个测试方法内；consumer 线程 tryPop + succeed 模拟游戏侧回执。
-- 分发单测：`LoginFlowGmCommandTest`（含 set_vitals 落快照/回填断言）；战斗假人域：
+- 分发单测：`LoginFlowGmCommandTest`（含 set_vitals 落快照/回填断言、称号/快捷栏无库拒绝、
+  set_pk_mode 单帧）；晚批六动作域：`LoginFlowGmJingmaiNeigongTest`（周天钳制/帧序、
+  未收录拒绝、内功全书 269 本收录/View43 重建/幂等；依赖 F 盘 runtime share，缺则整类跳过）；战斗假人域：
   `GmNpcFactoryTest`（真实表模板克隆）+ `LoginFlowGmCommandTest.combatDummySpawnAndClearRoundTrip`
   （@TempDir 复制表 + overrideServerRoot 全链生成/缺省/清除隔离）；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分/生存属性 vitals 回环+JSON 落盘回读）；
   演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）；

@@ -34,7 +34,7 @@
 | 3 | `0x11` cooldown_rec | `[50000, start, start+AddCoolDownTime, CoolDownTeam(u16)]` 公共 GCD |
 | 4 | `0x10` 玩家全量 | isView=0，188 项属性（LogicState/HPRatio/MPRatio/MaxHP/MaxMP/HP/MP/SpeedRatio/MoveSpeed/RunSpeed/HitHP/HitHPRatio/QingGongPoint/.../CurSkillID/CurSkillTarget/.../BufferInfo1-24/五系/PowerLevel/TitleID），即 addObject 同款属性面 |
 | 5 | `0x1E msg337` | `[obj(玩家), f32 x, f32 y, f32 z, f32 朝向, i32 0]` 施法者位置/朝向同步（值来自 211 请求） |
-| 6 | `0x1E msg20` | `[obj(玩家), 技能串, obj(动作目标), i32 0, f32 0.0]` 技能动作。第三参三分（57378/52795 抓包实证，§13）：**锁定/冲锋技（SkillLock/CanRush）=211 目标对象**、**自增益招（IsDamage=0）=施法者自己**、其余伤害技=空对象。62433 花神取证全是第三类，故早期误记「恒空对象」——该参数正是客户端本地冲锋的触发条件 |
+| 6 | `0x1E msg20`（非锁定族）/ `msg19`（锁定族，§13 六轮） | msg20=`[obj, 技能串, obj 目标, 0, 0.0]`：自增益招（IsDamage=0）=施法者自己、其余伤害技=空对象；**锁定/冲锋族（SkillLock/CanRush 带真实 NPC 目标）改走 msg19 锁定帧+可选 c61 冲刺（六轮，out2 定谳）**，不再发 msg20 |
 | 7 | 每个受击目标 | 下方 §4 |
 | 8 | 有 buff 时 | `0x1E msg169` `[169, i32 0, 窄串 buffConfigId, obj(施法者), obj(承载者), 宽串名, 宽串名, i32 0, i32 0]`（九值；对比格挡形态 v8=int64 毫秒）+ `0x10` 玩家 `BufferInfoN`(N=槽位) |
 | 9 | 动作总时长后 | `0x12` 删 active_skill_rec 行 0 + `0x10` 玩家 `State`(idx19)="stand"（12 次出招=12 对，State 帧全程只出现 stand 复位） |
@@ -258,17 +258,19 @@ RushRange，TSP2=6），目标 6.73m → `msg25[30000,'skill_pause']`（**int �
 Java 旧实现串在前已同批修正）+ `msg24[玩家,61,目标位置,2,'qg_fastruning_s_2h_01']`
 疾跑起跑；玩家未抵达（无 C2S 212），30s 窗口作废。
 
-**射程闸模型**（`SkillCastHandler`，替代旧 max(HitShape 半径, 8m 兜底)）：
+**射程闸模型**（`SkillCastHandler`，替代旧 max(HitShape 半径, 8m 兜底)；CanRush 行
+2026-11-06 五轮修订，见 §11.1e）：
 
 | 条件 | 判定值 |
 |---|---|
-| CanRush 且 RushRange>0 | RushRange（冲锋位移上限） |
+| CanRush（含无 RushRange） | **TSP2（技能真实射程）——八轮统一口径，RushRange/15m/60m 放宽全废** |
 | 否则 TargetShapePara2>0 | **TSP2（技能真实射程）** |
 | 全无值 | max(HitShape 半径, 近战身位 8m) 兜底 |
 
-- 超距冲锋（skilllock+CanRush）→ **暂存链**（msg25+msg24，客户端播疾跑=有反馈），
-  30s 内 C2S 212 落地续招——**默认开**（用户拍板对齐参考服 exe）；
-  `-Dnineyin.rush.stage=false` 关回官服语义（锁定/冲锋族 60m 兜底直接受理+337 终点）。
+- 真超距冲锋（skilllock+CanRush 且超受理上限）→ **暂存链**（msg25+msg24，客户端
+  播疾跑=有反馈），30s 内 msg15/212 到位落地续招——**默认开**（用户拍板对齐参考
+  服 exe）；`-Dnineyin.rush.stage=false` 关回官服语义（锁定/冲锋族 60m 兜底直接
+  受理）。
 - 其余单体超距静默拒（客户端本地按 TSP2 面板变红，参考服同）。
 - 旧「锁定族 60m 兜底」只在官服语义保留（stage 关时）。
 - 测试：`RushStageFlowTest.myjf02OutOfRangeStagesByTargetShapePara2`（61653 场景
@@ -294,23 +296,39 @@ Java 旧实现串在前已同批修正）+ `msg24[玩家,61,目标位置,2,'qg_f
 （与 212 共用本体：337+msg26+重组 211 出招）。`consumePendingCast` 幂等，双触发
 只生效一次。msg15 高频：非冲锋态直接 return 不落日志。
 
-### 11.1e 冲锋两段时序：标记在阈值、结算在目标身位（2026-11-05 四轮，用户拍板）
+### 11.1e 冲锋六轮定稿：msg19 锁定帧 + msg24 c61 冲刺指令（2026-11-06，out2 官方时间线定谳）
 
-用户复盘三次半成品迭代（①原地释放 ②337 携终点=瞬移 ③进 castRange 即续招=阈值处
-出伤害）后定准时序：**到达限制阈值时下发冲锋的标记，到达目标位置后才正式触发
-技能特效造成伤害**。修正 §11.1c/1d 的「进 castRange 即续招」：
+五轮（射程内立即受理+msg20 带目标）真机仍无冲刺且可释放距离变远——**msg20 目标对象不是
+冲刺触发器**（官服 op2 抓包 msg20 目标=空 obj(0,0) 冲刺照样发生，记忆在案）。扫官服
+capture-players/out2 时间线（119.3.204.0 官方 IP，17k+ 帧）钉死真协议：
 
-| 距目标距离 | 行为 |
-|---|---|
-| > 到达半径 5m（含超射程） | **只发冲锋标记**：暂存（msg25[30000]+msg24 c61 疾跑去目标位），不结算、不发 CD/msg20/伤害；也不吃 castRange 拒（TSP2 可小于 5m，如 cqgf01=3m——否则 (TSP2,5m] 成静默死区） |
-| ≤ 到达半径 5m（msg15/212 上报；按下时已在身位则直接） | **落地续招正式出招**：337(落点)+msg26+CD 行+msg20(带目标)+伤害段，全部从到达坐标结算 |
-
-`RUSH_ARRIVAL_RADIUS_METERS=5` 依据：61653 实证客户端疾跑终点=目标位、到过 1m
-内；近战 8m 兜底偏远（8m 出伤仍是阈值处释放），碰撞停距 ~1-3m，5m 兼大体型 NPC。
-`-Dnineyin.rush.stage=false` 时整链关回官服语义（60m 兜底直接受理）。
-测试：`GroundChargeAndRageTest.chargeArrivalRadiusGatesActualCast`（12m 只标记/
-10m 仍不结算/4m 正式出招）+ `chargeSkillRangeWidenedByCanRush`（>5m 标记、贴身
-直接受理、非冲锋仍拒）。
+- **锁定族出招走 msg19 锁定帧（24 值），不走 msg20**：`[19, obj 施法者, obj 目标, 技能串,
+  i32 LockSrcTime, i32 LockTargetTime, f32 施法者x/y/z, f32 施法者朝向, f32 0,
+  f32 目标x/y/z, f32 目标朝向, f32 BindDistance, str"0", f32 0, i32 0, i32 0, f32 0,
+  f32 绑定点x/y/z]`——绑定点=目标朝施法者方向 BindDistance 处（官服两例实测 1.49/1.08
+  =各自 BindDistance）。官服锁定族（含冲锋/闪避/招架变体如 wuji_CS_jh_myjf02/03、
+  fwz2_CS_jy_xsd03、CS_jh_chz04）全走此帧；msg20 只属非锁定技。
+- **冲刺=msg24 c1=61 冲刺指令 + location 终点锚**（官方序列：CurSkillTarget 属性 →
+  c61 → loc(终点) → loc(终点,转向) → msg19，间隔 ~100/340ms）：`[24, obj, 61, f32 终点
+  x/y/z, 档位1, LockGRushAction 动画名]`——动画名取 skill_lock_data.ini 逐 LockType 的
+  LockG/A/WRushAction（qg_fastrun_Xh_01=地面疾冲），终点=目标朝施法者方向
+  |LockSrcDist|（负值如 myjf02 敛影逃形 -6.13=背向脱离）处。绑定距离内出招只发 msg19
+  无 c61。**此帧同时驱动本人与观察者客户端**（61653 参考服 c61 疾跑本人可驱动已实证）。
+- **Java 实现（六轮）**：`SkillCastHandler.emitLockCast`——锁定族带真实 NPC 目标：
+  距目标 > BindDistance+1m 且 CanRush → c61（档1+LockGRushAction+终点）+0x1F 终点锚，
+  随后 msg19；`CombatSkillCatalog.lockData()` 装载 skill_lock_data.ini（LockType 索引）。
+  msg19 v18/v19（官服 603/725、75/25 语义未定）暂 0。
+- **七轮（真机反馈「远距离也能触发」）**：超受理上限一律**静默拒**（零帧）；参考服
+  暂存疾跑链**默认关**（`-Dnineyin.rush.stage=true` 显式回退）；「锁定族 60m 兜底」废。
+- **八轮（2026-11-06 真机反馈「还是没控制住释放距离」定稿）**：**全部技能（含冲锋族）
+  受理=TSP2 技能真实射程**（myjf02/03=6、yqq02=4、cqgf01=3；实测日志 myjf03 在 13m
+  仍放行=RushRange=15 放宽所致）——五~七轮的 max(RushRange,15m 回落) 一并废除；
+  冲刺只负责「射程内↔绑定距离」最后一小段位移，不再是超射程受理的借口。
+- **测试**：RushStageFlowTest=rushInRangeDashesOutOfRangeRejected（12m 受理 c61+msg19、
+  20m 静默拒）+ 暂存链两用例显式 setProperty(true)（回退链回归）；
+  GroundChargeAndRageTest.msg19Target；SkillCastWiringTest sfgp01 贴身（0m 无 c61）
+  六帧序不变天然兼容。测试序注意：RushStage 先跑会污染 Wiring 的 manualParry（跨类
+  ServerPaths/缓存状态，默认套件按包序 wiring 先跑不触发）。
 
 ### 11.2 怒气获得（官方机制，用户 2026-11-03 确认）
 
@@ -372,6 +390,12 @@ MeleePower 为独立攻击强度不折入）。修复前空手 attack=0 走公�
 持刀仍拒/拳套空手可出）。
 
 ## 13. 冲锋位移触发条件（2026-11-04，bug.txt「伤害出了，但人没过去」取证）
+
+> **⚠️ 六轮勘误（2026-11-06）**：本节「msg20 目标对象=冲锋触发条件」结论已被官服
+> out2 时间线取代——官方锁定族出招走 **msg19 锁定帧**（非 msg20），冲刺由 **msg24
+> c1=61 冲刺指令（LockGRushAction 动画+终点）+location 终点锚**驱动，详见 §11.1e。
+> 本节官服「无位移帧」记录来自已丢失的 57378 会话窗口（其中 msg20 目标=空 obj(0,0)，
+> 与本节表述自相矛盾处以此勘误为准）。337/0x1F 恒原地结论仍有效。
 
 来源：`E:\Workspace\project\game\9yin\9yin_server1\captures\local\` 57378（君子堂 jysg/yqq +
 峨眉 shl）与 bak/52795（华山 gxfhj + 鸿钧 yydf/hyjf/chz）双抓包逐帧对齐。

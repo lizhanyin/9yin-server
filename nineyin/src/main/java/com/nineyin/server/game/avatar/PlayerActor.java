@@ -1332,9 +1332,13 @@ public final class PlayerActor {
         prop(writer, "CantJump", PropertyValues.Value.ofByte(0), bump);
         prop(writer, "HPRatio", PropertyValues.Value.ofInt32(ratio(state.hp(), state.maxHp())), bump);
         prop(writer, "MPRatio", PropertyValues.Value.ofInt32(ratio(state.mp(), state.maxMp())), bump);
-        // 2026-11-05 IDA 参考服方言（totalResourceAdds 0x14040b880 + GO 抓包 MaxHP=1000/MaxHPAdd=301/HP=1495）：
-        // MaxHP 推 base 基础值，Add 层与五维换算由客户端自行叠加（HP 允许 > MaxHP+Add）。
-        // 推有效值=客户端把 7×Sta+2×Str 再叠一遍（真机 3496 被叠成 5366）。
+        // 2026-11-05 IDA 钉死客户端血蓝条上限公式（fxgamelogic.unpacked.dll
+        // sub_121018F0/sub_12101BD0：pbar_hp.Maximum = MaxHPAdd + MaxHP×(MaxHPMul+1)；
+        // MP 同构 sub_120F4C10：pbar_mp.Maximum = MaxMPAdd + MaxMP×(MaxMPMul+1)；
+        // sub_127C4950 百分比耗血/蓝同构 MaxHP/MaxMP+Add）：客户端不算五维、不叠
+        // 任何层，Mul 缺省 0 即 MaxHP+MaxHPAdd。全折差（五维+词缀+书）全由 Add
+        // 承载（PlayerProgress 推值），故 MaxHP/MaxMP 只推 base；推有效值会被
+        // 客户端当 base 原样用再叠 Add（真机 3496 被叠成 5366）。
         prop(writer, "MaxHP", PropertyValues.Value.ofInt32(state.baseMaxHp()), bump);
         prop(writer, "MaxMP", PropertyValues.Value.ofInt32(state.baseMaxMp()), bump);
         prop(writer, "HP", PropertyValues.Value.ofInt32(state.hp()), bump);

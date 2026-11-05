@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import com.nineyin.server.protocol.CustomMessages;
 import com.nineyin.server.protocol.PropertyValues;
 import com.nineyin.server.protocol.Props;
 import com.nineyin.server.protocol.RecordMessages;
@@ -16,13 +15,17 @@ import com.nineyin.server.protocol.SceneMessages;
  * Card）：
  *
  * <ul>
- *   <li>收集：{@code CardRec[3]} 按位记录（一位一皮肤，32 个/行）——行序走 0x11
- *       追加方言（同 Task_Completed/快捷栏多行的既证模式，每帧一行）；</li>
+ *   <li>收集：{@code CardRec[3]} 按位记录（一位一皮肤，32 个/行；serial=皮肤号+1，
+ *       与 Task_Completed/引擎 FxGameLogic 位判定同式——皮肤 1=行 0 位 1，皮肤
+ *       31=行 0 位 31，皮肤 32=行 1 位 0）——行序走 0x11 追加方言（同
+ *       Task_Completed 的既证模式，每帧一行）；</li>
  *   <li>挂载：{@code UseCardRec[2,2]} 两 u16 列（皮肤 ID + 显示类型 0），
  *       追加行；卸下按零基行号 0x12 删行（倒序防重排）；</li>
  *   <li>显示通道：玩家属性 ShowEquipType（byte，2=优先显示皮肤模型）+
- *       CardID（int，当前挂载皮肤）；</li>
- *   <li>刷新通知：custom 消息 180（CLIENT_CUSTOMMSG_CARD → 客户端 on_card_msg）。</li>
+ *       CardID（int，当前挂载皮肤）。收录/挂载状态由记录帧本身驱动客户端
+ *       CollectCardManager（IsGetCard）与 data_binder 刷新——**不要**发裸值
+ *       custom 180：S2C 180 是子操作分发（0 开兑换窗/1 开替换窗/2 开收录窗/
+ *       3 收录回执/4 武道购买），裸皮肤号会被当 opt_type 误开窗。</li>
  * </ul>
  */
 public final class SkinMessages {
@@ -31,8 +34,13 @@ public final class SkinMessages {
     public static final int RECORD_CARD = RecordSchemas.indexByName("CardRec");
     public static final int RECORD_USE_CARD = RecordSchemas.indexByName("UseCardRec");
 
-    /** S2C custom 180 = CLIENT_CUSTOMMSG_CARD（客户端 on_card_msg 处理器）。 */
+    /** S2C/C2C custom 180 = CLIENT_CUSTOMMSG_CARD（客户端 on_card_msg 处理器）。 */
     public static final int CUSTOM_MSG_CARD = 180;
+
+    /** C2S 180 子操作（lua64 client_custom_define/form_card/form_collect_card 钉死）。 */
+    public static final int CARD_SUB_USE = 0;
+    public static final int CARD_SUB_CANCEL = 1;
+    public static final int CARD_SUB_COLLECT = 7;
 
     /** ShowEquipType=2：皮肤模型优先于装备外形显示（GM「风物志卡牌」口径）。 */
     public static final int SHOW_EQUIP_TYPE_SKIN = 2;
@@ -96,23 +104,34 @@ public final class SkinMessages {
         return SceneMessages.objectProperties(objectId, ownerId, 0, properties);
     }
 
-    /** on_card_msg 通知（custom 180，携带皮肤号；0=清空）。 */
-    public static byte[] skinMsgFrame(int skinId) {
-        return CustomMessages.customIntMessage(CUSTOM_MSG_CARD, CustomMessages.Value.ofInt32(skinId));
-    }
+    /** on_card_msg 通知已删：S2C 180 是子操作分发，收录/挂载由记录帧驱动，裸皮肤号会被当 opt_type 误开窗。 */
 
-    /** 位图行（一位一皮肤：行 N = 皮肤号 [32N+1, 32N+32]；至少一行建立通道）。 */
+    /**
+     * 位图行（一位一皮肤，serial=皮肤号+1——与 {@code TaskMessages.completedBit}
+     * /引擎 FxGameLogic 位判定同式：皮肤 0=行 0 位 0、皮肤 1=行 0 位 1、皮肤 31=
+     * 行 0 位 31、皮肤 32=行 1 位 0；至少一行建立通道）。
+     */
     static long[] bitmapRows(Collection<Integer> skinIds) {
-        int max = 0;
+        int maxRow = 0;
         for (int skinId : skinIds) {
-            max = Math.max(max, skinId);
-        }
-        long[] rows = new long[max / 32 + 1];
-        for (int skinId : skinIds) {
-            if (skinId <= 0) {
+            if (skinId < 0) {
                 continue;
             }
-            rows[(skinId - 1) / 32] |= 1L << ((skinId - 1) % 32);
+            maxRow = Math.max(maxRow, (skinId + 1) / 32);
+        }
+        long[] rows = new long[maxRow + 1];
+        for (int skinId : skinIds) {
+            if (skinId < 0) {
+                continue;
+            }
+            long serial = skinId + 1;
+            long row = serial / 32;
+            long bit = serial % 32;
+            if (bit == 0) {
+                row--;
+                bit = 32;
+            }
+            rows[(int) row] |= 1L << (bit - 1);
         }
         return rows;
     }

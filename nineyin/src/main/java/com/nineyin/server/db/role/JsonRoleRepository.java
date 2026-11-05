@@ -283,6 +283,30 @@ public final class JsonRoleRepository implements RoleRepository {
     }
 
     @Override
+    public Roles.RoleSummary findRoleByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        lock.readLock().lock();
+        try {
+            for (Map.Entry<String, Roles.RoleValue> entry : accounts.entrySet()) {
+                if (!name.equals(entry.getValue().name())) {
+                    continue;
+                }
+                JsonIdentity identity = identities.get(entry.getKey());
+                if (identity == null || identity.roleId == 0) {
+                    return null;
+                }
+                return new Roles.RoleSummary(identity.roleId, identity.slot, entry.getValue().name(),
+                        identity.deleteRequested, identity.roleVersion);
+            }
+            return null;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
     public Roles.RoleSnapshot create(long accountId, Roles.NewRole draft) {
         validateDraft(draft);
         lock.writeLock().lock();

@@ -142,6 +142,29 @@ public final class MySqlRoleRepository implements RoleRepository {
         }
     }
 
+    @Override
+    public Roles.RoleSummary findRoleByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT role_id, slot, name, delete_requested_at, version"
+                             + " FROM " + table("roles") + " WHERE name = ?")) {
+            statement.setString(1, name);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return null;
+                }
+                Timestamp deleted = rows.getTimestamp("delete_requested_at");
+                return new Roles.RoleSummary(rows.getLong("role_id"), rows.getInt("slot"),
+                        rows.getString("name"), deleted != null, rows.getLong("version"));
+            }
+        } catch (SQLException e) {
+            throw storage(e);
+        }
+    }
+
     private String snapshotColumns() {
         return "SELECT r.role_id, r.account_id, r.slot, r.name, r.delete_requested_at, r.version,"
                     + " a.format_version, a.appearance, a.version AS appearance_version,"

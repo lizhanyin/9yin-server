@@ -1,12 +1,14 @@
 package com.nineyin.server.world.fight;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -24,15 +26,52 @@ class CombatSkillCatalogTest {
     private static final Path GO_SERVER_ROOT = Path.of("G:/pojie/ai/9yin-go-server1");
 
     private static CombatSkillCatalog catalog;
+    private static Path combinedRoot;
 
+    /** 表根优先取运行根（effects_data 生成源，cf 族等已随 11-05 更表重调）；缺省回落 GO 仓。 */
+    private static final Path LIVE_SERVER_ROOT = Path.of("F:/Game/Online/9yin/9yin_server_new");
+
+    /**
+     * 单根拼装（同 NeiGongEffectsFlowTest）：resources→运行根/GO 仓（表）、scripts→本仓
+     * （含 effects_data.lua 汇总表）——目录编译跑在「Lua 权威 + INI 兜底」的完整
+     * 生产形态下。AfterAll 还原仓库根并 reload。
+     */
     @BeforeAll
-    static void loadCatalog() {
+    static void loadCatalog() throws Exception {
+        Path scriptsRoot = Path.of("").toAbsolutePath().normalize().getParent();
+        Path tables = LIVE_SERVER_ROOT;
+        if (!Files.isDirectory(tables.resolve(Path.of("resources", "modern", "share", "skill")))) {
+            tables = GO_SERVER_ROOT;
+        }
         Assumptions.assumeTrue(Files.isDirectory(
-                GO_SERVER_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
-                "share/skill ini missing (needs Go repo resources)");
-        ServerPaths.overrideServerRoot(GO_SERVER_ROOT);
+                tables.resolve(Path.of("resources", "modern", "share", "skill"))),
+                "share/skill ini missing (needs live/Go repo resources)");
+        Assumptions.assumeTrue(Files.isRegularFile(
+                scriptsRoot.resolve(Path.of("scripts", "skill", "effects_data.lua"))),
+                "scripts/skill/effects_data.lua missing");
+        combinedRoot = Files.createTempDirectory("catalog-root");
+        junction(combinedRoot.resolve("resources"), tables.resolve("resources"));
+        junction(combinedRoot.resolve("scripts"), scriptsRoot.resolve("scripts"));
+        ServerPaths.overrideServerRoot(combinedRoot);
+        com.nineyin.server.script.LuaScriptService.getInstance().reload();
         catalog = CombatSkillCatalog.load();
         Assumptions.assumeTrue(catalog.indexedCount() > 0, "catalog compiled nothing");
+    }
+
+    @AfterAll
+    static void restoreRepoRoot() {
+        if (combinedRoot != null) {
+            ServerPaths.overrideServerRoot(
+                    Path.of("").toAbsolutePath().normalize().getParent());
+            com.nineyin.server.script.LuaScriptService.getInstance().reload();
+        }
+    }
+
+    /** Windows 目录 junction（免管理员）；失败则跳过本类。 */
+    private static void junction(Path link, Path target) throws Exception {
+        Process process = new ProcessBuilder("cmd", "/c", "mklink", "/J",
+                link.toString(), target.toString()).inheritIO().start();
+        Assumptions.assumeTrue(process.waitFor() == 0, "mklink /J 不可用，跳过（link=" + link + "）");
     }
 
     @Test
@@ -119,5 +158,49 @@ class CombatSkillCatalogTest {
         assertEquals(6, yihua05.effects().stream()
                 .filter(e -> e.kind() == CombatSkill.EffectKind.PLAYER_BUFF)
                 .findFirst().orElseThrow().buff().preferredSlot());
+    }
+
+    /**
+     * effects_data 数据驱动编译（全技能效果接入 Lua 的主体路径）：
+     * tjq01 伤害/目标控制（有害精确 buff → target_effects control=true，frame=false
+     * 与 INI 行为逐位一致）+ by_level 按级伤害；hsqs04 手写覆盖（35s）胜过数据面 24h。
+     */
+    @Test
+    void dataDrivenEffectsCompile() {
+        CombatSkill tjq01 = catalog.definition("CS_wd_tjq01", 1);
+        assertNotNull(tjq01, "tjq01 compiles");
+        assertEquals(112, tjq01.baseDamage(), "effects_data damage amount");
+        assertEquals(1, tjq01.damageWaves());
+        CombatSkill.Effect control = tjq01.effects().stream()
+                .filter(e -> e.kind() == CombatSkill.EffectKind.TARGET_CONTROL)
+                .findFirst().orElse(null);
+        assertNotNull(control, "tjq01 target control effect (harmful exact buff)");
+        assertTrue(control.control());
+        assertFalse(control.frame(), "数据驱动 control 不发 169 帧（INI 行为一致）");
+        assertEquals("buf_CS_wd_tjq01", control.buff().configId());
+        assertEquals(6069, control.buff().staticData());
+        assertEquals(10_000, control.buff().lifetimeMs());
+        assertEquals(1, tjq01.effects().stream()
+                .filter(e -> e.kind() == CombatSkill.EffectKind.TARGET_CONTROL).count(),
+                "数据面 target_effects 整组取代，不与 exact 路径叠加");
+
+        // by_level 按级伤害（L5=205/L10=341；L1 基准 112）
+        assertEquals(205, catalog.definition("CS_wd_tjq01", 5).baseDamage());
+        assertEquals(341, catalog.definition("CS_wd_tjq01", 10).baseDamage());
+
+        // sfgp01：自 buff 走数据面（5000ms 与 INI 同值，行为不变）
+        CombatSkill sfgp01 = catalog.definition("CS_jh_sfgp01", 1);
+        assertEquals(302, sfgp01.baseDamage());
+        CombatSkill.Effect selfBuff = sfgp01.effects().stream()
+                .filter(e -> e.kind() == CombatSkill.EffectKind.PLAYER_BUFF)
+                .findFirst().orElseThrow();
+        assertEquals(27299, selfBuff.buff().staticData());
+        assertEquals(5000, selfBuff.buff().lifetimeMs());
+
+        // hsqs04 手写脚本优先：数据面 24h → 手写租约 35s
+        CombatSkill hsqs04 = catalog.definition("CS_yhwq_hsqs04", 1);
+        assertEquals(35_000, hsqs04.effects().stream()
+                .filter(e -> e.kind() == CombatSkill.EffectKind.PLAYER_BUFF)
+                .findFirst().orElseThrow().buff().lifetimeMs());
     }
 }

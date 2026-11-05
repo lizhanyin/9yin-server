@@ -710,6 +710,60 @@ class GmRemoteRoundTripTest {
         assertTrue(JSON.parseObject(weatherQueued).getBooleanValue("ok"),
                 "set_weather 应白名单透传: " + weatherQueued);
 
+        // command：GM 邮件参数域（content/itemConfig 双空 / 超长 title 入口即拒，不入队）。
+        Map<String, Object> mailEmpty = Map.of(
+                "sessionId", 7,
+                "action", "send_mail",
+                "params", Map.of("title", "无内容"));
+        String mailEmptyRejected = remote.syncRemote("GmRemote", "command", mailEmpty, String.class);
+        assertFalse(JSON.parseObject(mailEmptyRejected).getBooleanValue("ok"),
+                "正文与附件双空应被拒: " + mailEmptyRejected);
+        Map<String, Object> mailLongTitle = Map.of(
+                "sessionId", 7,
+                "action", "send_mail",
+                "params", Map.of("content", "hi", "title", "标".repeat(65)));
+        String mailTitleRejected = remote.syncRemote("GmRemote", "command", mailLongTitle, String.class);
+        assertFalse(JSON.parseObject(mailTitleRejected).getBooleanValue("ok"),
+                "超长标题应被拒: " + mailTitleRejected);
+
+        // command：GM 邮件 send_mail 白名单透传 + 游戏侧回执回环（五参数原样到达）。
+        Thread mailConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 1; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "send_mail" -> {
+                        assertEquals("离线收件人", command.params().getString("roleName"));
+                        assertEquals("补偿公告", command.params().getString("title"));
+                        assertEquals("维护补偿请查收", command.params().getString("content"));
+                        assertEquals("yaopin_00100", command.params().getString("itemConfig"));
+                        assertEquals(2, command.params().getIntValue("amount"));
+                        command.succeed("邮件已发给 离线收件人（离线，下次登录查收）：「补偿公告」 附 止血药 x2");
+                    }
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-mail-consumer");
+        mailConsumer.start();
+        Map<String, Object> mailData = Map.of(
+                "sessionId", 7,
+                "action", "send_mail",
+                "params", Map.of("roleName", "离线收件人", "title", "补偿公告",
+                        "content", "维护补偿请查收", "itemConfig", "yaopin_00100", "amount", 2));
+        String mailQueued = remote.syncRemote("GmRemote", "command", mailData, String.class);
+        mailConsumer.join(5000);
+        assertTrue(JSON.parseObject(mailQueued).getBooleanValue("ok"),
+                "send_mail 应白名单透传: " + mailQueued);
+
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);
         assertFalse(JSON.parseObject(before).getBooleanValue("enabled"));

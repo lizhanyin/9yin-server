@@ -118,6 +118,7 @@ public final class NineyinServer implements SummerApp {
         dsn.ifPresent(d -> flow.attachLetterDatabase(d));
         dsn.ifPresent(d -> flow.attachMountDatabase(d));
         dsn.ifPresent(d -> flow.attachIdleStanceDatabase(d));
+        dsn.ifPresent(d -> flow.attachBingluDatabase(d));
         return flow;
     }
 

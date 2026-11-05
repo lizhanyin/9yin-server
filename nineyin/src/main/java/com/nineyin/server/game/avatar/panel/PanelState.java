@@ -38,6 +38,9 @@ public final class PanelState {
     public int maxSat;
     public int pkValue;            // 杀戮值（426，红名来源）
     public int drunkLevel;         // 酒量（722）
+    /** PK 模式（437，i32；GM set_pk_mode 驱动客户端 UI/本地渲染。服务端攻击门控未接，
+     *  会话态不落库——官方玩法链 C2S 291 custom_set_pkmode 接通后改同源状态机）。 */
+    public int pkMode;
 
     // ------------------------------------------- 域块（DB 驱动，保守语义真机待验）
     /** 佩戴称号（role_titles is_worn=1；0=无，面板显示名走客户端 TitleID 表）。 */
@@ -209,6 +212,7 @@ public final class PanelState {
         Props.add(properties, "MaxSat", PropertyValues.Value.ofInt32(maxSat));
         Props.add(properties, "PKValue", PropertyValues.Value.ofInt32(pkValue));
         Props.add(properties, "DrunkLevel", PropertyValues.Value.ofInt32(drunkLevel));
+        Props.add(properties, "PKMode", PropertyValues.Value.ofInt32(pkMode));
         return properties;
     }
 

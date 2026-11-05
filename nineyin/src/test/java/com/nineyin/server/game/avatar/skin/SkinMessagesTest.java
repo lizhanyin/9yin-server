@@ -8,8 +8,9 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * 风物志皮肤协议帧测试：位图行分组（一位一皮肤，32/行）+ 帧头方言
- * （0x11 记录行 / 0x12 删行 / 0x10 属性 / 0x1E custom 180）。
+ * 风物志皮肤协议帧测试：位图行分组（一位一皮肤，32/行，serial=皮肤号+1——与
+ * Task_Completed/引擎 FxGameLogic 位判定同式）+ 帧头方言（0x11 记录行 /
+ * 0x12 删行 / 0x10 属性）。
  */
 class SkinMessagesTest {
 
@@ -27,13 +28,17 @@ class SkinMessagesTest {
         // 空 → 单行 0（建立通道）
         assertEquals(1, SkinMessages.bitmapRows(List.of()).length);
         assertEquals(0L, SkinMessages.bitmapRows(List.of())[0]);
-        // 皮肤 1 → 行 0 位 0；32 → 行 0 位 31；33 → 行 1 位 0
-        long[] rows = SkinMessages.bitmapRows(List.of(1, 32, 33));
+        // serial=皮肤号+1：1→行0位1；31→行0位31；32→行1位0；33→行1位1
+        long[] rows = SkinMessages.bitmapRows(List.of(1, 31, 32, 33));
         assertEquals(2, rows.length);
-        assertEquals((1L << 0) | (1L << 31), rows[0]);
-        assertEquals(1L << 0, rows[1]);
-        // 非正数皮肤号忽略
-        assertEquals(1, SkinMessages.bitmapRows(List.of(0, -5)).length);
+        assertEquals((1L << 1) | (1L << 31), rows[0]);
+        assertEquals((1L << 0) | (1L << 1), rows[1]);
+        // 同行多位共存：皮肤 1、2 → 行 0 位 1、2（0b110）
+        assertEquals(0b110, SkinMessages.bitmapRows(List.of(1, 2))[0]);
+        // 皮肤 0 → serial 1 → 行 0 位 0（引擎口径 id0 合法位）；负数忽略
+        assertEquals(1L << 0, SkinMessages.bitmapRows(List.of(0))[0]);
+        assertEquals(1, SkinMessages.bitmapRows(List.of(-5)).length);
+        assertEquals(0L, SkinMessages.bitmapRows(List.of(-5))[0]);
     }
 
     @Test
@@ -72,11 +77,10 @@ class SkinMessagesTest {
     }
 
     @Test
-    void showEquipTypeAndMsgFrames() {
+    void showEquipTypeFrameDialect() {
         byte[] propertyFrame = SkinMessages.showEquipTypeFrame(1, 1,
                 SkinMessages.SHOW_EQUIP_TYPE_SKIN, 9);
         assertEquals(0x10, propertyFrame[0] & 0xFF);
-        byte[] msgFrame = SkinMessages.skinMsgFrame(9);
-        assertEquals(0x1E, msgFrame[0] & 0xFF);
+        // S2C custom 180 是子操作分发（开窗/回执），收录刷新不发——见类注释。
     }
 }

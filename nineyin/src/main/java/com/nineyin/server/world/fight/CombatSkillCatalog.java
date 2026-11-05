@@ -22,7 +22,10 @@ import com.nineyin.util.ServerPaths;
  *
  * <p>Go 的 verifiedSkillEffectOverlays 硬编码覆盖已迁移为 scripts/skill/&lt;ID&gt;.lua
  * 的 M.compile 契约（{@link LuaScriptService#skillOverlay}）：self_buff_lease_ms/
- * self_buff_slot/red_armor/stance_cycle.variants；无脚本技能沿用 INI 默认编译。
+ * self_buff_slot/red_armor/stance_cycle.variants + 完整效果集
+ * （damage/self_buffs/target_effects，target_effects 整组取代有害精确 buff 的
+ * 目标控制）。无逐技能脚本的技能查汇总表 effects_data.lua（生成器产出，
+ * by_level 按级差集）；两者皆无沿用 INI 默认编译。
  * 编译字段语义与抓包 CD 映射见 docs/combat-skill-211.md。
  */
 public final class CombatSkillCatalog {
@@ -109,6 +112,7 @@ public final class CombatSkillCatalog {
         Map<String, Section> buffStatic = new HashMap<>();
         Map<String, Section> buffVar = new HashMap<>();
         Map<String, Section> useLimit = new HashMap<>();
+        Map<String, Section> lockData = new HashMap<>();
     }
 
     private final Tables tables;
@@ -153,6 +157,11 @@ public final class CombatSkillCatalog {
 
     public int indexedCount() {
         return indexed.size();
+    }
+
+    /** 已索引技能 ID（skillnormal/skilllock 全集；parity 对照/诊断用）。 */
+    public java.util.Set<String> indexedIds() {
+        return java.util.Collections.unmodifiableSet(indexed.keySet());
     }
 
     /**
@@ -262,6 +271,44 @@ public final class CombatSkillCatalog {
             float hitShapePara1, float hitShapePara2) {
     }
 
+    /**
+     * 锁定/冲锋族锁定参数（skill_lock_data.ini，按 skill_static.LockType 索引）。
+     * 官服 out2 时间线实证用途：groundRushAction=LockGRushAction（msg24 c1=61 冲刺
+     * 指令第 8 值动画名）；srcTimeMs/targetTimeMs=LockSrcTime/LockTargetTime（msg19
+     * 锁定帧第 5/6 值）；bindDistance=BindDistance（msg19 第 16 值）；srcDist=
+     * LockSrcDist（冲刺落点：正=贴到目标该距离、负=背向脱离该距离，如 myjf02
+     * 敛影逃形=-6.13）。
+     */
+    public record LockData(
+            String groundRushAction, String airRushAction, String waterRushAction,
+            int srcTimeMs, int targetTimeMs, float bindDistance, float srcDist) {
+    }
+
+    /** 技能的锁定参数（与级无关）：skill_new→skill_static.LockType→skill_lock_data 行。 */
+    public LockData lockData(String id) {
+        if (id == null) {
+            return null;
+        }
+        Section newFields = tables.skillNew.get(id);
+        if (newFields == null) {
+            return null;
+        }
+        Section staticFields = tables.skillStatic.get(
+                Integer.toString(newFields.int32("StaticData")));
+        if (staticFields == null) {
+            return null;
+        }
+        Section row = tables.lockData.get(Integer.toString(staticFields.int32("LockType")));
+        if (row == null || row.isEmpty()) {
+            return null;
+        }
+        return new LockData(
+                row.last("LockGRushAction"), row.last("LockARushAction"),
+                row.last("LockWRushAction"),
+                row.int32("LockSrcTime"), row.int32("LockTargetTime"),
+                row.f32("BindDistance"), row.f32("LockSrcDist"));
+    }
+
     public int levelOneCount() {
         return levelOne.size();
     }
@@ -353,6 +400,10 @@ public final class CombatSkillCatalog {
         readIni(tables.buffStatic, skillRoot.resolve("buff_static.ini"));
         readIni(tables.buffVar, skillRoot.resolve("buff_varprop.ini"));
         readIni(tables.useLimit, skillRoot.resolve("skill_use_limit.ini"));
+        // skill_lock_data.ini：锁定/冲锋族逐 LockType 的冲刺动画与锁定参数（官服
+        // out2 时间线实证：msg24 c61 冲刺指令携带本表 LockG/A/WRushAction 动画名，
+        // msg19 锁定帧携带 LockSrcTime/LockTargetTime/BindDistance）
+        readIni(tables.lockData, skillRoot.resolve("skill_lock_data.ini"));
         // zhaoshi_list.ini 逻辑包含四文件为单一命名空间：后文件整节覆盖同节
         Path actionRoot = ServerPaths.projectPath("resources", "modern", "ini", "action");
         for (String name : new String[]{"zhaoshi_player.ini", "zhaoshi_player_2.ini",
@@ -425,16 +476,33 @@ public final class CombatSkillCatalog {
         }
         int cooldownTeam = staticFields.int32("CoolDownTeam");
 
-        List<CombatSkill.Effect> effects = new ArrayList<>(3);
+        // Lua 效果覆盖（逐技能脚本 → effects_data 汇总表；null = INI 默认编译）。
+        ExactBuff exact = compileExactSkillBuff(skillId, level);
+        LuaScriptService.SkillOverlay overlay = LuaScriptService.getInstance()
+                .skillOverlay(skillId, level, exact == null ? null
+                        : new LuaScriptService.ExactBuff(exact.configId(), exact.staticData(),
+                        exact.level(), exact.lifetimeMs()));
+        if (overlay != null && overlay.damageAmount() != null) {
+            damage[0] = overlay.damageAmount();
+            if (overlay.damageWaves() != null) {
+                damage[1] = overlay.damageWaves();
+            }
+        }
+
+        List<CombatSkill.Effect> effects = new ArrayList<>(4);
         if (damage[0] > 0) {
             effects.add(CombatSkill.Effect.damage(damage[0]));
         }
-        ExactBuff exact = compileExactSkillBuff(skillId, level);
-        LuaScriptService.SkillOverlay overlay = LuaScriptService.getInstance()
-                .skillOverlay(skillId, exact == null ? null
-                        : new LuaScriptService.ExactBuff(exact.configId(), exact.staticData(),
-                        exact.level(), exact.lifetimeMs()));
-        if (exact != null) {
+        if (overlay != null && overlay.selfBuffs() != null && !overlay.selfBuffs().isEmpty()) {
+            // 多自 buff 列表：整组取代精确 buff 的自增益效果（各带租约/槽）。
+            for (LuaScriptService.SelfBuff self : overlay.selfBuffs()) {
+                effects.add(CombatSkill.Effect.buff(CombatSkill.EffectKind.PLAYER_BUFF,
+                        new CombatSkill.Buff(self.configId(), self.staticData(),
+                                Math.max(1, self.level()),
+                                self.lifeMs() > 0 ? self.lifeMs() : DEFAULT_BUFF_LEASE_MS,
+                                self.slot())));
+            }
+        } else if (exact != null && !exact.harmful()) {
             long lease = exact.lifetimeMs();
             int slot = 0;
             if (overlay != null) {
@@ -445,10 +513,26 @@ public final class CombatSkillCatalog {
                     slot = overlay.selfBuffSlot();
                 }
             }
-            CombatSkill.Buff buff = new CombatSkill.Buff(exact.configId(), exact.staticData(),
-                    level, lease, slot);
-            effects.add(CombatSkill.Effect.buff(exact.harmful()
-                    ? CombatSkill.EffectKind.TARGET_CONTROL : CombatSkill.EffectKind.PLAYER_BUFF, buff));
+            effects.add(CombatSkill.Effect.buff(CombatSkill.EffectKind.PLAYER_BUFF,
+                    new CombatSkill.Buff(exact.configId(), exact.staticData(), level, lease, slot)));
+        }
+        if (overlay != null && overlay.targetEffects() != null && !overlay.targetEffects().isEmpty()) {
+            // 目标效果列表：整组取代有害精确 buff 的目标控制效果。
+            for (LuaScriptService.TargetEffect target : overlay.targetEffects()) {
+                effects.add(CombatSkill.Effect.targetControl(
+                        new CombatSkill.Buff(target.configId(), target.staticData(),
+                                Math.max(1, target.level()),
+                                target.lifeMs() > 0 ? target.lifeMs() : DEFAULT_BUFF_LEASE_MS, 0),
+                        target.control(), target.frame()));
+            }
+        } else if (exact != null && exact.harmful()) {
+            long lease = exact.lifetimeMs();
+            if (overlay != null && overlay.selfBuffLeaseMs() != null) {
+                lease = overlay.selfBuffLeaseMs();
+            }
+            effects.add(CombatSkill.Effect.targetControl(
+                    new CombatSkill.Buff(exact.configId(), exact.staticData(), level, lease, 0),
+                    true, false));
         }
         if (overlay != null && overlay.stanceCycle() != null && !overlay.stanceCycle().isEmpty()) {
             List<CombatSkill.Buff> variants = new ArrayList<>(overlay.stanceCycle().size());
@@ -457,7 +541,8 @@ public final class CombatSkillCatalog {
                         Math.max(1, variant.level()), variant.lifeMs() > 0
                         ? variant.lifeMs() : DEFAULT_BUFF_LEASE_MS, variant.slot()));
             }
-            effects.add(new CombatSkill.Effect(CombatSkill.EffectKind.STANCE_CYCLE, 0, null, variants));
+            effects.add(new CombatSkill.Effect(CombatSkill.EffectKind.STANCE_CYCLE, 0, null,
+                    variants, false, false));
         }
         if (overlay != null && Boolean.TRUE.equals(overlay.redArmor())) {
             effects.add(CombatSkill.Effect.buff(CombatSkill.EffectKind.RED_ARMOR, null));

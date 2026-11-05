@@ -237,3 +237,65 @@ SELECTED 模式。
 - 240（打坐 SITCROSS）与 217/218 仍在 backlog（打坐有独立状态机，另行批次）。
 - yydf04 型引导循环技（观测 6-8 段浮动 > 单趟动作帧数）当前按单趟帧位结算，未做
   动作 Loop 循环判定。
+
+## 十四、item 快捷方式实例稳定 UID（内功栏武器图标漂移定稿，2026-11-06 二轮）
+
+> 现象（真机 2026-11-05 23:55 session=5 实录）：把武器（sword_ytj_001）拖上内功
+> 快捷栏（index 300/301），穿上再脱下（切走再切回）后，快捷栏图标**变成了别的物品**。
+>
+> **定稿（当晚二轮，语义绑定方案真机仍漂后废弃）**：0013 迁移给 role_bag_items /
+> role_equip_items 各加 `uid CHAR(16)`——入包/入装生成全局随机 UID（SecureRandom
+> 8 字节 hex，与角色/槽位无关），穿脱跨表移动（moveBagToEquip/swapEquipSlot/
+> moveEquipToBag）与 upsertEquip 删插重建全程**携带同一 UID**（旧行列空按
+> MD5(role:kind:seq) 派生生效值并随移动物化）；ViewAdd 下发走
+> `InventoryMessages.itemUid`（列值>seq 派生>槽位方言兜底）。快捷栏 item 行
+> **逐字存取 UID**（200 收什么存什么、0x11 发什么），登录时旧槽位 UID 行经
+> `migrateDbShortcutRows` 反解改写为实例 UID（悬空删）。一键穿 886 反解同口径
+> （兼容旧槽位方言）。回归测试 `MoveItemFlowTest.itemShortcutBindingSurvivesWearUnequip
+> AndSlotDrift`：穿→旧槽被占→脱，UID 全程不变（DB 断言）。以下十四节原文为第一轮
+> 语义绑定方案（configId 翻译+推送解析+漂移重建），已被上取代，保留作根因取证。
+
+### 根因（客户端语义 + 官服对照）
+
+- 客户端 shortcut_game.lua：拖物品上栏 = put_view_item_into_shortcut →
+  set_shortcut(index, "item", UniqueID)；渲染/点击均按 FindItemInBagByUID(uid)
+  解析——**item 快捷方式绑定的是物品实例 UID**。
+- 官服抓包（F:/127-0-0-1-61114_s2c.bin，tools/smoke/bag_uid_probe.py）：同一物品
+  在新旧装备栏镜像双视图（view 2 / view 121）下发时 UID 完全一致——官方 UID 是
+  **实例身份**（抓包内同槽位多 UID=0、UID 跨视图复用）。
+- 本服（bak 方言）：InventoryMessages.uniqueId = MD5(roleId:kind:slot) 前 8 字节
+  hex——**槽位寻址**。物品穿上（离开背包槽）后旧 UID 悬空；同槽位再来别的物品时
+  旧 UID 命中新物品 → 图标漂移成别的物品。
+
+### 修复（免 schema 迁移，shortcut 层闭环）
+
+- **语义绑定**：C2S 200 的 item 行在入内存/落库前，UID（16 位小写 hex 形）反解成
+  configId 存储（背包+装备栏两域反解，LoginFlow.configByItemUid）。
+- **推送解析**：三处下发咽喉（登录/切图重放、rebuildShortcutRecord 整表重建）统一
+  走 shortcutForPush：item 行 id 由 configId 解析为**现行**背包 UID 下发；解析不出
+  （已穿/已耗/内存模式无 DB）原样透传——客户端按悬空 UID 处理（空图标、行可拖可
+  删），物品回包后自动恢复。
+- **漂移重建**：LoginSession.itemShortcutUids 记录最近下发的 item 行 UID；背包
+  构成/槽位变动（穿 wearFromBag 尾、脱 unequipFromDoll→pushBagItemFrames 尾、
+  移动 moveBagRow→pushBagItemFrames 尾、消耗 consumeBagItemCount 尾、各类发放
+  入包→pushBagItemFrames 尾）后 rebindItemShortcuts 检测解析结果漂移，漂移才整表
+  重建（无 item 行零开销、UID 未变零帧）。
+- **登录迁移自愈**：migrateDbShortcutRows——DB 基线里历史槽位 UID 行翻译成
+  configId 并回写；两域都解析不出的悬空行按遗忘技能同款删除（内存+DB）。
+- 886 一键穿 / 31 使用等按 view+slot 寻址的链路不受影响（方言未动）。
+
+### 测试
+
+- MoveItemFlowTest.itemShortcutBindingSurvivesWearUnequipAndSlotDrift（真
+  MySQL）：绑武器→穿上→旧槽被 drift_probe_item 占用→脱下（自动落格 1）——断言
+  下发 UID=武器落格 1 的现行 UID，绝不等于旧槽 3 的 UID（漂移根因断言）。
+- ShortcutCustomFlowTest.itemShortcutUidPassthroughWithoutStore：内存模式（无 DB）
+  UID 原样透传不抛异常。
+
+### 顺带发现（未修）
+
+- 官方 UID 实例稳定 vs 本服槽位派生是全局性方言差：邮件附件等按 UID 引用物品的
+  链路同理存在悬空窗口，当前以推送时解析兜底；若后续做实例稳定 UID
+  （role_bag_items / role_equip_items 均有 (role_id,seq) 主键可用），穿脱跨表携带
+  seq 即可彻底对齐官方。
+

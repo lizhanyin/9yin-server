@@ -70,8 +70,18 @@ public final class PlayerProgress {
                 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
-    /** facultyBookSnapshot / facultyProgressSnapshot 的 Go JSON 契约。 */
-    public record BookSnapshot(String configId, int level, int fill, int total, int power, int maxPower) {
+    /**
+     * facultyBookSnapshot / facultyProgressSnapshot 的 Go JSON 契约。
+     * maxLevel=书链抬升后的修炼上限（2026-11-05 补）：秘籍 {@code SkillMaxLevel}/
+     * 传承 {@code AddMaxLevel} 只改运行时 {@link Book#maxLevel}，旧六字段快照不含
+     * 它→重登上限回落目录默认、后续篇章门槛全灭。旧档 0=保目录默认。
+     */
+    public record BookSnapshot(String configId, int level, int fill, int total, int power, int maxPower,
+                               int maxLevel) {
+        /** 旧契约构造（快照无修炼上限层）：maxLevel=0 → restore 保目录默认。 */
+        public BookSnapshot(String configId, int level, int fill, int total, int power, int maxPower) {
+            this(configId, level, fill, total, power, maxPower, 0);
+        }
     }
 
     /**
@@ -403,6 +413,37 @@ public final class PlayerProgress {
         }
     }
 
+    /**
+     * GM learn_all_neigong：按目录补全缺失内功书（level 1 / fill 0 / power=曲线首级，
+     * 效果与三件套走 {@link #applyModernEffect} best-effort 回填）。已有 configId 跳过
+     * （等级/修为不动）。返回新增列表（调用方负责 View43 重建与落库）。
+     */
+    public List<Book> addMissingBooks(List<NeiGongCatalog.NeiGongDef> defs) {
+        java.util.Set<String> existing = new java.util.HashSet<>();
+        for (Book item : books) {
+            existing.add(item.configId);
+        }
+        List<Book> added = new ArrayList<>();
+        for (NeiGongCatalog.NeiGongDef def : defs) {
+            if (def.configId() == null || def.configId().isEmpty() || !existing.add(def.configId())) {
+                continue;
+            }
+            int power = Math.max(0, def.firstPower());
+            Book item = book(def.configId(), def.staticData(),
+                    def.itemType() > 0 ? def.itemType() : 1002,
+                    1, Math.max(1, def.maxLevel()), Math.max(1, def.firstTotal()), power, power);
+            applyModernEffect(item);
+            books.add(item);
+            added.add(item);
+        }
+        return added;
+    }
+
+    /** 当前收录内功书数（GM 回执用）。 */
+    public int bookCount() {
+        return books.size();
+    }
+
     /** Go properties()：37 项内功/面板属性（已叠当前装备书加成）。 */
     public List<PropertyValues.Indexed> properties() {
         return properties(EquipBonus.NONE);
@@ -682,7 +723,8 @@ public final class PlayerProgress {
     public Snapshot snapshot() {
         List<BookSnapshot> saved = new ArrayList<>(books.size());
         for (Book item : books) {
-            saved.add(new BookSnapshot(item.configId, item.level, item.fill, item.total, item.power, item.maxPower));
+            saved.add(new BookSnapshot(item.configId, item.level, item.fill, item.total,
+                    item.power, item.maxPower, item.maxLevel));
         }
         return new Snapshot(curNeiGong, faculty, facultyState, facultyStyle, facultyName,
                 fillSpeed, fillSpeedBase, fillSpeedMultiplier, lastAdvance, saved,
@@ -748,6 +790,38 @@ public final class PlayerProgress {
 
     /** Go restore：校验合并 + 分钟推进 + 资源刷新。 */
     public void restore(Snapshot value, Instant now) {
+        // 书档案先行（2026-11-05 无妄神功书链实丢根因）：秘籍学习链建的书不在
+        // newPlayerProgress 种子表里，旧逻辑 book()==null 直接跳过——后学内功重登即丢、
+        // curNeiGong/facultyName 也因同样查不到书而不恢复。缺书按 NeiGongCatalog 建书
+        // （同 addMissingBooks 建法）再回填；目录也缺席才真跳过。修炼上限先回填（快照
+        // maxLevel=书链只抬不降结果；旧档 0 保目录默认），再按上限校验层数防脏档。
+        for (BookSnapshot saved : value.books()) {
+            Book item = book(saved.configId());
+            if (item == null) {
+                NeiGongCatalog.NeiGongDef def = NeiGongCatalog.load().book(saved.configId());
+                if (def == null) {
+                    continue;
+                }
+                int power = Math.max(0, def.firstPower());
+                item = book(def.configId(), def.staticData(),
+                        def.itemType() > 0 ? def.itemType() : 1002,
+                        1, Math.max(1, def.maxLevel()),
+                        Math.max(1, def.firstTotal()), power, power);
+                books.add(item);
+            }
+            if (saved.maxLevel() > 0) {
+                item.maxLevel = Math.max(saved.maxLevel(), item.level);
+            }
+            if (saved.level() <= 0 || saved.level() > item.maxLevel
+                    || saved.total() <= 0 || saved.fill() < 0) {
+                continue;
+            }
+            item.level = saved.level();
+            item.fill = saved.fill();
+            item.total = saved.total();
+            item.power = saved.power();
+            item.maxPower = saved.maxPower();
+        }
         if (book(value.curNeiGong()) != null) {
             curNeiGong = value.curNeiGong();
         }
@@ -781,18 +855,6 @@ public final class PlayerProgress {
             attributes.spi = Math.min(value.baseSpi(), BASE_ATTRIBUTE_CAP);
         }
         lastAdvance = value.lastAdvanceUtc();
-        for (BookSnapshot saved : value.books()) {
-            Book item = book(saved.configId());
-            if (item == null || saved.level() <= 0 || saved.level() > item.maxLevel
-                    || saved.total() <= 0 || saved.fill() < 0) {
-                continue;
-            }
-            item.level = saved.level();
-            item.fill = saved.fill();
-            item.total = saved.total();
-            item.power = saved.power();
-            item.maxPower = saved.maxPower();
-        }
         if (facultyState == FACULTY_STATE_CONVERT && facultyStyle == FACULTY_STYLE_NORMAL) {
             advanceFaculty(now);
         } else {
@@ -1224,5 +1286,46 @@ public final class PlayerProgress {
             levelUp = true;
         }
         return levelUp;
+    }
+
+    /**
+     * 秘籍/传承书改档（msg31 学习链，2026-11-05）：未学先按 def 建书——初始修炼上限
+     * =cap（无 cap 的基础书=def.maxLevel 全档），已学只抬不降；setLevel&gt;0 直落到该层
+     * （SkillScroll 传承 +AddLevel 语义：层=现层+AddLevel 由调用方折算后传 setLevel），
+     * 升层按自然修炼曲线推进（total +200/层、maxPower +20/层、power 顶满）。
+     * 调用方负责 View43 重建与 role_faculty 落库。返回是否产生变化。
+     */
+    public boolean learnOrRaiseBook(NeiGongCatalog.NeiGongDef def, int cap, int setLevel) {
+        Book target = book(def.configId());
+        boolean changed = false;
+        if (target == null) {
+            int power = Math.max(0, def.firstPower());
+            int initialCap = cap > 0 ? cap : Math.max(1, def.maxLevel());
+            int initialLevel = Math.max(1, Math.min(setLevel > 0 ? setLevel : 1, initialCap));
+            target = book(def.configId(), def.staticData(),
+                    def.itemType() > 0 ? def.itemType() : 1002,
+                    initialLevel, initialCap,
+                    Math.max(1, def.firstTotal()) + (initialLevel - 1) * 200,
+                    power + (initialLevel - 1) * 20, power + (initialLevel - 1) * 20);
+            applyModernEffect(target);
+            books.add(target);
+            return true;
+        }
+        if (cap > target.maxLevel) {
+            target.maxLevel = cap;
+            changed = true;
+        }
+        int want = Math.min(Math.max(setLevel, 0), target.maxLevel);
+        while (target.level < want) {
+            target.level++;
+            target.total += 200;
+            target.maxPower += 20;
+            target.power = target.maxPower;
+            changed = true;
+        }
+        if (changed) {
+            applyModernEffect(target);
+        }
+        return changed;
     }
 }

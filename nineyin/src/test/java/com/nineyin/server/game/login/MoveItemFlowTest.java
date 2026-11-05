@@ -326,4 +326,69 @@ class MoveItemFlowTest {
         assertEquals(0, store.equips(ROLE).size(), "装备栏始终为空");
         assertEquals(1, store.bagItems(ROLE).size(), "背包行未被误删");
     }
+
+    /**
+     * 内功快捷栏武器图标漂移回归（2026-11-05 23:55 真机实录 sword_ytj_001，11-06
+     * 实例稳定 UID 定稿）：物品行 UID 全程携带——穿上（背包→装备栏）、卸下（自动
+     * 落新格）UID 不变，快捷栏行无需服务端任何重推即持续解析到原物品；旧槽位被
+     * 其他物品占用也不会误命中（随机/seq 派生 UID 与槽位无关）。
+     */
+    @Test
+    void itemShortcutBindingSurvivesWearUnequipAndSlotDrift() throws Exception {
+        insertBagRow(3); // 武器落 bag[121:3]（seq=1，uid NULL → derivedUid(role:bag:1)）
+        String swordUid = InventoryMessages.derivedUid(ROLE, "bag", 1);
+        flow.handleSetShortcut(new Connection(channel), session,
+                CustomC2S.parseDirect(rawCustomInt(200, 300, "item", swordUid)));
+        List<byte[]> bound = drain();
+        assertEquals(swordUid, session.player.shortcutSnapshot().stream()
+                .filter(s -> s.index() == 300).findFirst().orElseThrow().id(),
+                "实例 UID 逐字入库（官服语义）");
+        assertTrue(bound.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11
+                        && containsAscii(f, swordUid)),
+                "0x11 行携带实例 UID");
+
+        // 穿上：uid 随行携带进 role_equip_items（删插不换身份）
+        send(30, 121, 3, 1, 22);
+        drain();
+        assertEquals(swordUid, store.equips(ROLE).get(0).uid(), "穿上后装备行携带同一 uid");
+        var row = session.player.shortcutSnapshot().stream()
+                .filter(s -> s.index() == 300).findFirst().orElseThrow();
+        assertEquals("item", row.kind(), "穿上后快捷栏行不丢");
+        assertEquals(swordUid, row.id(), "绑定 UID 不变");
+
+        // 旧槽 3 被别的物品占用（uid 与槽位无关，绝不误命中）
+        try (java.sql.PreparedStatement ps = jdbc.prepareStatement(
+                "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                        + "view_id, name, script) VALUES (?, 2, 3, 'drift_probe_item', 0, 1, 2, '', '')")) {
+            ps.setLong(1, ROLE);
+            ps.executeUpdate();
+        }
+
+        // 卸下（武器自动落装备页首空格 1，不回槽 3）：uid 原样回包，客户端同 UID 解析
+        send(30, 1, 22, 121, 0);
+        List<byte[]> off = drain();
+        String landedUid = store.bagItems(ROLE).stream()
+                .filter(item -> item.configId().equals(weaponConfig))
+                .findFirst().orElseThrow().uid();
+        assertEquals(swordUid, landedUid, "卸下后背包行携带同一 uid（跨表携带）");
+        assertTrue(off.stream().anyMatch(f -> (f[0] & 0xFF) == 0x18 && containsAscii(f, swordUid)),
+                "入包 0x18 帧携带原 uid（客户端图标原地恢复，无需快捷栏重推）");
+        assertEquals(swordUid, session.player.shortcutSnapshot().stream()
+                .filter(s -> s.index() == 300).findFirst().orElseThrow().id(),
+                "全程零改写");
+    }
+
+    private static boolean containsAscii(byte[] frame, String text) {
+        byte[] needle = text.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        outer:
+        for (int i = 0; i <= frame.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (frame[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
 }

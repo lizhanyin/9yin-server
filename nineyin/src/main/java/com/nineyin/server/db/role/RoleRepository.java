@@ -16,6 +16,9 @@ public interface RoleRepository extends AutoCloseable {
 
     Roles.RoleSnapshot loadOwnedByName(long accountId, String name);
 
+    /** 全服按名查角色摘要（GM 邮件等跨账号寻址；名字全服唯一）；null = 不存在。 */
+    Roles.RoleSummary findRoleByName(String name);
+
     Roles.RoleSnapshot create(long accountId, Roles.NewRole draft);
 
     void requestDelete(long accountId, long roleId);

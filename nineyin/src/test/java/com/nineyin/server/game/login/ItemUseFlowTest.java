@@ -211,6 +211,43 @@ class ItemUseFlowTest {
         assertTrue(countBagRows("yaopin_%") >= 1, "兜底阶梯掉落 yaopin");
     }
 
+    /**
+     * 描述重建对照回归（box_contents.json）：介绍文案写明的内容物按描述全发
+     * （box_prize_dmp_drzc_001 = 菩提子*40 + 佛经书卷*1），不再落到药品兜底。
+     */
+    @Test
+    void describedBoxGrantsExactContentsFromDescription() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                com.nineyin.server.game.item.BoxContents.loadDefault()
+                        .byBox("box_prize_dmp_drzc_001") != null,
+                "box_contents.json 未就绪，先跑 tools/boxgen_rebuild.py 并同步 go-server1");
+        try (java.sql.PreparedStatement ps = jdbc.prepareStatement(
+                "UPDATE role_bag_items SET config_id = 'box_prize_dmp_drzc_001', item_type = 2102 "
+                        + "WHERE role_id = ?")) {
+            ps.setLong(1, ROLE);
+            ps.executeUpdate();
+        }
+        useSlot1();
+        List<byte[]> frames = drain();
+        assertTrue(countOp18(frames) >= 1, "描述箱开包：掉落物 0x18 行帧");
+        assertEquals(0, countBagRows("box_prize_dmp_drzc_001"), "描述箱照常消耗");
+        assertEquals(40, bagAmount("item_dmp_ptz"), "菩提子*40 按描述发放");
+        assertEquals(1, bagAmount("item_dmp_fjsj"), "佛经书卷*1 按描述发放");
+        assertEquals(0, countBagRows("yaopin_%"), "描述命中不再走兜底药品");
+    }
+
+    private int bagAmount(String configId) throws Exception {
+        try (java.sql.PreparedStatement ps = jdbc.prepareStatement(
+                "SELECT COALESCE(SUM(amount), 0) FROM role_bag_items "
+                        + "WHERE role_id = ? AND config_id = ?")) {
+            ps.setLong(1, ROLE);
+            ps.setString(2, configId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
     private boolean ItemUseCatalogPacksPresent() {
         com.nineyin.server.game.item.DropPacks packs =
                 com.nineyin.server.game.item.DropPacks.loadDefault();

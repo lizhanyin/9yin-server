@@ -166,6 +166,24 @@ public final class PlayerMeridian {
         capEnabled = enabled;
     }
 
+    /**
+     * GM set_jingmai_tier：直设周天等级（钳 1..目录上限；fill 归零走新周天起点）。
+     * 返回受理前旧等级；未学该经脉返回 -1（调用方先校验目录收录）。
+     */
+    public int setLevel(String configId, int level) {
+        Meridian meridian = configId == null ? null : meridians.get(configId);
+        if (meridian == null) {
+            return -1;
+        }
+        MeridianCatalog.Definition definition = catalog.definition(configId);
+        int maxLevel = definition == null ? 0 : definition.maxLevel();
+        int target = maxLevel > 0 ? Math.clamp(level, 1, maxLevel) : Math.max(1, level);
+        int old = meridian.level;
+        meridian.level = target;
+        meridian.fill = 0;
+        return old;
+    }
+
     // ------------------------------------------------------------------ 修炼
 
     /**

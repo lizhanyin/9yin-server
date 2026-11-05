@@ -71,7 +71,8 @@ public final class FacultyStore {
                         book.getIntValue("fill"),
                         book.getIntValue("total"),
                         book.getIntValue("power"),
-                        book.getIntValue("max_power")));
+                        book.getIntValue("max_power"),
+                        book.getIntValue("max_level")));
             }
         }
         Instant lastAdvance = null;
@@ -328,6 +329,7 @@ public final class FacultyStore {
             bookNode.field("total", book.total());
             bookNode.field("power", book.power());
             bookNode.field("max_power", book.maxPower());
+            bookNode.field("max_level", book.maxLevel());
             books.add(bookNode.render(depth + 1));
         }
         node.raw("books", GoJson.renderArray(books, depth));

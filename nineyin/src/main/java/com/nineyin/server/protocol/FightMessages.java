@@ -115,6 +115,50 @@ public final class FightMessages {
     }
 
     /**
+     * msg19：锁定/冲锋族出招锁定帧（官服 out2 时间线钉死 24 值布局，2026-11-06）：
+     * {@code [19, obj 施法者, obj 目标, 技能串, i32 LockSrcTime, i32 LockTargetTime,
+     * f32 施法者x/y/z, f32 施法者朝向, f32 0, f32 目标x/y/z, f32 目标朝向,
+     * f32 BindDistance, str "0", f32 0, i32 0, i32 0, f32 0, f32 绑定点x/y/z]}
+     * ——绑定点=目标朝施法者方向 BindDistance 处（官服两例实测 1.49/1.08=各自
+     * BindDistance）。**官方锁定族（SkillLock/CanRush，含冲锋/闪避/招架变体）恒走
+     * msg19 不走 msg20**；msg20 只属非锁定技——此前我方全族发 msg20 即客户端不出
+     * 锁定/冲刺表现的一号根因。v18/v19（官服 603/725、75/25 语义未定）暂 0。
+     */
+    public static byte[] skillLockCast(int casterId, int casterOwner,
+                                       int targetId, int targetOwner, String skillId,
+                                       int srcLockMs, int targetLockMs,
+                                       float srcX, float srcY, float srcZ, float srcOrient,
+                                       float dstX, float dstY, float dstZ, float dstOrient,
+                                       float bindDistance,
+                                       float bindX, float bindY, float bindZ) {
+        return CustomMessages.customIntMessage(19,
+                CustomMessages.Value.ofObject(casterId, casterOwner),
+                targetId != 0 ? CustomMessages.Value.ofObject(targetId, targetOwner)
+                        : CustomMessages.Value.ofEmptyObject(),
+                CustomMessages.Value.ofString(skillId),
+                CustomMessages.Value.ofInt32(srcLockMs),
+                CustomMessages.Value.ofInt32(targetLockMs),
+                CustomMessages.Value.ofFloat32(srcX),
+                CustomMessages.Value.ofFloat32(srcY),
+                CustomMessages.Value.ofFloat32(srcZ),
+                CustomMessages.Value.ofFloat32(srcOrient),
+                CustomMessages.Value.ofFloat32(0),
+                CustomMessages.Value.ofFloat32(dstX),
+                CustomMessages.Value.ofFloat32(dstY),
+                CustomMessages.Value.ofFloat32(dstZ),
+                CustomMessages.Value.ofFloat32(dstOrient),
+                CustomMessages.Value.ofFloat32(bindDistance),
+                CustomMessages.Value.ofString("0"),
+                CustomMessages.Value.ofFloat32(0),
+                CustomMessages.Value.ofInt32(0),
+                CustomMessages.Value.ofInt32(0),
+                CustomMessages.Value.ofFloat32(0),
+                CustomMessages.Value.ofFloat32(bindX),
+                CustomMessages.Value.ofFloat32(bindY),
+                CustomMessages.Value.ofFloat32(bindZ));
+    }
+
+    /**
      * msg24 NPC→玩家伤害飘字（10 值形态，c1=7；2026-11-04 参考服 55866 实证）：
      * {@code [obj(玩家受害), 7, 伤害, obj(NPC攻击者), 窄串NPC模型, 宽串玩家名, 宽串NPC名, 20]}。
      * 尾值 20=名义攻击力（参考服恒 20，实际扣血经防御折算为 1）。
@@ -237,23 +281,29 @@ public final class FightMessages {
     }
 
     /**
-     * msg24 c1=61 轻功疾跑/冲刺广播（官服 out2 抓包 18 帧实证布局，IDA dashRushFrame
-     * 同款）：{@code [24, obj, 61, f32 destX, f32 destY, f32 destZ, 档位1|2, 动画名]}——
-     * 官服动画名按上下文取 qg_fastrun_0h/2h/7h_01、qg_fastruning_s_2h/7h_01、
-     * fi_qg_fastruning_s_29h_01 等变体。**真身=疾跑表现广播**（多为他人冲刺），
-     * 套路冲锋本人位移不走此帧（走 337 终点）——仅 -Dnineyin.rush.stage=true 暂存链
-     * 复刻参考服 exe 时使用。
+     * msg24 c1=61 冲刺/疾跑指令（官服 out2 时间线 2026-11-06 再定谳）：{@code [24,
+     * obj, 61, f32 destX, f32 destY, f32 destZ, 档位1|2, 动画名]}——**官服套路冲锋
+     * 本人/他人同款广播**：动画名取 skill_lock_data 逐技能 LockGRushAction
+     * （qg_fastrun_0h/2h/7h_01=地面冲刺）、LockARushAction（qg_fastruning_s_*=
+     * 空中）等，终点=目标身前绑定距离处；官方序列=c61 → location(终点锚) → msg19
+     * 锁定帧。档位 2+qg_fastruning_s_2h_01=参考服暂存链疾跑方言（61653）。
      */
     public static byte[] dashRushFrame(int playerId, int playerOwner,
                                        float x, float y, float z) {
+        return dashRushFrame(playerId, playerOwner, x, y, z, 2, "qg_fastruning_s_2h_01");
+    }
+
+    /** msg24 c1=61 全参形态：档位（官服冲刺=1、参考服疾跑=2）+动画名（LockG/A/WRushAction）。 */
+    public static byte[] dashRushFrame(int playerId, int playerOwner,
+                                       float x, float y, float z, int level, String anim) {
         return CustomMessages.customIntMessage(24,
                 CustomMessages.Value.ofObject(playerId, playerOwner),
                 CustomMessages.Value.ofInt32(61),
                 CustomMessages.Value.ofFloat32(x),
                 CustomMessages.Value.ofFloat32(y),
                 CustomMessages.Value.ofFloat32(z),
-                CustomMessages.Value.ofInt32(2),
-                CustomMessages.Value.ofString("qg_fastruning_s_2h_01"));
+                CustomMessages.Value.ofInt32(level),
+                CustomMessages.Value.ofString(anim));
     }
 
     // ------------------------------------------------------------------ 二进制

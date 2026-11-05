@@ -1,6 +1,7 @@
 package com.nineyin.server.game.login;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -170,6 +171,115 @@ class MailFlowTest {
         assertTrue(bad.awaitReply(java.time.Duration.ofMillis(1000)).message().contains("不存在"));
         assertNull(channel.readOutbound());
         assertEquals(0, session.letters.size());
+    }
+
+    @Test
+    void sendMailTextOnlyToSelf() throws Exception {
+        GmCommand send = enqueue("send_mail", java.util.Map.of(
+                "title", "维护公告", "content", "今晚 22 点停服维护"));
+        flow.drainGmCommands(new Connection(channel), session);
+        GmCommand.Reply reply = send.awaitReply(java.time.Duration.ofMillis(1000));
+        assertTrue(reply.ok(), reply.message());
+        assertTrue(reply.message().contains("维护公告"), "回执带标题: " + reply.message());
+        List<byte[]> frames = drain();
+        assertEquals(1, frames.size(), "纯文字信恰一帧记录行");
+        assertEquals(0x11, frames.get(0)[0] & 0xFF);
+        assertTrue(containsUtf16(frames.get(0), "维护公告"), "标题宽串列在帧内");
+        assertTrue(containsUtf16(frames.get(0), "停服维护"), "正文宽串列在帧内");
+        LetterStore.Letter letter = session.letters.get(0);
+        assertEquals("", letter.appendixXml(), "纯文字信无附件");
+        assertFalse(letter.readFlag());
+        assertTrue(letter.serial().startsWith("gm"), "系统信序列号前缀");
+        // 落盘回读（重登数据源）
+        List<LetterStore.Letter> persisted = LetterStore.open(lettersFile).load(ROLE);
+        assertEquals(1, persisted.size());
+        assertEquals("维护公告", persisted.get(0).title());
+        assertEquals("今晚 22 点停服维护", persisted.get(0).content());
+    }
+
+    @Test
+    void sendMailRoutesOnlineOtherSessionViaPendingQueue() throws Exception {
+        long roleId2 = 990_335L;
+        EmbeddedChannel channel2 = new EmbeddedChannel();
+        LoginSession session2 = new LoginSession();
+        session2.player = PlayerActor.create("在线二号", (int) roleId2, Clock.systemUTC());
+        session2.selected = new com.nineyin.server.db.role.Roles.RoleSnapshot(
+                roleId2, 0, "在线二号", false, 1, 1,
+                new com.nineyin.server.db.role.Roles.Appearance(1, List.of()),
+                new com.nineyin.server.db.role.Roles.Location(
+                        new com.nineyin.server.db.role.Roles.Scene("school09", "school09"),
+                        new com.nineyin.server.db.role.Roles.Position(0, 0, 0, 0), 1));
+        session2.lettersGranted = true;
+        flow.trackActive(session2);
+
+        GmCommand send = enqueue("send_mail", java.util.Map.of(
+                "roleName", "在线二号", "content", "给二号的话", "itemConfig", ITEM, "amount", 2));
+        flow.drainGmCommands(new Connection(channel), session);
+        GmCommand.Reply reply = send.awaitReply(java.time.Duration.ofMillis(1000));
+        assertTrue(reply.ok(), reply.message());
+        assertTrue(reply.message().contains("在线"), "回执标注在线路由: " + reply.message());
+        assertEquals(0, session.letters.size(), "发信会话信箱不动");
+        assertEquals(1, session2.pendingGmLetters.size(), "目标会话暂存一封");
+
+        // 暂存合并（真机由目标会话 1s ticker 驱动）：推帧 + 落盘
+        flow.drainPendingGmLetters(new Connection(channel2), session2);
+        assertTrue(session2.pendingGmLetters.isEmpty());
+        assertEquals(1, session2.letters.size());
+        assertTrue(session2.letters.get(0).appendixXml().contains(ITEM));
+        List<byte[]> frames2 = new java.util.ArrayList<>();
+        for (byte[] frame; (frame = channel2.readOutbound()) != null; ) {
+            frames2.add(frame);
+        }
+        assertEquals(1, frames2.size(), "目标会话恰一帧记录行");
+        assertEquals(0x11, frames2.get(0)[0] & 0xFF);
+        assertTrue(containsUtf16(frames2.get(0), "给二号的话"));
+        assertNull(channel.readOutbound(), "发信会话零帧");
+        List<LetterStore.Letter> persisted = LetterStore.open(lettersFile).load(roleId2);
+        assertEquals(1, persisted.size(), "目标信箱落盘");
+    }
+
+    @Test
+    void sendMailDeliversToOfflineRoleByName() throws Exception {
+        Path repoFile = Files.createTempFile("gm-mail-roles", ".json");
+        Files.delete(repoFile); // 空文档会被解码器拒绝；文件不存在时 open 即空仓库
+        com.nineyin.server.db.role.JsonRoleRepository repository =
+                com.nineyin.server.db.role.JsonRoleRepository.open(repoFile);
+        com.nineyin.server.db.role.Roles.Account account =
+                repository.provisionLegacy("gm_mail_offline_test");
+        com.nineyin.server.db.role.Roles.RoleSnapshot target = repository.create(account.id(),
+                new com.nineyin.server.db.role.Roles.NewRole(0, "离线收件人",
+                        new com.nineyin.server.db.role.Roles.Appearance(
+                                1, com.nineyin.server.db.role.RoleStoreFacade.defaultRoleAppearance(List.of())),
+                        com.nineyin.server.db.role.RoleStoreFacade.defaultRoleLocation()));
+        LoginFlow flowWithRepo = new LoginFlow(
+                new com.nineyin.server.db.role.RoleStoreFacade(repository), null, hub,
+                Clock.systemUTC(), null, null, store, null);
+
+        GmCommand send = enqueue("send_mail", java.util.Map.of(
+                "roleName", "离线收件人", "title", "补偿", "content", "维护补偿"));
+        flowWithRepo.drainGmCommands(new Connection(channel), session);
+        GmCommand.Reply reply = send.awaitReply(java.time.Duration.ofMillis(1000));
+        assertTrue(reply.ok(), reply.message());
+        assertTrue(reply.message().contains("离线"), "回执标注离线路由: " + reply.message());
+        assertNull(channel.readOutbound(), "离线投递零帧");
+        assertEquals(0, session.letters.size(), "发信会话信箱不动");
+        List<LetterStore.Letter> box = LetterStore.open(lettersFile).load(target.id());
+        assertEquals(1, box.size(), "离线信箱直写主档");
+        assertEquals("补偿", box.get(0).title());
+        assertEquals("维护补偿", box.get(0).content());
+        assertEquals("", box.get(0).appendixXml());
+
+        // 未知角色：明确失败零写入
+        GmCommand unknown = enqueue("send_mail", java.util.Map.of(
+                "roleName", "查无此人", "content", "ping"));
+        flowWithRepo.drainGmCommands(new Connection(channel), session);
+        GmCommand.Reply rejected = unknown.awaitReply(java.time.Duration.ofMillis(1000));
+        assertFalse(rejected.ok());
+        assertTrue(rejected.message().contains("不存在"), rejected.message());
+        assertEquals(1, LetterStore.open(lettersFile).load(target.id()).size(), "失败不写入");
+
+        repository.close();
+        Files.deleteIfExists(repoFile);
     }
 
     private GmCommand enqueue(String action, java.util.Map<String, Object> params) {

@@ -142,6 +142,34 @@ public final class StarterQingGong {
         return items;
     }
 
+    /** starter View46 行数（秘籍学习追加行的起始行号 = 此值 + 1）。 */
+    public static int starterViewRowCount() {
+        return STARTER_QING_GONG_IDS.size() + STARTER_QING_GONG_SKILL_IDS.size();
+    }
+
+    /**
+     * 秘籍学得的轻功追加帧（大轻功/身法书；登录重放与 msg31 使用链共用）：
+     * 类目 id（qinggong_* 前缀，starter 集外）补 QingGongRec 记录行，全部目标补
+     * View46 行（行号接 starter 52 行之后，声明序）。追加不重建视图——GM forget
+     * 链的整视图重开在 View40/43 有真机验证，View46 不走重开（客户端轻功面板
+     * 按行增量维护）。已会目标（幂等重放）由调用方过滤。
+     */
+    public static List<byte[]> learnedFrames(int objectId, int ownerId, List<String> extraIds) {
+        List<byte[]> frames = new ArrayList<>(extraIds.size() * 2);
+        int row = starterViewRowCount();
+        for (String id : extraIds) {
+            if (id.startsWith("qinggong_")) {
+                frames.add(RecordMessages.recordAddString(objectId, ownerId,
+                        RecordMessages.RECORD_QING_GONG, id));
+            }
+            row++;
+            List<SceneMessages.ViewProperty> properties = new ArrayList<>(1);
+            Props.addView(properties, "ConfigID", PropertyValues.Value.ofString(id));
+            frames.add(SceneMessages.viewAdd(VIEWPORT_QING_GONG, row, properties));
+        }
+        return frames;
+    }
+
     private StarterQingGong() {
     }
 }

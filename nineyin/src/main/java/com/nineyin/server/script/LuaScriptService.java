@@ -22,7 +22,10 @@ import com.nineyin.util.ServerPaths;
  * <p>契约见 docs/skill-script-framework.md：scripts/combat/formula.lua 的 M.calc(c)
  * 为伤害公式权威实现（Java 兜底 {@link CombatFormulas} 同常量同掷骰顺序）；
  * scripts/skill/&lt;技能ID&gt;.lua 的 M.compile(def) 返回编译期增量覆盖
- * （self_buff_lease_ms/self_buff_slot 等，缺省沿用 INI 编译效果）；
+ * （self_buff_lease_ms/self_buff_slot 等，缺省沿用 INI 编译效果），
+ * M.on_hit(ctx) 为出招运行期倍率钩子（返回 {ratio=...}，每调用 Java 预掷 1 枚）；
+ * scripts/skill/effects_data.lua 为全技能效果汇总表（生成器产出，
+ * {@link #skillOverlay} 对无逐技能脚本的技能按 by_level 差集取值）；
  * scripts/neigong/&lt;buffId&gt;.lua 的 M.on_attack/on_victim/on_parry/on_periodic/on_tick(ctx)
  * 为内功特效运行期钩子（每次事件调用，返回指令白名单解析，坏脚本按脚本隔离禁用）。
  *
@@ -43,12 +46,30 @@ public final class LuaScriptService {
 
     /** 技能脚本 compile 覆盖（键面即当前契约；null 字段 = 不覆盖）。 */
     public record SkillOverlay(Long selfBuffLeaseMs, Integer selfBuffSlot,
-                                Boolean redArmor, java.util.List<StanceVariant> stanceCycle) {
+                                Boolean redArmor, java.util.List<StanceVariant> stanceCycle,
+                                Integer damageAmount, Integer damageWaves,
+                                java.util.List<SelfBuff> selfBuffs,
+                                java.util.List<TargetEffect> targetEffects) {
 
         boolean isEmpty() {
-            return selfBuffLeaseMs == null && selfBuffSlot == null
-                    && redArmor == null && (stanceCycle == null || stanceCycle.isEmpty());
+            return selfBuffLeaseMs == null && selfBuffSlot == null && redArmor == null
+                    && (stanceCycle == null || stanceCycle.isEmpty())
+                    && damageAmount == null && damageWaves == null
+                    && (selfBuffs == null || selfBuffs.isEmpty())
+                    && (targetEffects == null || targetEffects.isEmpty());
         }
+    }
+
+    /** self_buffs[] 项：多自 buff（config_id/static_data/level/life_ms/slot，slot=0 自动找槽）。 */
+    public record SelfBuff(String configId, long staticData, int level, long lifeMs, int slot) {
+    }
+
+    /**
+     * target_effects[] 项（命中目标效果）：control=true 控制到租约终点（有害精确
+     * buff 同语义）；frame=true 加发 msg169 目标 debuff 帧（默认关）。
+     */
+    public record TargetEffect(String configId, long staticData, int level, long lifeMs,
+                               boolean control, boolean frame) {
     }
 
     /** stance_cycle.variants[] 项：架势轮换双态（如太极拳四式 守6013/攻6055）。 */
@@ -127,6 +148,10 @@ public final class LuaScriptService {
     private final Map<String, Boolean> neigongHookCache = new ConcurrentHashMap<>();
     /** 坏脚本禁用集（运行期异常按脚本隔离，不 markBroken 整个引擎）。 */
     private final java.util.Set<String> neigongBroken = ConcurrentHashMap.newKeySet();
+    /** 技能 on_hit 钩子存在性缓存（skillId@hook → 模块已装载且钩子为函数）。 */
+    private final Map<String, Boolean> skillHookCache = new ConcurrentHashMap<>();
+    /** 技能脚本禁用集（on_hit 运行期异常按脚本隔离）。 */
+    private final java.util.Set<String> skillBroken = ConcurrentHashMap.newKeySet();
 
     private LuaScriptService() {
         synchronized (lock) {
@@ -157,17 +182,22 @@ public final class LuaScriptService {
         return CombatFormulas.calc(input);
     }
 
-    /** 技能编译覆盖：无脚本/引擎不可用 → null（沿用 INI 默认）。 */
-    public SkillOverlay skillOverlay(String skillId, ExactBuff exactBuff) {
-        if (skillId == null || skillId.isEmpty()) {
+    /**
+     * 技能编译覆盖。解析优先级：逐技能 scripts/skill/&lt;ID&gt;.lua 的 M.compile →
+     * 汇总表 effects_data.lua 条目（by_level[level] 差集修补）→ null（沿用 INI 默认）。
+     * 无脚本/引擎不可用 → null；缓存键 id@level（伤害/租约随级变，必须分级缓存）。
+     */
+    public SkillOverlay skillOverlay(String skillId, int level, ExactBuff exactBuff) {
+        if (skillId == null || skillId.isEmpty() || level < 1) {
             return null;
         }
-        String cacheKey = skillId + "@" + (exactBuff == null ? 0 : exactBuff.level());
+        String cacheKey = skillId + "@" + level;
         SkillOverlay cached = overlayCache.get(cacheKey);
         if (cached != null) {
             return cached;
         }
         synchronized (lock) {
+            cached = overlayCache.get(cacheKey);
             if (cached != null) {
                 return cached;
             }
@@ -175,22 +205,32 @@ public final class LuaScriptService {
                 return null;
             }
             Path script = scriptPath("skill", skillId + ".lua");
-            if (!Files.isRegularFile(script)) {
+            if (Files.isRegularFile(script)) {
+                String global = "SkillModule_" + skillId.replaceAll("[^A-Za-z0-9_]", "_");
+                try {
+                    if (!runModuleLocked(script, global)) {
+                        overlayCache.put(cacheKey, NONE);
+                        return NONE;
+                    }
+                    SkillOverlay overlay = callCompileLocked(global, exactBuff);
+                    overlayCache.put(cacheKey, overlay);
+                    return overlay;
+                } catch (RuntimeException e) {
+                    markBroken("skill overlay " + skillId + ": " + e);
+                    return null;
+                }
+            }
+            // 无逐技能脚本 → 汇总表条目（生成器产出；条目级异常 WARN 降级 INI，不动公式引擎）
+            try {
+                SkillOverlay fromData = dataOverlayLocked(skillId, level);
+                SkillOverlay result = fromData == null || fromData.isEmpty() ? NONE : fromData;
+                overlayCache.put(cacheKey, result);
+                return result;
+            } catch (RuntimeException e) {
+                LOG.warning("effects_data entry " + skillId + "@" + level
+                        + " unreadable, falls back to INI compile: " + e);
                 overlayCache.put(cacheKey, NONE);
                 return NONE;
-            }
-            String global = "SkillModule_" + skillId.replaceAll("[^A-Za-z0-9_]", "_");
-            try {
-                if (!runModuleLocked(script, global)) {
-                    overlayCache.put(cacheKey, NONE);
-                    return NONE;
-                }
-                SkillOverlay overlay = callCompileLocked(global, exactBuff);
-                overlayCache.put(cacheKey, overlay);
-                return overlay;
-            } catch (RuntimeException e) {
-                markBroken("skill overlay " + skillId + ": " + e);
-                return null;
             }
         }
     }
@@ -259,7 +299,8 @@ public final class LuaScriptService {
             boolean has = false;
             if (lua != null && !broken && !neigongBroken.contains(buffId)) {
                 try {
-                    has = ensureNeigongModuleLocked(buffId) && hookIsFunctionLocked(buffId, hook);
+                    has = ensureNeigongModuleLocked(buffId)
+                            && hookIsFunctionLocked(neigongGlobal(buffId), hook);
                 } catch (RuntimeException e) {
                     disableNeigongScript(buffId, "probe " + hook + ": " + e);
                 }
@@ -301,16 +342,145 @@ public final class LuaScriptService {
             itemUseCache.clear();
             neigongHookCache.clear();
             neigongBroken.clear();
+            skillHookCache.clear();
+            skillBroken.clear();
             closeQuietly();
             initLocked();
             LOG.info("lua scripts reloaded: available=" + (lua != null && !broken));
         }
     }
 
+    // ------------------------------------------------------------- 技能 on_hit 运行期钩子
+
+    /** M.on_hit(ctx) 返回 {ratio=...}（本波倍率调整；夹 [0,100]）。 */
+    public record SkillHitAdjust(float ratio) {
+    }
+
+    /** on_hit 存在性（scripts/skill/<ID>.lua 已装载且钩子为函数；无文件/坏脚本 → false）。 */
+    public boolean skillHasOnHit(String skillId) {
+        return skillHookPresence(skillId, "on_hit");
+    }
+
+    /**
+     * 调 M.on_hit(ctx)：ctx={ratio, level, rand={r_adjust}}（r_adjust Java 预掷，
+     * 每调用恒 1 枚——无钩子技能 RNG 序列零扰动）；返回 null = 无调整。
+     * 坏脚本按脚本隔离禁用，绝不 markBroken。
+     */
+    public SkillHitAdjust skillOnHit(String skillId, float ratio, int level, double rAdjust) {
+        if (skillId == null || skillId.isEmpty() || !skillHasOnHit(skillId)) {
+            return null;
+        }
+        synchronized (lock) {
+            if (lua == null || broken || skillBroken.contains(skillId)) {
+                return null;
+            }
+            try {
+                return callSkillHookLocked(skillId, ratio, level, rAdjust);
+            } catch (RuntimeException e) {
+                disableSkillScript(skillId, "on_hit: " + e);
+                return null;
+            }
+        }
+    }
+
+    /** 钩子存在性探测与缓存（skillId@hook → 模块已装载且钩子为函数）。 */
+    private boolean skillHookPresence(String skillId, String hook) {
+        if (skillId == null || skillId.isEmpty() || hook == null || hook.isEmpty()) {
+            return false;
+        }
+        String key = skillId + "@" + hook;
+        Boolean cached = skillHookCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (lock) {
+            cached = skillHookCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            boolean has = false;
+            if (lua != null && !broken && !skillBroken.contains(skillId)) {
+                try {
+                    has = ensureSkillModuleLocked(skillId)
+                            && hookIsFunctionLocked(skillGlobal(skillId), hook);
+                } catch (RuntimeException e) {
+                    disableSkillScript(skillId, "probe " + hook + ": " + e);
+                }
+            }
+            skillHookCache.put(key, has);
+            return has;
+        }
+    }
+
+    private static String skillGlobal(String skillId) {
+        return "SkillModule_" + skillId.replaceAll("[^A-Za-z0-9_]", "_");
+    }
+
+    /** 模块已在当前 Lua 状态则复用，否则装载 scripts/skill/<ID>.lua（无文件 → false）。 */
+    private boolean ensureSkillModuleLocked(String skillId) throws RuntimeException {
+        String global = skillGlobal(skillId);
+        lua.getGlobal(global);
+        boolean ready = lua.isTable(-1);
+        lua.pop(1);
+        if (ready) {
+            return true;
+        }
+        Path script = scriptPath("skill", skillId + ".lua");
+        if (!Files.isRegularFile(script)) {
+            return false;
+        }
+        return runModuleLocked(script, global);
+    }
+
+    /** 按脚本隔离禁用（WARN 一次），不 markBroken——一个坏脚本不废掉公式引擎。 */
+    private void disableSkillScript(String skillId, String reason) {
+        if (skillBroken.add(skillId)) {
+            LOG.warning("skill script " + skillId + " disabled (" + reason + ")");
+        }
+    }
+
+    /** 调 M.on_hit 并解析 {ratio=...}（非表/非法值 → null）。 */
+    private SkillHitAdjust callSkillHookLocked(String skillId, float ratio, int level,
+                                               double rAdjust) throws RuntimeException {
+        lua.getGlobal(skillGlobal(skillId));
+        if (!lua.isTable(-1)) {
+            lua.pop(1);
+            return null;
+        }
+        lua.getField(-1, "on_hit");
+        if (!lua.isFunction(-1)) {
+            lua.pop(2);
+            return null;
+        }
+        lua.createTable(0, 4);
+        setNum("ratio", ratio);
+        setNum("level", level);
+        lua.createTable(0, 1);
+        setNum("r_adjust", rAdjust);
+        lua.setField(-2, "rand");
+        lua.pCall(1, 1);
+        if (!lua.isTable(-1)) {
+            lua.pop(2); // 返回值 + 模块全局
+            return null;
+        }
+        try {
+            lua.getField(-1, "ratio");
+            double value = lua.isNumber(-1) ? lua.toNumber(-1) : -1;
+            if (value <= 0 || Double.isNaN(value) || Double.isInfinite(value)) {
+                return null;
+            }
+            return new SkillHitAdjust((float) Math.min(100.0, value));
+        } finally {
+            lua.pop(3); // ratio 值 + 返回表 + 模块全局
+        }
+    }
+
     // ------------------------------------------------------------------ internal
 
     /** 无覆盖哨兵（缓存命中区分"没脚本"与"没查过"）。 */
-    private static final SkillOverlay NONE = new SkillOverlay(null, null, null, java.util.List.of());
+    private static final SkillOverlay NONE =
+            new SkillOverlay(null, null, null, java.util.List.of(), null, null,
+                    java.util.List.of(), java.util.List.of());
 
     /** item 域无脚本/nil 返回哨兵（对调用方表现为 null → INI 回退）。 */
     private static final ItemUse ITEM_NONE =
@@ -329,6 +499,21 @@ public final class LuaScriptService {
             } else {
                 broken = true;
                 brokenReason = "formula.lua missing";
+            }
+            // 汇总表（生成器产出；装载失败仅降级 INI 编译，不碰公式引擎）
+            Path effectsData = scriptPath("skill", "effects_data.lua");
+            if (Files.isRegularFile(effectsData)) {
+                try {
+                    if (runModuleLocked(effectsData, "SkillEffectsData")) {
+                        LOG.info("effects_data.lua loaded (all-skill effect table)");
+                    } else {
+                        LOG.warning("effects_data.lua did not return a table;"
+                                + " skill effects fall back to INI compile");
+                    }
+                } catch (RuntimeException e) {
+                    LOG.warning("effects_data.lua load failed,"
+                            + " skill effects fall back to INI compile: " + e);
+                }
             }
             LOG.info("lua engine ready (lua55), formula=" + (broken ? "fallback: " + brokenReason : "loaded"));
         } catch (LinkageError e) {
@@ -432,11 +617,184 @@ public final class LuaScriptService {
         Integer slot = readOptionalInt("self_buff_slot");
         Boolean redArmor = readOptionalBool("red_armor");
         List<StanceVariant> stance = readStanceCycle();
+        EffectSet set = readEffectSetLocked(global);
         lua.pop(2);
-        if (lease == null && slot == null && redArmor == null && stance.isEmpty()) {
+        if (lease == null && slot == null && redArmor == null && stance.isEmpty() && set.isEmpty()) {
             return NONE;
         }
-        return new SkillOverlay(lease, slot, redArmor, stance);
+        return new SkillOverlay(lease, slot, redArmor, stance,
+                set.damageAmount(), set.damageWaves(), set.selfBuffs(), set.targetEffects());
+    }
+
+    // ------------------------------------------------------------- 汇总表 effects_data
+
+    /** effects_data.lua 条目（栈顶为条目 table；无条目/无表 → null）。 */
+    private SkillOverlay dataOverlayLocked(String skillId, int level) throws RuntimeException {
+        lua.getGlobal("SkillEffectsData");
+        if (!lua.isTable(-1)) {
+            lua.pop(1);
+            return null;
+        }
+        lua.getField(-1, skillId);
+        if (!lua.isTable(-1)) {
+            lua.pop(2);
+            return null;
+        }
+        EffectSet set = readEffectSetLocked("effects_data:" + skillId);
+        set = applyByLevelLocked(level, set);
+        lua.pop(2);
+        return set.isEmpty() ? null : new SkillOverlay(null, null, null, List.of(),
+                set.damageAmount(), set.damageWaves(), set.selfBuffs(), set.targetEffects());
+    }
+
+    /** 伤害/自 buff/目标效果三键的共享解析（compile 返回表与汇总表条目同构）。 */
+    private record EffectSet(Integer damageAmount, Integer damageWaves,
+                             List<SelfBuff> selfBuffs, List<TargetEffect> targetEffects) {
+
+        boolean isEmpty() {
+            return damageAmount == null && damageWaves == null
+                    && selfBuffs.isEmpty() && targetEffects.isEmpty();
+        }
+    }
+
+    /** 栈顶 table 读 damage/self_buffs/target_effects（白名单；非法条目 WARN 丢弃）。 */
+    private EffectSet readEffectSetLocked(String source) {
+        Integer damageAmount = null;
+        Integer damageWaves = null;
+        lua.getField(-1, "damage");
+        if (lua.isTable(-1)) {
+            long amount = readIntFieldAtTop("amount");
+            long waves = readIntFieldAtTop("waves");
+            if (amount > 0) {
+                damageAmount = (int) Math.min(Integer.MAX_VALUE, amount);
+                damageWaves = (int) Math.max(0, Math.min(Integer.MAX_VALUE, waves));
+            } else {
+                LOG.warning(source + ": damage.amount " + amount + " invalid, ignored");
+            }
+        }
+        lua.pop(1);
+        List<SelfBuff> selfBuffs = readSelfBuffsLocked(source);
+        List<TargetEffect> targetEffects = readTargetEffectsLocked(source);
+        return new EffectSet(damageAmount, damageWaves, selfBuffs, targetEffects);
+    }
+
+    /** self_buffs = {{config_id=,static_data=,level=,life_ms=,slot=}}（≤8 条）。 */
+    private List<SelfBuff> readSelfBuffsLocked(String source) {
+        lua.getField(-1, "self_buffs");
+        try {
+            if (!lua.isTable(-1)) {
+                return List.of();
+            }
+            int count = lua.rawLength(-1);
+            List<SelfBuff> out = new ArrayList<>(Math.min(count, 8));
+            for (int i = 1; i <= count && i <= 8; i++) {
+                lua.rawGetI(-1, i);
+                if (!lua.isTable(-1)) {
+                    lua.pop(1);
+                    continue;
+                }
+                String configId = readStringFieldAtTop("config_id");
+                long staticData = readIntFieldAtTop("static_data");
+                int level = (int) Math.max(1, readIntFieldAtTop("level"));
+                long lifeMs = readIntFieldAtTop("life_ms");
+                int slot = (int) readIntFieldAtTop("slot");
+                lua.pop(1);
+                if (configId.isEmpty() || staticData <= 0) {
+                    LOG.warning(source + ": invalid self_buffs entry ignored");
+                    continue;
+                }
+                out.add(new SelfBuff(configId, staticData, level, lifeMs, slot));
+            }
+            return out;
+        } finally {
+            lua.pop(1);
+        }
+    }
+
+    /** target_effects = {{config_id=,static_data=,level=,life_ms=,control=,frame=}}（≤8 条）。 */
+    private List<TargetEffect> readTargetEffectsLocked(String source) {
+        lua.getField(-1, "target_effects");
+        try {
+            if (!lua.isTable(-1)) {
+                return List.of();
+            }
+            int count = lua.rawLength(-1);
+            List<TargetEffect> out = new ArrayList<>(Math.min(count, 8));
+            for (int i = 1; i <= count && i <= 8; i++) {
+                lua.rawGetI(-1, i);
+                if (!lua.isTable(-1)) {
+                    lua.pop(1);
+                    continue;
+                }
+                String configId = readStringFieldAtTop("config_id");
+                long staticData = readIntFieldAtTop("static_data");
+                int level = (int) Math.max(1, readIntFieldAtTop("level"));
+                long lifeMs = readIntFieldAtTop("life_ms");
+                lua.getField(-1, "control");
+                boolean control = lua.toBoolean(-1);
+                lua.pop(1);
+                lua.getField(-1, "frame");
+                boolean frame = lua.toBoolean(-1);
+                lua.pop(1);
+                lua.pop(1);
+                if (configId.isEmpty() || staticData <= 0 || (!control && !frame)) {
+                    LOG.warning(source + ": invalid target_effects entry ignored"
+                            + " (need config_id/static_data and control or frame)");
+                    continue;
+                }
+                out.add(new TargetEffect(configId, staticData, level, lifeMs, control, frame));
+            }
+            return out;
+        } finally {
+            lua.pop(1);
+        }
+    }
+
+    /**
+     * by_level[level] 差集修补（整数键须 rawGetI；缺级/无表 → 原样返回；EffectSet 重建）。
+     * 字段存在性按 nil 判别——damage_amount 显式 0 有效（该级无伤害，如
+     * damage_calculate[61] 的负段），不得当"未提供"沿用基准。
+     */
+    private EffectSet applyByLevelLocked(int level, EffectSet base) {
+        lua.getField(-1, "by_level");
+        try {
+            if (!lua.isTable(-1)) {
+                return base;
+            }
+            lua.rawGetI(-1, level);
+            try {
+                if (!lua.isTable(-1)) {
+                    return base;
+                }
+                Long amount = readOptionalLong("damage_amount");
+                Long waves = readOptionalLong("damage_waves");
+                Long selfLife = readOptionalLong("self_life_ms");
+                Long targetLife = readOptionalLong("target_life_ms");
+                Integer newAmount = amount == null ? base.damageAmount()
+                        : (int) Math.max(0, Math.min(Integer.MAX_VALUE, amount));
+                Integer newWaves = waves == null ? base.damageWaves()
+                        : (int) Math.max(0, Math.min(Integer.MAX_VALUE, waves));
+                List<SelfBuff> self = base.selfBuffs();
+                if (selfLife != null && selfLife > 0 && !self.isEmpty()) {
+                    SelfBuff first = self.get(0);
+                    self = new ArrayList<>(self);
+                    self.set(0, new SelfBuff(first.configId(), first.staticData(),
+                            first.level(), selfLife, first.slot()));
+                }
+                List<TargetEffect> targets = base.targetEffects();
+                if (targetLife != null && targetLife > 0 && !targets.isEmpty()) {
+                    TargetEffect first = targets.get(0);
+                    targets = new ArrayList<>(targets);
+                    targets.set(0, new TargetEffect(first.configId(), first.staticData(),
+                            first.level(), targetLife, first.control(), first.frame()));
+                }
+                return new EffectSet(newAmount, newWaves, self, targets);
+            } finally {
+                lua.pop(1);
+            }
+        } finally {
+            lua.pop(1);
+        }
     }
 
     /** 调 M.on_use(ctx) 并解析返回指令表（无 on_use / nil 返回 → ITEM_NONE 走 INI 回退）。 */
@@ -585,8 +943,12 @@ public final class LuaScriptService {
         return runModuleLocked(script, global);
     }
 
-    private boolean hookIsFunctionLocked(String buffId, String hook) throws RuntimeException {
-        lua.getGlobal(neigongGlobal(buffId));
+    private boolean hookIsFunctionLocked(String global, String hook) throws RuntimeException {
+        lua.getGlobal(global);
+        if (!lua.isTable(-1)) {
+            lua.pop(1);
+            return false;
+        }
         lua.getField(-1, hook);
         boolean isFunction = lua.isFunction(-1);
         lua.pop(2);
@@ -818,6 +1180,14 @@ public final class LuaScriptService {
     private long readIntFieldAtTop(String field) {
         lua.getField(-1, field);
         long value = lua.isNumber(-1) ? (long) Math.floor(lua.toNumber(-1) + 1e-9) : 0;
+        lua.pop(1);
+        return value;
+    }
+
+    /** 栈顶 table 的字符串字段（trim；缺失/非串 → ""）。 */
+    private String readStringFieldAtTop(String field) {
+        lua.getField(-1, field);
+        String value = lua.isString(-1) ? lua.toString(-1).trim() : "";
         lua.pop(1);
         return value;
     }

@@ -165,17 +165,17 @@ public final class SkillCastHandler {
         // 冲锋位移上限（CanRush 且 RushRange>0；无值回落 15 米）——圈定落点宽容用。
         double rushRange = skill.canRush()
                 ? Math.max(skill.rushRangeM(), RUSH_RANGE_FALLBACK_METERS) : 0;
-        // 出招射程闸（参考服 exe 61653 抓包实证，2026-11-05）：CanRush 且 RushRange>0
-        // → RushRange（冲锋位移上限即判定值）；否则 TargetShapePara2（技能真实射程
-        // ——myjf02：CanRush 无 RushRange，TSP2=6，目标 6.73m>6 → msg25 暂存+msg24
-        // c61 起跑）；全无值回落 max(HitShape 半径, 近战身位 8m)。
+        // 出招射程闸（2026-11-06 八轮，用户拍板「按技能真实射程控制释放距离」）：
+        // **全部技能（含冲锋族）统一 TargetShapePara2=技能面板真实射程**（myjf02/03
+        // =6、yqq02=4、cqgf01=3）；冲锋族五~七轮的 max(RushRange,15m) 放宽与 60m
+        // 兜底全部废除——超射程一律静默拒。射程内按下 → 立即受理（锁定族 c61 冲刺
+        // +msg19，见 emitLockCast——冲刺只负责把「射程内↔绑定距离」的最后一小段
+        // 走完，不再是超射程受理的借口）。全无值回落 max(HitShape 半径, 近战 8m)。
         CombatSkillCatalog.SkillRowData rowData = CombatSkillCatalog.load()
                 .skillRowData(skill.id(), skill.level());
         float shapeRange = rowData != null ? rowData.targetShapePara2() : 0;
         double castRange;
-        if (skill.canRush() && skill.rushRange() > 0) {
-            castRange = skill.rushRange();
-        } else if (shapeRange > 0) {
+        if (shapeRange > 0) {
             castRange = shapeRange;
         } else {
             castRange = Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
@@ -203,34 +203,26 @@ public final class SkillCastHandler {
             if (targetInfo != null) {
                 double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
                         + square(z - targetInfo.z()));
-                // 冲锋标记两段时序（2026-11-05 用户拍板：到达限制阈值时下发冲锋的
-                // 标记，到达目标位置后才正式触发技能特效造成伤害）：锁定+冲锋族
-                // ①距目标超过到达半径（5m）→ 只发标记=暂存（msg25[30000,skill_pause]
-                // + msg24 c1=61 疾跑去目标位，参考服 exe 61653 实证链路），不结算，
-                // 也不吃 castRange 拒（TSP2 可小于到达半径，如 cqgf01=3m——否则
-                // (TSP2,5m] 成静默死区）；msg15/212 上报进入到达半径才落地续招。
-                // ②已在目标身位（≤5m）→ 直接受理正式出招。此前「进 castRange 即
-                // 续招」=阈值处就出伤害（真机反馈「到达阈值就释放」），已按本时序修正。
-                // 官服（正版抓包 op2）无此链、337 终点驱动本地冲——如需官服语义可
-                // -Dnineyin.rush.stage=false 关回（60m 防跨图滥用兜底闸）。
+                // 冲锋时序（2026-11-06 七轮，用户拍板「15m 内触发冲刺、远距离不触发」）：
+                // 锁定+冲锋族受理上限=max(RushRange,15m 回落)。①射程内按下 → 立即受理：
+                // c61 冲刺指令（LockGRushAction+终点）+location 终点锚+msg19 锁定帧
+                // （六轮，out2 官方协议，见 emitLockCast）。②超受理上限 → **静默拒**
+                // （与非冲锋技同语义，客户端面板本地变红）——暂存疾跑链（参考服方言）
+                // 真机体验=「远距离也能触发整套出招」，默认关闭，仅
+                // -Dnineyin.rush.stage=true 显式开启回退。旧「锁定族 60m 兜底」同为
+                // 猜测方言（官服超距行为无抓包），一并废除。
                 boolean stagedRushFamily = skill.canRush()
                         && "skilllock".equalsIgnoreCase(skill.script())
                         && rushStageEnabled();
-                if (stagedRushFamily) {
-                    if (distance > RUSH_ARRIVAL_RADIUS_METERS) {
-                        stageRushCast(context, skill, targetInfo, distance);
-                        return;
-                    }
-                } else {
-                    double maxRange = castRange;
-                    if (!rushStageEnabled() && skill.lockSkill()) {
-                        maxRange = Math.max(maxRange, 60.0);
-                    }
-                    if (distance > maxRange) {
-                        LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
-                                + "m > " + (int) maxRange + "m");
-                        return;
-                    }
+                if (stagedRushFamily && distance > castRange) {
+                    stageRushCast(context, skill, targetInfo, distance);
+                    return;
+                }
+                double maxRange = castRange;
+                if (distance > maxRange) {
+                    LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
+                            + "m > " + (int) maxRange + "m");
+                    return;
                 }
             }
         } else if (skill.targetMode() == CombatSkill.TargetMode.GROUND_AREA
@@ -340,12 +332,10 @@ public final class SkillCastHandler {
         // 玩家全量属性面（参考服出招瘦集 = CAST_PANEL_NAMES；登录面板的移动模式/
         // 外观属性官方不随出招重发，重推 Mount='' 等会把空中人物打回地面）。
         connection.writeFrame(player.castVitalUpdate());
-        // msg337 施法者位置/朝向回显=211 上报原地（官服每招恒发）。**冲锋技服务端同样
-        // 只锚原地、不携终点**——op2 抓包字节级实证：同一出招的 0x1F 与 337 的 xyz 三元
-        // 组完全相同且恒=上报原地（此前"337=终点"为手算浮点误读，已勘误）。冲锋位移=
-        // 客户端本地执行（按技能 lock data 自播冲刺动画，官服全程无玩家位移帧）；服务端
-        // 若在 337/0x1F 携终点，客户端按权威位置直接贴坐标=瞬移无动画（2026-11-05 真机
-        // 两轮反馈）。冲锋技在 337 前补 0x1F 原地锚定（官服冲锋簇帧序含此对帧）。
+        // msg337 施法者位置/朝向回显=211 上报原地（官服每招恒发）。337 恒原地（op2
+        // 字节级实证；携终点=瞬移，11-05 真机两轮反馈）。冲锋族（RushRange>0，op2
+        // 实证）337 前补 0x1F 原地锚定=冲刺起点锚；无 RushRange 族不加
+        // （SkillCastWiringTest 六帧序=实测簇形）。
         if (skill.canRush() && skill.rushRange() > 0) {
             connection.writeFrame(SceneMessages.serverLocation(
                     PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
@@ -354,9 +344,19 @@ public final class SkillCastHandler {
         connection.writeFrame(FightMessages.casterTransformSync(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, x, y, z, orient));
         ActionTarget actionTarget = resolveActionTarget(context, skill, selected, aimObjId, aimOwnerId);
-        connection.writeFrame(FightMessages.skillAction(
-                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id(),
-                actionTarget.objectId(), actionTarget.ownerId()));
+        // 出招动作帧两分（官服 out2 时间线 2026-11-06 定谳）：**锁定族（SkillLock/
+        // CanRush）带真实 NPC 目标走 msg19 锁定帧**（含可选 msg24 c61 冲刺指令+
+        // location 终点锚），**其余（非锁定技/自增益/无目标）走 msg20**。此前全族发
+        // msg20 = 客户端不出锁定/冲刺表现的根因（真机多轮「无冲刺动画」）。
+        if (skill.lockSkill() && selected != null
+                && actionTarget.objectId() != 0
+                && actionTarget.objectId() != PlayerActor.PLAYER_OBJECT_ID) {
+            emitLockCast(context, skill, x, y, z, orient, actionTarget);
+        } else {
+            connection.writeFrame(FightMessages.skillAction(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, skill.id(),
+                    actionTarget.objectId(), actionTarget.ownerId()));
+        }
 
         List<FightState.HitTarget> targets = resolveTargets(context, skill, x, y, z, orient, castPoint);
         // NPC 反击 AI 拉起（§D1）：打中过谁，谁开始还手（循环自续，失效自停）。
@@ -375,7 +375,7 @@ public final class SkillCastHandler {
             emitPerTargetSequence(context, skill, hits, playerName);
             emitWujiSequence(context, skill, hits, 0);
             awardRagePerHit(context, hits);
-            applyTargetControl(context, skill, hits, now);
+            applyTargetEffects(context, skill, hits, now);
             feedMeridianZhenQi(context, hits);
         } else {
             // 多段技能（zhaoshi trigger_effect 帧位）：每段一次全套命中帧
@@ -392,20 +392,21 @@ public final class SkillCastHandler {
     }
 
     /**
-     * 冲锋暂存链开关（**默认开**，2026-11-05 用户拍板对齐参考服 exe 61653 抓包：超射程
-     * 冲锋下发 msg25 暂存+msg24 c61 起跑而非静默拒/直接受理）；官服（正版）无此链，
-     * -Dnineyin.rush.stage=false 可关回官服语义（337 终点驱动客户端本地冲）。
+     * 冲锋暂存链开关（**默认关**，2026-11-06 七轮用户拍板「15m 内触发冲刺、远距离
+     * 不触发」——超距一律静默拒；参考服 61653 的 msg25+msg24 疾跑链真机体验=远距离
+     * 也能触发整套出招，已废）。`-Dnineyin.rush.stage=true` 显式开启回退旧链。
      */
     static boolean rushStageEnabled() {
-        return Boolean.parseBoolean(System.getProperty("nineyin.rush.stage", "true"));
+        return Boolean.parseBoolean(System.getProperty("nineyin.rush.stage", "false"));
     }
 
     /**
-     * 冲锋暂存（IDA stagePreCast 逐帧对齐 + 参考服 61653 抓包实测：myjf02 目标
-     * 6.73m&gt;TSP2 6m → msg25[30000,skill_pause]+msg24[玩家,61,目标位置,2,
-     * qg_fastruning_s_2h_01]）：CurSkillID 帧 + msg25 暂存 + msg24 c1=61 疾跑
-     * （目的地=目标位置）+ 暂存出招 30s。RushTarget/PendingSkill 两属性名不在
-     * 0x09 协商表（exe 编码失败静默跳过）——同样不发。CD/资源在落地续招时才结。
+     * 冲锋暂存（IDA stagePreCast 逐帧对齐 + 参考服 61653 抓包链路：msg25[30000,
+     * skill_pause]+msg24[玩家,61,目标位置,2,qg_fastruning_s_2h_01]；五轮起只对
+     * 超 max(RushRange,15m) 受理上限的真超距按下触发——射程内直接受理走客户端
+     * 原生冲刺）：CurSkillID 帧 + msg25 暂存 + msg24 c1=61 疾跑（目的地=目标位置）
+     * + 暂存出招 30s。RushTarget/PendingSkill 两属性名不在 0x09 协商表（exe 编码
+     * 失败静默跳过）——同样不发。CD/资源在落地续招时才结。
      */
     private static void stageRushCast(CastContext context, CombatSkill skill,
                                       SceneLifecycle.CombatNpcInfo target, double distance) {
@@ -677,6 +678,101 @@ public final class SkillCastHandler {
     }
 
     /**
+     * 锁定族出招簇（官服 out2 时间线 2026-11-06 定谳，替代 msg20）：距目标超绑定
+     * 距离的冲锋技先发 **msg24 c1=61 冲刺指令**（[玩家,61,终点,档1,skill_lock_data
+     * 的 LockGRushAction 动画名]——终点=目标朝施法者方向 |LockSrcDist|（无值用
+     * BindDistance）处；LockSrcDist&lt;0 如 myjf02 敛影逃形=背向脱离）+ **location
+     * 终点锚**，随后 **msg19 锁定帧**（24 值：LockSrcTime/LockTargetTime/双方坐标/
+     * BindDistance/绑定点=目标朝施法者 BindDistance 处）。官方序列实测：c61 →
+     * loc(终点) → msg19（间隔 ~100/340ms），绑定内出招只发 msg19。
+     */
+    private static void emitLockCast(CastContext context, CombatSkill skill,
+                                     float x, float y, float z, float orient,
+                                     ActionTarget actionTarget) {
+        Connection connection = context.connection();
+        CombatSkillCatalog.LockData lock = CombatSkillCatalog.load().lockData(skill.id());
+        int srcMs = lock != null && lock.srcTimeMs() > 0 ? lock.srcTimeMs() : 1500;
+        int tgtMs = lock != null && lock.targetTimeMs() > 0 ? lock.targetTimeMs() : 1500;
+        float bind = lock != null && lock.bindDistance() > 0 ? lock.bindDistance() : 1.5f;
+        float srcDist = lock != null ? lock.srcDist() : 0;
+        SceneLifecycle.CombatNpcInfo target = actionTarget.objectId() != 0
+                ? context.world().combatNpcInfo(actionTarget.objectId()) : null;
+        // 冲刺位移：CanRush 且距目标超绑定距离（官服 myjf03 实测 c61 终点≈|LockSrcDist| 处）
+        if (skill.canRush() && target != null) {
+            double dist = Math.sqrt(square(x - target.x()) + square(y - target.y())
+                    + square(z - target.z()));
+            if (dist > bind + 1.0) {
+                float dx = x - target.x();
+                float dz = z - target.z();
+                double horiz = Math.sqrt((double) dx * dx + (double) dz * dz);
+                if (horiz < 0.01) {
+                    dx = 1f;
+                    dz = 0f;
+                    horiz = 1;
+                }
+                float ux = (float) (dx / horiz);
+                float uz = (float) (dz / horiz);
+                float stop = srcDist != 0 ? Math.abs(srcDist) : bind;
+                float endX;
+                float endY;
+                float endZ;
+                if (srcDist < 0) {
+                    // 背向脱离（敛影逃形族）：从施法者沿远离目标方向推 |LockSrcDist|
+                    endX = x + ux * stop;
+                    endY = y;
+                    endZ = z + uz * stop;
+                } else {
+                    endX = (float) target.x() + ux * stop;
+                    endY = (float) target.y();
+                    endZ = (float) target.z() + uz * stop;
+                }
+                String anim = lock != null && !lock.groundRushAction().isEmpty()
+                        ? lock.groundRushAction() : "qg_fastrun_0h_01";
+                connection.writeFrame(FightMessages.dashRushFrame(
+                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                        endX, endY, endZ, 1, anim));
+                connection.writeFrame(SceneMessages.serverLocation(
+                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                        new com.nineyin.server.db.role.Roles.Position(
+                                endX, endY, endZ, orient)));
+                LOG.info("lock rush dash skill id=" + skill.id() + " dist=" + (int) dist
+                        + "m dest=(" + (int) endX + "," + (int) endY + "," + (int) endZ
+                        + ") anim=" + anim);
+            }
+        }
+        // msg19 绑定点=目标朝施法者方向 BindDistance 处（官服两例实测=各自 BindDistance）
+        float bindX = x;
+        float bindY = y;
+        float bindZ = z;
+        float dstOrient = orient;
+        if (target != null) {
+            float dx = x - target.x();
+            float dz = z - target.z();
+            double horiz = Math.sqrt((double) dx * dx + (double) dz * dz);
+            if (horiz > 0.01) {
+                bindX = (float) target.x() + (float) (dx / horiz) * bind;
+                bindZ = (float) target.z() + (float) (dz / horiz) * bind;
+            } else {
+                bindX = (float) target.x() + bind;
+                bindZ = (float) target.z();
+            }
+            bindY = (float) target.y();
+            dstOrient = target.orient();
+        }
+        connection.writeFrame(FightMessages.skillLockCast(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                actionTarget.objectId(), actionTarget.ownerId(), skill.id(),
+                srcMs, tgtMs,
+                x, y, z, orient,
+                target != null ? target.x() : x,
+                target != null ? target.y() : y,
+                target != null ? target.z() : z,
+                dstOrient,
+                bind,
+                bindX, bindY, bindZ));
+    }
+
+    /**
      * msg20 动作帧的目标对象（57378/52795 官服抓包实证）：锁定/冲锋技（SkillLock
      * /CanRush，单体与圈定同规）=211 目标对象（校验战斗 NPC，失效回落选中目标）——
      * 客户端收到目标对象才本地执行冲锋位移（「伤害出了人没过去」根因即此参数恒空）；
@@ -759,21 +855,42 @@ public final class SkillCastHandler {
         return hits;
     }
 
-    /** 目标控制效果（击中者受控到 buff 租约终点；多段路径在首段命中后调用）。 */
-    private static void applyTargetControl(CastContext context, CombatSkill skill,
+    /**
+     * 目标效果（命中目标才落；多段路径在首段命中后调用）：control=true 受控到
+     * buff 租约终点（有害精确 buff 同语义）；frame=true 加发 msg169 目标 debuff
+     * 帧（武技 169 帧的脚本化泛化，效果经 effects_data/逐技能脚本下发才开启）。
+     */
+    private static void applyTargetEffects(CastContext context, CombatSkill skill,
                                            List<Hit> hits, Instant now) {
         for (CombatSkill.Effect effect : skill.effects()) {
-            if (effect.kind() == CombatSkill.EffectKind.TARGET_CONTROL
-                    && effect.buff() != null && effect.buff().lifetimeMs() > 0
-                    && hits.stream().anyMatch(hit -> hit.damage() > 0)) {
-                Instant until = now.plusMillis(effect.buff().lifetimeMs());
-                for (Hit hit : hits) {
-                    if (hit.damage() > 0) {
-                        context.fight().control(hit.target().combat(), until);
-                    }
+            if (effect.kind() != CombatSkill.EffectKind.TARGET_CONTROL
+                    || effect.buff() == null || effect.buff().lifetimeMs() <= 0
+                    || (!effect.control() && !effect.frame())) {
+                continue;
+            }
+            int controlled = 0;
+            int framed = 0;
+            Instant until = now.plusMillis(effect.buff().lifetimeMs());
+            for (Hit hit : hits) {
+                if (hit.damage() <= 0) {
+                    continue;
                 }
-                LOG.info("target control skill=" + skill.id() + " buff=" + effect.buff().configId()
-                        + " targets=" + hits.size());
+                if (effect.control()) {
+                    context.fight().control(hit.target().combat(), until);
+                    controlled++;
+                }
+                if (effect.frame()) {
+                    SceneLifecycle.CombatNpcInfo info = hit.target().info();
+                    context.connection().writeFrame(FightMessages.targetDebuffTimed(
+                            effect.buff().configId(), info.id(), info.ownerId(),
+                            PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                            context.player().snapshotName(), until.toEpochMilli()));
+                    framed++;
+                }
+            }
+            if (controlled > 0 || framed > 0) {
+                LOG.info("target effect skill=" + skill.id() + " buff=" + effect.buff().configId()
+                        + " control=" + controlled + " frame=" + framed);
             }
         }
     }
@@ -846,7 +963,7 @@ public final class SkillCastHandler {
                     if (context.player().enterCombat(now)) {
                         context.connection().writeFrame(context.player().logicStateFrame());
                     }
-                    applyTargetControl(context, skill, hits, now);
+                    applyTargetEffects(context, skill, hits, now);
                 } else {
                     context.player().touchCombat(now); // 后续段刷新活跃时刻，防段间闲退
                 }
@@ -885,14 +1002,25 @@ public final class SkillCastHandler {
         if (range[1] > range[0]) {
             roll += context.random().nextInt(range[1] - range[0] + 1);
         }
+        float ratio = skill.damageRatio();
+        // M.on_hit 运行期倍率钩子（scripts/skill/<ID>.lua；r_adjust Java 预掷且
+        // 顺序固定在末位——无钩子技能 RNG 序列零扰动）。返回夹 [0,100]。
+        LuaScriptService service = LuaScriptService.getInstance();
+        if (service.skillHasOnHit(skill.id())) {
+            LuaScriptService.SkillHitAdjust adjust = service.skillOnHit(
+                    skill.id(), ratio, skill.level(), context.random().nextDouble());
+            if (adjust != null && adjust.ratio() > 0) {
+                ratio = adjust.ratio();
+            }
+        }
         CombatFormulas.Input input = new CombatFormulas.Input(
                 roll, 0, 0, 0,
                 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0,
                 0, 0,
-                skill.damageRatio(), false,
+                ratio, false,
                 missRoll, critRoll);
-        CombatFormulas.Result result = LuaScriptService.getInstance().calc(input);
+        CombatFormulas.Result result = service.calc(input);
         return result.miss()
                 ? new RollResult(0, false)
                 : new RollResult((int) Math.min(result.damage(), Integer.MAX_VALUE), result.crit());

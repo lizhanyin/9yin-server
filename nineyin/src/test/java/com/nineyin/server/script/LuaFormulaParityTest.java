@@ -21,9 +21,12 @@ class LuaFormulaParityTest {
 
     @BeforeAll
     static void pointScriptsAtRepoRoot() {
-        // surefire cwd=nineyin 模块目录；scripts/ 在仓库根（与 LoginFlowTest 覆盖 GO 根同法）
+        // surefire cwd=nineyin 模块目录；scripts/ 在仓库根（与 LoginFlowTest 覆盖 GO 根同法）。
+        // 必须 reload：全量跑时单例引擎可能继承前序类在其它根的装载（无 effects_data），
+        // 数据面断言（xfz01 等）依赖本仓 scripts（同 LuaNeigongHookTest 范式）。
         ServerPaths.overrideServerRoot(
                 Path.of("").toAbsolutePath().normalize().getParent());
+        LuaScriptService.getInstance().reload();
     }
 
     @Test
@@ -93,23 +96,26 @@ class LuaFormulaParityTest {
         LuaScriptService service = LuaScriptService.getInstance();
         Assumptions.assumeTrue(service.luaAvailable(), "lua engine unavailable in this env");
 
-        LuaScriptService.SkillOverlay yihua = service.skillOverlay("CS_yhwq_hsqs04",
+        LuaScriptService.SkillOverlay yihua = service.skillOverlay("CS_yhwq_hsqs04", 1,
                 new LuaScriptService.ExactBuff("buf_CS_yhwq_hsqs04", 15101, 1, 86_400_000));
         assertEquals(35_000L, yihua.selfBuffLeaseMs());
         assertEquals(5, yihua.selfBuffSlot());
 
-        // 无脚本的技能 → NONE（沿用 INI 编译默认）
-        LuaScriptService.SkillOverlay none = service.skillOverlay("CS_jh_xfz01", null);
-        assertNull(none == null ? null : none.selfBuffLeaseMs());
+        // 无逐技能脚本但汇总表有条目 → effects_data 数据面（INI 编译同值，分级缓存）
+        LuaScriptService.SkillOverlay xfz = service.skillOverlay("CS_jh_xfz01", 1, null);
+        assertEquals(119, xfz.damageAmount());
+        assertEquals(1, xfz.damageWaves());
+        LuaScriptService.SkillOverlay xfz3 = service.skillOverlay("CS_jh_xfz01", 3, null);
+        assertEquals(203, xfz3.damageAmount());
 
         // 太极四式：架势轮换双变体（守6013/攻6055，槽7）；八式：红霸体；五式：槽8
-        LuaScriptService.SkillOverlay stance = service.skillOverlay("CS_wd_tjq04", null);
+        LuaScriptService.SkillOverlay stance = service.skillOverlay("CS_wd_tjq04", 1, null);
         assertEquals(2, stance.stanceCycle().size());
         assertEquals(6013, stance.stanceCycle().get(0).staticData());
         assertEquals(6055, stance.stanceCycle().get(1).staticData());
         assertEquals(7, stance.stanceCycle().get(0).slot());
-        assertEquals(Boolean.TRUE, service.skillOverlay("CS_wd_tjq08", null).redArmor());
-        assertEquals(8, service.skillOverlay("CS_wd_tjq05", null).selfBuffSlot());
+        assertEquals(Boolean.TRUE, service.skillOverlay("CS_wd_tjq08", 1, null).redArmor());
+        assertEquals(8, service.skillOverlay("CS_wd_tjq05", 1, null).selfBuffSlot());
     }
 
     private static CombatFormulas.Input input(double attack, double defense,

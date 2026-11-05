@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.nineyin.server.protocol.InventoryMessages;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -29,16 +30,34 @@ public final class RoleInventoryStore implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(RoleInventoryStore.class);
 
-    /** 穿戴装备（身体槽位 1 帽/3 衣/4 裤/6 腕/7 腿/8 鞋/22 武器…；propBuilt 词缀串 "1,id;1,id"）。 */
+    /**
+     * 穿戴装备（身体槽位 1 帽/3 衣/4 裤/6 腕/7 腿/8 鞋/22 武器…；propBuilt 词缀串
+     * "1,id;1,id"）。seq/uid=实例稳定身份（0013：入装生成全局随机 uid，穿脱跨表携带；
+     * 旧行 uid 空按 seq 派生，见 InventoryMessages.itemUid）。兼容构造器（无 seq/uid）
+     * 供纯写入构造——行返回/下发请走读库路径取真实身份。
+     */
     public record Equip(String configId, int itemType, String equipType, int slot,
-                        int hardiness, int maxHardiness, int artPack, String propBuilt) {
+                        int hardiness, int maxHardiness, int artPack, String propBuilt,
+                        int seq, String uid) {
+        public Equip(String configId, int itemType, String equipType, int slot,
+                     int hardiness, int maxHardiness, int artPack, String propBuilt) {
+            this(configId, itemType, equipType, slot, hardiness, maxHardiness, artPack,
+                    propBuilt, 0, null);
+        }
     }
 
-    /** 背包行（slot=真实槽位 1..90；viewId 决定进哪个视图页）。 */
+    /** 背包行（slot=真实槽位 1..90；viewId 决定进哪个视图页）；seq/uid 同 Equip 口径。 */
     public record BagItem(int slot, String configId, int itemType, int amount, int viewId,
                           String name, String equipType, int colorLevel, String script,
                           Integer anchorSlot, Instant expiresAt, Integer artPack,
-                          int hardiness, int maxHardiness) {
+                          int hardiness, int maxHardiness, int seq, String uid) {
+        public BagItem(int slot, String configId, int itemType, int amount, int viewId,
+                       String name, String equipType, int colorLevel, String script,
+                       Integer anchorSlot, Instant expiresAt, Integer artPack,
+                       int hardiness, int maxHardiness) {
+            this(slot, configId, itemType, amount, viewId, name, equipType, colorLevel,
+                    script, anchorSlot, expiresAt, artPack, hardiness, maxHardiness, 0, null);
+        }
     }
 
     /** 已学技能（skillType: neigong/wuxue/qinggong）。 */
@@ -104,12 +123,15 @@ public final class RoleInventoryStore implements AutoCloseable {
         }
     }
 
-    /** affixes 列是本服迁移加的；DB 被 F 版参考服数据还原后该列可能不存在，需降级查询。 */
+    /** affixes/uid 列是本服迁移加的；DB 被 F 版参考服数据还原后可能不存在，需降级查询。 */
     private static final String EQUIP_SQL_FULL =
-            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack, affixes "
-                    + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack, affixes, "
+                    + "seq, uid FROM role_equip_items WHERE role_id = ? ORDER BY seq";
+    private static final String EQUIP_SQL_NO_UID =
+            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack, affixes, "
+                    + "seq FROM role_equip_items WHERE role_id = ? ORDER BY seq";
     private static final String EQUIP_SQL_NO_AFFIXES =
-            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack "
+            "SELECT config_id, item_type, equip_type, slot, hardiness, max_hardiness, art_pack, seq "
                     + "FROM role_equip_items WHERE role_id = ? ORDER BY seq";
 
     public List<Equip> equips(long roleId) {
@@ -118,15 +140,34 @@ public final class RoleInventoryStore implements AutoCloseable {
                     statement -> statement.setLong(1, roleId),
                     (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
                             result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7),
-                            propBuiltOf(result.getString(8))));
+                            propBuiltOf(result.getString(8)), result.getInt(9), result.getString(10)));
         } catch (RuntimeException e) {
-            if (e.getMessage() != null && e.getMessage().contains("Unknown column 'affixes'")) {
+            String message = e.getMessage();
+            if (message != null && message.contains("Unknown column 'uid'")) {
+                log.warn("role_equip_items has no uid column (pre-0013 db); retry without uid role={}",
+                        roleId);
+                try {
+                    return query(EQUIP_SQL_NO_UID,
+                            statement -> statement.setLong(1, roleId),
+                            (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
+                                    result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7),
+                                    propBuiltOf(result.getString(8)), result.getInt(9), null));
+                } catch (RuntimeException second) {
+                    if (second.getMessage() == null
+                            || !second.getMessage().contains("Unknown column 'affixes'")) {
+                        throw second;
+                    }
+                    // 兼容 0013 前 + F-schema 双缺列库：继续走 NO_AFFIXES。
+                }
+            }
+            if (message != null && message.contains("Unknown column 'affixes'")) {
                 log.warn("role_equip_items has no affixes column (F-schema db); retry without affixes role={}",
                         roleId);
                 return query(EQUIP_SQL_NO_AFFIXES,
                         statement -> statement.setLong(1, roleId),
                         (result) -> new Equip(result.getString(1), result.getInt(2), result.getString(3),
-                                result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7), ""));
+                                result.getInt(4), result.getInt(5), result.getInt(6), result.getInt(7),
+                                "", result.getInt(8), null));
             }
             throw e;
         }
@@ -158,16 +199,35 @@ public final class RoleInventoryStore implements AutoCloseable {
 
     /** 背包行 + game_items 富化（color_level/script 缺省时补目录值）。 */
     public List<BagItem> bagItems(long roleId) {
-        List<BagItem> raw = query(
-                "SELECT slot, config_id, item_type, amount, view_id, name, equip_type, color_level, "
-                        + "script, anchor_slot, expires_at, art_pack, hardiness, max_hardiness "
-                        + "FROM role_bag_items WHERE role_id = ? ORDER BY seq",
-                statement -> statement.setLong(1, roleId),
-                (result) -> new BagItem(result.getInt(1), result.getString(2), result.getInt(3),
-                        result.getInt(4), result.getInt(5), result.getString(6), result.getString(7),
-                        result.getInt(8), result.getString(9), getInteger(result, 10),
-                        getInstant(result, 11), getInteger(result, 12),
-                        result.getInt(13), result.getInt(14)));
+        List<BagItem> raw;
+        try {
+            raw = query(
+                    "SELECT slot, config_id, item_type, amount, view_id, name, equip_type, color_level, "
+                            + "script, anchor_slot, expires_at, art_pack, hardiness, max_hardiness, seq, uid "
+                            + "FROM role_bag_items WHERE role_id = ? ORDER BY seq",
+                    statement -> statement.setLong(1, roleId),
+                    (result) -> new BagItem(result.getInt(1), result.getString(2), result.getInt(3),
+                            result.getInt(4), result.getInt(5), result.getString(6), result.getString(7),
+                            result.getInt(8), result.getString(9), getInteger(result, 10),
+                            getInstant(result, 11), getInteger(result, 12),
+                            result.getInt(13), result.getInt(14), result.getInt(15),
+                            result.getString(16)));
+        } catch (RuntimeException e) {
+            if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'uid'")) {
+                throw e;
+            }
+            log.warn("role_bag_items has no uid column (pre-0013 db); retry without uid role={}", roleId);
+            raw = query(
+                    "SELECT slot, config_id, item_type, amount, view_id, name, equip_type, color_level, "
+                            + "script, anchor_slot, expires_at, art_pack, hardiness, max_hardiness, seq "
+                            + "FROM role_bag_items WHERE role_id = ? ORDER BY seq",
+                    statement -> statement.setLong(1, roleId),
+                    (result) -> new BagItem(result.getInt(1), result.getString(2), result.getInt(3),
+                            result.getInt(4), result.getInt(5), result.getString(6), result.getString(7),
+                            result.getInt(8), result.getString(9), getInteger(result, 10),
+                            getInstant(result, 11), getInteger(result, 12),
+                            result.getInt(13), result.getInt(14), result.getInt(15), null));
+        }
         if (raw.isEmpty()) {
             return raw;
         }
@@ -182,7 +242,8 @@ public final class RoleInventoryStore implements AutoCloseable {
                         item.name() != null && !item.name().isEmpty() ? item.name() : info[2],
                         item.equipType() != null && !item.equipType().isEmpty() ? item.equipType() : info[3],
                         item.colorLevel(), item.script(), item.anchorSlot(), item.expiresAt(),
-                        item.artPack(), item.hardiness(), item.maxHardiness()));
+                        item.artPack(), item.hardiness(), item.maxHardiness(),
+                        item.seq(), item.uid()));
             } else {
                 enriched.add(item);
             }
@@ -219,15 +280,64 @@ public final class RoleInventoryStore implements AutoCloseable {
     }
 
     public List<Skill> skills(long roleId, String skillType) {
-        return query("SELECT s.skill_id, g.static_data, g.item_type FROM role_skills s "
+        return skills(roleId, List.of(skillType));
+    }
+
+    /** 多类型版（秘籍学习链：View40 行集 = wuxue+anqi 并集；行序仍按 skill_id）。 */
+    public List<Skill> skills(long roleId, List<String> skillTypes) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(skillTypes.size(), "?"));
+        return query("SELECT s.skill_id, s.skill_type, g.static_data, g.item_type FROM role_skills s "
                         + "JOIN game_skills g ON g.skill_id = s.skill_id "
-                        + "WHERE s.role_id = ? AND s.skill_type = ? ORDER BY s.skill_id",
+                        + "WHERE s.role_id = ? AND s.skill_type IN (" + placeholders + ") "
+                        + "ORDER BY s.skill_id",
                 statement -> {
                     statement.setLong(1, roleId);
-                    statement.setString(2, skillType);
+                    for (int i = 0; i < skillTypes.size(); i++) {
+                        statement.setString(i + 2, skillTypes.get(i));
+                    }
                 },
-                (result) -> new Skill(result.getString(1), skillType,
-                        result.getInt(2), result.getInt(3)));
+                (result) -> new Skill(result.getString(1), result.getString(2),
+                        result.getInt(3), result.getInt(4)));
+    }
+
+    /**
+     * game_skills 目录行批量查询（秘籍学习目标解析）：返回 skillId →
+     * skill_type/static_data/item_type。目录缺席的目标（45/1757，多 _hide 变体）
+     * 不在返回里——调用方记日志跳过，保证 View40 行 StaticData 与登录 JOIN 同源。
+     */
+    public Map<String, Skill> gameSkillRows(java.util.Collection<String> skillIds) {
+        Map<String, Skill> rows = new HashMap<>();
+        List<String> ids = new ArrayList<>(skillIds);
+        for (int from = 0; from < ids.size(); from += 200) {
+            List<String> chunk = ids.subList(from, Math.min(ids.size(), from + 200));
+            String placeholders = String.join(",", java.util.Collections.nCopies(chunk.size(), "?"));
+            query("SELECT skill_id, skill_type, static_data, item_type FROM game_skills "
+                            + "WHERE skill_id IN (" + placeholders + ")",
+                    statement -> {
+                        for (int i = 0; i < chunk.size(); i++) {
+                            statement.setString(i + 1, chunk.get(i));
+                        }
+                    },
+                    result -> new Skill(result.getString(1), result.getString(2),
+                            result.getInt(3), result.getInt(4)))
+                    .forEach(skill -> rows.put(skill.skillId(), skill));
+        }
+        return rows;
+    }
+
+    /** 学会技能落库（INSERT IGNORE 幂等：重复使用同一本秘籍不报错不重写）。 */
+    public void upsertSkill(long roleId, String skillId, String skillType) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "INSERT IGNORE INTO role_skills (role_id, skill_type, skill_id) "
+                             + "VALUES (?, ?, ?)")) {
+            statement.setLong(1, roleId);
+            statement.setString(2, skillType);
+            statement.setString(3, skillId);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            throw new IllegalStateException("upsert skill: " + e.getMessage(), e);
+        }
     }
 
     public List<Shortcut> shortcuts(long roleId) {
@@ -432,12 +542,17 @@ public final class RoleInventoryStore implements AutoCloseable {
 
     /**
      * GM 发放穿戴（grant_item wearNow）：同槽先删后插（seq 追加）。
-     * affixes 列在 F 版参考服还原库可能缺失，写入按读路径同款降级（无词缀列）。
+     * affixes/uid 列在 F 版参考服还原库或 0013 前库可能缺失，写入按读路径同款降级。
+     * uid：同槽旧行优先保留（刷新不改身份）> 调用方携带 > 新生成——物品实例身份
+     * 跨「删插重建」稳定。
      */
     public void upsertEquip(long roleId, Equip equip) {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
+                String keepUid = equip.uid() != null && !equip.uid().isEmpty()
+                        ? equip.uid() : selectEquipUid(connection, roleId, equip.slot());
+                String uid = keepUid != null ? keepUid : InventoryMessages.randomUid();
                 try (PreparedStatement delete = connection.prepareStatement(
                         "DELETE FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
                     delete.setLong(1, roleId);
@@ -448,26 +563,34 @@ public final class RoleInventoryStore implements AutoCloseable {
                 try {
                     try (PreparedStatement insert = connection.prepareStatement(
                             "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
-                                    + "hardiness, max_hardiness, slot, art_pack, affixes) "
+                                    + "hardiness, max_hardiness, slot, art_pack, affixes, uid) "
                                     + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
-                                    + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))")) {
+                                    + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)")) {
                         bindEquip(insert, roleId, equip);
                         insert.setString(10, affixesJson(equip.propBuilt()));
+                        insert.setString(11, uid);
                         insert.executeUpdate();
                     }
                 } catch (java.sql.SQLException e) {
-                    if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'affixes'")) {
+                    String message = e.getMessage();
+                    if (message != null && message.contains("Unknown column 'uid'")) {
+                        log.warn("role_equip_items has no uid column (pre-0013 db); insert without uid role={}",
+                                roleId);
+                        insertEquipNoUid(connection, roleId, equip, affixes);
+                    } else if (message != null && message.contains("Unknown column 'affixes'")) {
+                        log.warn("role_equip_items has no affixes column (F-schema db); insert without affixes role={}",
+                                roleId);
+                        try (PreparedStatement insert = connection.prepareStatement(
+                                "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                                        + "hardiness, max_hardiness, slot, art_pack, uid) "
+                                        + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
+                                        + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                            bindEquip(insert, roleId, equip);
+                            insert.setString(10, uid);
+                            insert.executeUpdate();
+                        }
+                    } else {
                         throw e;
-                    }
-                    log.warn("role_equip_items has no affixes column (F-schema db); insert without affixes role={}",
-                            roleId);
-                    try (PreparedStatement insert = connection.prepareStatement(
-                            "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
-                                    + "hardiness, max_hardiness, slot, art_pack) "
-                                    + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
-                                    + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
-                        bindEquip(insert, roleId, equip);
-                        insert.executeUpdate();
                     }
                 }
                 connection.commit();
@@ -477,6 +600,55 @@ public final class RoleInventoryStore implements AutoCloseable {
         } catch (Exception e) {
             throw new IllegalStateException("upsertEquip failed: " + e.getMessage(), e);
         }
+    }
+
+    /** uid 列缺席库的装备插入降级（含 affixes 分支）。 */
+    private void insertEquipNoUid(Connection connection, long roleId, Equip equip, boolean affixes)
+            throws Exception {
+        if (affixes) {
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                            + "hardiness, max_hardiness, slot, art_pack, affixes) "
+                            + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
+                            + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))")) {
+                bindEquip(insert, roleId, equip);
+                insert.setString(10, affixesJson(equip.propBuilt()));
+                insert.executeUpdate();
+            }
+            return;
+        }
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                        + "hardiness, max_hardiness, slot, art_pack) "
+                        + "VALUES (?, (SELECT COALESCE(MAX(e.seq), 0) + 1 FROM role_equip_items e "
+                        + "WHERE e.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
+            bindEquip(insert, roleId, equip);
+            insert.executeUpdate();
+        }
+    }
+
+    /** 同槽现行 uid（删插重建前保留身份用；列空按 seq 派生生效值；列缺席/无行回 null）。 */
+    private String selectEquipUid(Connection connection, long roleId, int slot) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT uid, seq FROM role_equip_items WHERE role_id = ? AND slot = ?")) {
+            statement.setLong(1, roleId);
+            statement.setInt(2, slot);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next()
+                        ? effectiveUid(roleId, "equip", result.getString(1), result.getLong(2))
+                        : null;
+            }
+        } catch (Exception e) {
+            if (e.getMessage() != null && e.getMessage().contains("Unknown column 'uid'")) {
+                return null;
+            }
+            throw new IllegalStateException("selectEquipUid failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** 行生效 UID：列值 > 旧行按 seq 派生（跨表移动时物化为显式列值）。 */
+    private static String effectiveUid(long roleId, String kind, String uid, long seq) {
+        return uid != null && !uid.isEmpty() ? uid : InventoryMessages.derivedUid(roleId, kind, seq);
     }
 
     private static void bindEquip(PreparedStatement statement, long roleId, Equip equip) throws Exception {
@@ -535,8 +707,9 @@ public final class RoleInventoryStore implements AutoCloseable {
             try {
                 String configId;
                 int itemType;
+                String carryUid;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT config_id, item_type FROM role_equip_items "
+                        "SELECT config_id, item_type, uid, seq FROM role_equip_items "
                                 + "WHERE role_id = ? AND slot = ? FOR UPDATE")) {
                     ps.setLong(1, roleId);
                     ps.setInt(2, equipSlot);
@@ -546,6 +719,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                         }
                         configId = rs.getString(1);
                         itemType = rs.getInt(2);
+                        carryUid = effectiveUid(roleId, "equip", rs.getString(3), rs.getLong(4));
                     }
                 }
                 try (PreparedStatement del = conn.prepareStatement(
@@ -554,7 +728,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                     del.setInt(2, equipSlot);
                     del.executeUpdate();
                 }
-                insertBagRow(conn, roleId, bagSlot, configId, itemType, 1, 2);
+                insertBagRow(conn, roleId, bagSlot, configId, itemType, 1, 2, carryUid);
                 conn.commit();
                 return true;
             } catch (Exception e) {
@@ -576,8 +750,9 @@ public final class RoleInventoryStore implements AutoCloseable {
             try {
                 String configId;
                 int itemType;
+                String carryUid;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT config_id, item_type FROM role_bag_items "
+                        "SELECT config_id, item_type, uid, seq FROM role_bag_items "
                                 + "WHERE role_id = ? AND slot = ? AND view_id = ? FOR UPDATE")) {
                     ps.setLong(1, roleId);
                     ps.setInt(2, bagSlot);
@@ -588,6 +763,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                         }
                         configId = rs.getString(1);
                         itemType = rs.getInt(2);
+                        carryUid = effectiveUid(roleId, "bag", rs.getString(3), rs.getLong(4));
                     }
                 }
                 try (PreparedStatement del = conn.prepareStatement(
@@ -597,7 +773,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                     del.setInt(3, viewCategory);
                     del.executeUpdate();
                 }
-                insertEquipRow(conn, roleId, equipSlot, configId, itemType);
+                insertEquipRow(conn, roleId, equipSlot, configId, itemType, carryUid);
                 conn.commit();
                 return true;
             } catch (Exception e) {
@@ -638,8 +814,9 @@ public final class RoleInventoryStore implements AutoCloseable {
             try {
                 String oldConfig;
                 int oldType;
+                String carryUid;
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT config_id, item_type FROM role_equip_items "
+                        "SELECT config_id, item_type, uid, seq FROM role_equip_items "
                                 + "WHERE role_id = ? AND slot = ? FOR UPDATE")) {
                     ps.setLong(1, roleId);
                     ps.setInt(2, equipSlot);
@@ -649,6 +826,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                         }
                         oldConfig = rs.getString(1);
                         oldType = rs.getInt(2);
+                        carryUid = effectiveUid(roleId, "equip", rs.getString(3), rs.getLong(4));
                     }
                 }
                 try (PreparedStatement del = conn.prepareStatement(
@@ -657,7 +835,7 @@ public final class RoleInventoryStore implements AutoCloseable {
                     del.setInt(2, equipSlot);
                     del.executeUpdate();
                 }
-                insertBagRow(conn, roleId, bagSlotForOld, oldConfig, oldType, 1, 2);
+                insertBagRow(conn, roleId, bagSlotForOld, oldConfig, oldType, 1, 2, carryUid);
                 conn.commit();
                 return true;
             } catch (Exception e) {
@@ -672,12 +850,16 @@ public final class RoleInventoryStore implements AutoCloseable {
         }
     }
 
+    /** uid=跨表携带的实例身份（空则新生成）；0013 前库列缺席降级不写 uid。 */
     private static void insertBagRow(Connection conn, long roleId, int slot, String configId,
-                                     int itemType, int amount, int viewCategory) throws Exception {
+                                     int itemType, int amount, int viewCategory,
+                                     String carryUid) throws Exception {
         int seq = nextSeq(conn, roleId, "role_bag_items");
+        String uid = carryUid != null && !carryUid.isEmpty()
+                ? carryUid : InventoryMessages.randomUid();
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
-                        + "view_id, name, script) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')")) {
+                        + "view_id, name, script, uid) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?)")) {
             ps.setLong(1, roleId);
             ps.setInt(2, seq);
             ps.setInt(3, slot);
@@ -685,34 +867,83 @@ public final class RoleInventoryStore implements AutoCloseable {
             ps.setInt(5, itemType);
             ps.setInt(6, amount);
             ps.setInt(7, viewCategory);
+            ps.setString(8, uid);
             ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'uid'")) {
+                throw e;
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                            + "view_id, name, script) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')")) {
+                ps.setLong(1, roleId);
+                ps.setInt(2, seq);
+                ps.setInt(3, slot);
+                ps.setString(4, configId);
+                ps.setInt(5, itemType);
+                ps.setInt(6, amount);
+                ps.setInt(7, viewCategory);
+                ps.executeUpdate();
+            }
         }
     }
 
-    /** game_items 联表补 equip_type/hardiness/max_hardiness/art_pack（无命中用背包行类型兜底）。 */
+    /** game_items 联表补 equip_type/hardiness/max_hardiness/art_pack（无命中用背包行类型兜底）。
+     *  uid=跨表携带的实例身份（空则新生成）；0013 前库列缺席降级不写 uid。 */
     private static void insertEquipRow(Connection conn, long roleId, int slot, String configId,
-                                       int itemType) throws Exception {
+                                       int itemType, String carryUid) throws Exception {
         int seq = nextSeq(conn, roleId, "role_equip_items");
+        String uid = carryUid != null && !carryUid.isEmpty()
+                ? carryUid : InventoryMessages.randomUid();
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
-                        + "hardiness, max_hardiness, slot, art_pack) "
+                        + "hardiness, max_hardiness, slot, art_pack, uid) "
                         + "SELECT ?, ?, g.item_id, g.item_type, g.equip_type, g.hardiness, "
-                        + "g.max_hardiness, ?, g.art_pack FROM game_items g WHERE g.item_id = ?")) {
+                        + "g.max_hardiness, ?, g.art_pack, ? FROM game_items g WHERE g.item_id = ?")) {
             ps.setLong(1, roleId);
             ps.setInt(2, seq);
             ps.setInt(3, slot);
-            ps.setString(4, configId);
+            ps.setString(4, uid);
+            ps.setString(5, configId);
             if (ps.executeUpdate() == 0) {
                 try (PreparedStatement fb = conn.prepareStatement(
                         "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
-                                + "hardiness, max_hardiness, slot, art_pack) "
-                                + "VALUES (?, ?, ?, ?, '', 0, 0, ?, 0)")) {
+                                + "hardiness, max_hardiness, slot, art_pack, uid) "
+                                + "VALUES (?, ?, ?, ?, '', 0, 0, ?, 0, ?)")) {
                     fb.setLong(1, roleId);
                     fb.setInt(2, seq);
                     fb.setString(3, configId);
                     fb.setInt(4, itemType);
                     fb.setInt(5, slot);
+                    fb.setString(6, uid);
                     fb.executeUpdate();
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'uid'")) {
+                throw e;
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                            + "hardiness, max_hardiness, slot, art_pack) "
+                            + "SELECT ?, ?, g.item_id, g.item_type, g.equip_type, g.hardiness, "
+                            + "g.max_hardiness, ?, g.art_pack FROM game_items g WHERE g.item_id = ?")) {
+                ps.setLong(1, roleId);
+                ps.setInt(2, seq);
+                ps.setInt(3, slot);
+                ps.setString(4, configId);
+                if (ps.executeUpdate() == 0) {
+                    try (PreparedStatement fb = conn.prepareStatement(
+                            "INSERT INTO role_equip_items (role_id, seq, config_id, item_type, equip_type, "
+                                    + "hardiness, max_hardiness, slot, art_pack) "
+                                    + "VALUES (?, ?, ?, ?, '', 0, 0, ?, 0)")) {
+                        fb.setLong(1, roleId);
+                        fb.setInt(2, seq);
+                        fb.setString(3, configId);
+                        fb.setInt(4, itemType);
+                        fb.setInt(5, slot);
+                        fb.executeUpdate();
+                    }
                 }
             }
         }
@@ -730,11 +961,12 @@ public final class RoleInventoryStore implements AutoCloseable {
 
     /**
      * GM 发放入背包（grant_item 非 wearNow）：找 1..90 首个空槽（扩容页锚点
-     * 之外的固定 90 格口径同登录下发），seq 追加。满包抛 IllegalStateException。
+     * 之外的固定 90 格口径同登录下发），seq 追加，uid 新生成（实例身份与槽位/
+     * 角色无关）。满包抛 IllegalStateException。
      *
-     * @return 占用槽位（1..90）
+     * @return 落库后的行（slot/uid 就绪，供 ViewAdd 帧直接使用）
      */
-    public int insertBagItem(long roleId, BagItem item) {
+    public BagItem insertBagItem(long roleId, BagItem item) {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
@@ -761,11 +993,12 @@ public final class RoleInventoryStore implements AutoCloseable {
                         throw new IllegalStateException("bag full (1..90)");
                     }
                 }
+                String uid = InventoryMessages.randomUid();
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
-                                + "view_id, name, script) VALUES (?, "
+                                + "view_id, name, script, uid) VALUES (?, "
                                 + "(SELECT COALESCE(MAX(b.seq), 0) + 1 FROM role_bag_items b "
-                                + "WHERE b.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
+                                + "WHERE b.role_id = ?), ?, ?, ?, ?, ?, ?, ?, ?)")) {
                     insert.setLong(1, roleId);
                     insert.setLong(2, roleId);
                     insert.setInt(3, slot);
@@ -775,10 +1008,35 @@ public final class RoleInventoryStore implements AutoCloseable {
                     insert.setInt(7, item.viewId());
                     insert.setString(8, item.name() == null ? "" : item.name());
                     insert.setString(9, item.script() == null ? "" : item.script());
+                    insert.setString(10, uid);
                     insert.executeUpdate();
+                } catch (java.sql.SQLException e) {
+                    if (e.getMessage() == null || !e.getMessage().contains("Unknown column 'uid'")) {
+                        throw e;
+                    }
+                    uid = null;
+                    try (PreparedStatement insert = connection.prepareStatement(
+                            "INSERT INTO role_bag_items (role_id, seq, slot, config_id, item_type, amount, "
+                                    + "view_id, name, script) VALUES (?, "
+                                    + "(SELECT COALESCE(MAX(b.seq), 0) + 1 FROM role_bag_items b "
+                                    + "WHERE b.role_id = ?), ?, ?, ?, ?, ?, ?, ?)")) {
+                        insert.setLong(1, roleId);
+                        insert.setLong(2, roleId);
+                        insert.setInt(3, slot);
+                        insert.setString(4, item.configId());
+                        insert.setInt(5, item.itemType());
+                        insert.setInt(6, item.amount());
+                        insert.setInt(7, item.viewId());
+                        insert.setString(8, item.name() == null ? "" : item.name());
+                        insert.setString(9, item.script() == null ? "" : item.script());
+                        insert.executeUpdate();
+                    }
                 }
                 connection.commit();
-                return slot;
+                return new BagItem(slot, item.configId(), item.itemType(), item.amount(),
+                        item.viewId(), item.name(), item.equipType(), item.colorLevel(),
+                        item.script(), item.anchorSlot(), item.expiresAt(), item.artPack(),
+                        item.hardiness(), item.maxHardiness(), 0, uid);
             } finally {
                 connection.setAutoCommit(true);
             }

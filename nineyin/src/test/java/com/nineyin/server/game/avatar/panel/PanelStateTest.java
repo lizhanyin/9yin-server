@@ -154,7 +154,8 @@ class PanelStateTest {
         assertEquals(3200, byName.get("Justice").i32());
         assertEquals(21, byName.get("Evil").i32());
         assertEquals(5, byName.get("PKValue").i32(), "官方表键名 PKValue");
-        assertEquals(14, properties.size(), "身份块 14 项");
+        assertEquals(0, byName.get("PKMode").i32(), "官方表键名 PKMode（缺省 0）");
+        assertEquals(15, properties.size(), "身份块 15 项");
         // 种子：151 → title027（与选人界面同档位映射）
         assertEquals("title027", com.nineyin.server.protocol.LoginMessages.roleListTitle(
                 PanelState.SEED_POWER_LEVEL));

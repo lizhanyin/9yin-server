@@ -229,8 +229,9 @@ public final class StarterGrants {
                 .wuXingOf(skill.skillId());
         Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(
                 wuXing != 0 ? wuXing : com.nineyin.server.game.avatar.neigong.NeiGongCatalog.WUXING_TAIJI));
-        // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
-        // varprop 按级 CoolDownTime（官方 View40 行同源；官方 skill_init cooldown 全 0）。
+        // CoolDownTime 显示值：skill 目录 cooldown 显式 >0 时作覆盖（SkillInitTable：
+        // skill_new 优先/skill_init 兜底，官方两文件 cooldown 全 0），否则取
+        // varprop 按级 CoolDownTime（官方 View40 行同源）。
         SkillInitTable.Row initRow = SkillInitTable.load().row(skill.skillId());
         long cdMs = initRow != null && initRow.coolDownMs() > 0 ? initRow.coolDownMs()
                 : com.nineyin.server.world.fight.CombatSkillCatalog.load()

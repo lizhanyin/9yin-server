@@ -123,6 +123,18 @@ public final class PanelDataStore implements AutoCloseable {
         }
     }
 
+    /** 清空角色全部称号所有权（含佩戴行；GM clear_titles，调用方负责佩戴位复位帧）。 */
+    public void clearTitles(long roleId) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM role_titles WHERE role_id = ?")) {
+            statement.setLong(1, roleId);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            throw new IllegalStateException("clearTitles failed: " + e.getMessage(), e);
+        }
+    }
+
     /** 兵录 12 槽进度。 */
     public List<Binglu> binglu(long roleId) {
         try (Connection connection = dataSource.getConnection();

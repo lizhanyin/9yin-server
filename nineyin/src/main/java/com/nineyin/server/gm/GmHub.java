@@ -32,6 +32,8 @@ public final class GmHub {
         public Integer gold;
         /** 修炼点余额（Faculty@798，GM set_faculty 后随快照带出；null=未采集）。 */
         public Integer faculty;
+        /** 兵录最高等级（GM binglu 后随快照带出；null=未采集）。 */
+        public Integer bingluMax;
         /** 伙伴摘要（bot_* 域，refreshBotSnapshot 维护；botName 空=无伙伴）。 */
         public String botName = "";
         public int botHp;

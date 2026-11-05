@@ -201,15 +201,53 @@ public final class GmCatalog {
         }
         IniFile ini = IniFile.load(path, GBK);
         for (Map.Entry<String, Map<String, List<String>>> e : ini.sections().entrySet()) {
+            String configId = e.getKey();
+            // 注释节（//包裹、//修炼药剂…）不进目录。
+            if (configId.startsWith("//") || configId.startsWith(";")) {
+                continue;
+            }
             Map<String, List<String>> sec = e.getValue();
+            int viewId = parseInt(first(sec, "viewid"), 1);
+            // ViewID 11 = Inner* 身份装分件（InnerCloth/Hat/Pants/Shoes/Weapon/Necklace/
+            // Mantle/Fingerring，270 行）：背包只有 1..4 页，发进包即成隐形行；
+            // 身份装走「时装/身份装发放」的套装链，这里整组跳过。
+            if (viewId < 1 || viewId > 4) {
+                continue;
+            }
             String script = first(sec, "script");
-            String name = first(sec, "name");
+            String name = displayName(configId, first(sec, "name"));
             String equipType = wearable ? first(sec, "equiptype") : "";
-            out.add(new ItemRow(e.getKey(), name,
-                    parseInt(first(sec, "viewid"), 1), wearable, equipType, script,
+            out.add(new ItemRow(configId, name,
+                    viewId, wearable, equipType, script,
                     parseInt(first(sec, "maxamount"), 0), parseInt(first(sec, "colorlevel"), 0),
                     parseInt(first(sec, "needsex"), 2), parseInt(first(sec, "artpack"), 0)));
         }
+    }
+
+    /**
+     * 展示名：stringname.idres 优先（客户端游戏内名字同源——INI {@code Name} 列存在
+     * 抄错/占位：无妄神功 _9th~_18th 的篇章名全错或缺失、基础书名抄成"冰玄劲"、
+     * 武器名抄成 xt_50301 占位、SkillPage 名为"书"；2026-11-05 实测两有效名并存的
+     * 76,378 行中 47,146 行不一致且 idres 全面更优）；idres 无键再回落有效 INI Name
+     * （非空且非纯数字占位）；仍无则空（面板回落显示 ConfigID）。
+     */
+    private String displayName(String configId, String iniName) {
+        String fromIdres = idresLookup(configId);
+        if (fromIdres != null && !fromIdres.isEmpty()) {
+            return fromIdres;
+        }
+        return iniName != null && !isNumericPlaceholder(iniName) ? iniName : "";
+    }
+
+    /** 纯数字占位名（"10101"/"8"——原表把编号写进了 Name 列）。 */
+    private static boolean isNumericPlaceholder(String name) {
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------

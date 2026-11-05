@@ -32,13 +32,15 @@ import io.netty.channel.embedded.EmbeddedChannel;
  * bug.txt:45-49 新增链路：
  * ① 圈定范围技能（HitShape 11 → GROUND_AREA）：免选中目标，伤害以 211 长格式
  *    落点（idx 11-13 目标坐标）为圆心结算；落点超宽容射程静默拒；无落点受理但零伤害。
- * ② 冲锋技能（skill_static.CanRush）：单体冲锋仍是 SELECTED 模式，射程闸放宽到
- *    冲锋射程（无 RushRange 回落 15 米）——12 米受理/25 米拒绝，同距非冲锋技能仍拒绝。
+ * ② 冲锋技能（skill_static.CanRush）：单体冲锋仍是 SELECTED 模式，受理=技能真实
+ *    射程 TSP2（八轮用户拍板，RushRange/15m/60m 放宽全废）——射程内受理（c61 冲刺
+ *    +msg19 锁定帧），超射程静默拒。
  * ③ 怒招怒气闭环（wx_wd_tjj08 = 扣剑平抹杀，AConsumeSP=10）：SP &lt; 消耗静默拒且不扣；
  *    受理扣 SP；每次落血命中 +2 回怒并发单属性 SP 帧（msg24 计数做确定性校验）。
- * ④ 冲锋位移（bug.txt:50「伤害出了，但人没过去」）：官服 57378/52795 抓包实证 msg20
- *    动作帧第三参——锁定/冲锋技=211 目标对象（客户端本地执行冲锋，服务端无位移帧）、
- *    自增益招（IsDamage=0）=施法者自己、其余伤害技=空对象 obj(0,0)。
+ * ④ 冲锋位移（out2 官方时间线 2026-11-06 定谳）：锁定/冲锋族出招走 **msg19 锁定帧**
+ *    （24 值：LockSrcTime/LockTargetTime/双方坐标/BindDistance/绑定点），距目标超绑定
+ *    距离先发 **msg24 c1=61 冲刺指令**（LockGRushAction 动画名+终点）+location 终点锚；
+ *    自增益招（IsDamage=0）=msg20 带施法者自己、其余伤害技=msg20 空对象 obj(0,0)。
  */
 class GroundChargeAndRageTest {
 
@@ -158,11 +160,14 @@ class GroundChargeAndRageTest {
     }
 
     @Test
-    void chargeSkillRangeWidenedByCanRush() {
+    void chargeSkillRangeFollowsTargetShapePara2() {
         CombatSkill rush = firstCompiled(List.of("CS_jh_cqgf01", "CS_wd_tjj01", "CS_sl_djgq07"));
         assumeTrue(rush != null, "无 CanRush 技能可测");
         assertTrue(rush.canRush(), "skill_static.CanRush 编译进定义");
         assertTrue(rush.requiresTarget(), "单体冲锋仍是 SELECTED 模式");
+        CombatSkillCatalog.SkillRowData row =
+                CombatSkillCatalog.load().skillRowData(rush.id(), rush.level());
+        assumeTrue(row != null && row.targetShapePara2() > 0, "冲锋族 TSP2 可解析");
 
         CombatSkill plain = null;
         for (String id : List.of("wx_tm_fg06", "CS_wd_tjq04", "CS_jh_yydf04_hide")) {
@@ -174,35 +179,32 @@ class GroundChargeAndRageTest {
         }
         assumeTrue(plain != null, "无普通单体技能做射程对比");
 
-        // 12 米：非冲锋技能超距静默拒（不进暂存链——msg25 只属 skilllock+CanRush 族）
+        // 12 米：非冲锋技能超距静默拒（不进暂存链——msg25 只属显式开启的回退链）
         Harness plainFar = new Harness(1000, 12f, 0f);
         plainFar.learned.put(plain.id(), 1);
         plainFar.cast(plain.id(), 0f, 20f, 0f);
         assertNull(plainFar.channel.readOutbound(), "非冲锋技能 12m 超距静默拒");
 
-        // 冲锋两段时序（2026-11-05 拍板）：距目标 > 到达半径（5m）→ 只发冲锋标记
-        // （msg25 暂存+疾跑），不结算（无 CD 行/伤害）；25m 同样走标记不拒
-        Harness rushIn = new Harness(1000, 12f, 0f);
-        rushIn.learned.put(rush.id(), 1);
-        rushIn.cast(rush.id(), 0f, 20f, 0f);
-        List<byte[]> staged = rushIn.drain();
-        assertTrue(hasCustomMsg(staged, 25), "冲锋 12m 只发冲锋标记（msg25 skill_pause）");
-        assertFalse(staged.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "标记阶段不结算（无 CD 行）");
-        assertTrue(rushIn.player.rushInFlight(), "冲锋标记挂起（rush in flight）");
-
-        Harness rushOut = new Harness(1000, 25f, 0f);
+        // 冲锋受理=技能真实射程 TSP2（八轮，cqgf01 族 TSP2=3）：12m/5m 超射程一律
+        // 静默拒（零帧）——RushRange/15m 回落不再放宽；2m 射程内受理（msg19+c61）
+        Harness rushOut = new Harness(1000, 12f, 0f);
         rushOut.learned.put(rush.id(), 1);
         rushOut.cast(rush.id(), 0f, 20f, 0f);
-        List<byte[]> farStaged = rushOut.drain();
-        assertTrue(hasCustomMsg(farStaged, 25), "冲锋 25m 同样走标记链（30s 窗口兜底）");
+        assertNull(rushOut.channel.readOutbound(), "冲锋 12m 超射程静默拒（零帧）");
 
-        // 到达目标身位（≤5m）：直接正式出招（受理=CD 行下发）
-        Harness atTarget = new Harness(1000, 4f, 0f);
-        atTarget.learned.put(rush.id(), 1);
-        atTarget.cast(rush.id(), 0f, 20f, 0f);
-        List<byte[]> direct = atTarget.drain();
-        assertTrue(direct.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "目标身位直接受理（CD 行）");
-        assertFalse(hasCustomMsg(direct, 25), "身位内无标记链");
+        Harness rushMid = new Harness(1000, 5f, 0f);
+        rushMid.learned.put(rush.id(), 1);
+        rushMid.cast(rush.id(), 0f, 20f, 0f);
+        assertNull(rushMid.channel.readOutbound(), "冲锋 5m 超射程静默拒（TSP2=3）");
+
+        Harness rushIn = new Harness(1000, 2f, 0f);
+        rushIn.learned.put(rush.id(), 1);
+        rushIn.cast(rush.id(), 0f, 20f, 0f);
+        List<byte[]> accepted = rushIn.drain();
+        assertTrue(accepted.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "射程内立即受理（CD 行）");
+        assertTrue(hasCustomMsg(accepted, 19), "射程内受理发 msg19 锁定帧");
+        assertFalse(hasCustomMsg(accepted, 25), "射程内无 skill_pause");
+        assertFalse(rushIn.player.rushInFlight(), "受理即出招（无 rush in flight）");
     }
 
     @Test
@@ -272,24 +274,23 @@ class GroundChargeAndRageTest {
         long npcKey = (2 & 0xFFFFFFFFL) | (1L << 32);
         int weapon = rush.weaponItemTypes().isEmpty() ? 0 : rush.weaponItemTypes().iterator().next();
 
-        // 冲锋技贴身（4m ≤ 到达半径）直接受理：msg20 目标=选中 NPC（无 211 目标对象
-        // 时回落选中目标）。超 5m 走暂存标记链（见 chargeSkillRangeWidenedByCanRush），
-        // msg20 只随到达后的正式出招下发。
-        Harness rushIn = new Harness(1000, 4f, 0f);
+        // 冲锋技贴身（2m ≤ TSP2）直接受理：msg19 目标=选中 NPC（无 211 目标对象
+        // 时回落选中目标）。超射程静默拒（见 chargeSkillRangeFollowsTargetShapePara2）。
+        Harness rushIn = new Harness(1000, 2f, 0f);
         rushIn.player.noteEquippedWeaponItemType(weapon);
         rushIn.learned.put(rush.id(), 1);
         rushIn.cast(rush.id(), 0f, 20f, 0f);
-        assertEquals(npcKey, msg20Target(rushIn.drain(), rush.id()),
-                "冲锋招 msg20 第三参=目标对象");
+        assertEquals(npcKey, msg19Target(rushIn.drain(), rush.id()),
+                "锁定冲锋招 msg19 目标对象=选中 NPC");
 
         // 211 长格式带目标对象：msg20 动作目标随 aim 对象（官服每发均带）
-        Harness aim = new Harness(1000, 4f, 0f);
+        Harness aim = new Harness(1000, 2f, 0f);
         aim.player.noteEquippedWeaponItemType(weapon);
         aim.learned.put(rush.id(), 1);
         assertTrue(aim.fight.selectTarget(aim.world, 2, 1), "combat NPC selectable");
-        aim.handle(useSkillAimMessage(rush.id(), 0f, 20f, 0f, 1.0f, 2, 1, 4f, 20f, 0f));
-        assertEquals(npcKey, msg20Target(aim.drain(), rush.id()),
-                "211 目标对象作为 msg20 动作目标");
+        aim.handle(useSkillAimMessage(rush.id(), 0f, 20f, 0f, 1.0f, 2, 1, 2f, 20f, 0f));
+        assertEquals(npcKey, msg19Target(aim.drain(), rush.id()),
+                "211 目标对象作为 msg19 锁定目标");
 
         if (plain != null) {
             int plainWeapon = plain.weaponItemTypes().isEmpty() ? 0
@@ -315,6 +316,22 @@ class GroundChargeAndRageTest {
                 "自增益招 msg20 目标=施法者自己");
     }
 
+    /** msg19 锁定帧目标对象（[19, obj 施法者, obj 目标, 技能串, ...]；无匹配返回 null）。 */
+    private static Long msg19Target(List<byte[]> frames, String skillId) {
+        for (byte[] frame : frames) {
+            CustomC2S.Message parsed = CustomC2S.parseDirect(frame);
+            if (parsed == null || parsed.values.isEmpty()
+                    || parsed.values.get(0).exactInt32() != 19 || parsed.values.size() < 4) {
+                continue;
+            }
+            if (skillId.equals(parsed.values.get(3).textOrNull())) {
+                CustomC2S.Value target = parsed.values.get(2);
+                return target.tag == 8 ? target.int64 : null;
+            }
+        }
+        return null;
+    }
+
     /** msg20 动作帧目标对象（tag8 int64；无匹配帧返回 null，空对象=0）。 */
     private static Long msg20Target(List<byte[]> frames, String skillId) {
         for (byte[] frame : frames) {
@@ -332,10 +349,9 @@ class GroundChargeAndRageTest {
     }
 
     /**
-     * 冲锋两段时序主链（RushStageFlowTest 因生产资源盘不可达跳过时的本域覆盖）：
-     * 12m 按下 → 只发标记（msg25 暂存，无 CD/无 msg20/无伤害）；msg15 上报 10m
-     * （阈值内但未到目标身位）→ 仍不结算；msg15 上报 4m（≤到达半径 5m）→ 落地
-     * 续招正式出招（msg26+CD 行+msg20 带目标+伤害结算）。
+     * 冲锋受理/超距拒双态（八轮：受理=技能真实射程 TSP2；RushStageFlowTest 因生产
+     * 资源盘不可达跳过时的本域覆盖）：cqgf01 TSP2=3——2m 受理（msg19）；12m 超射程
+     * 静默拒（零帧）。暂存链到位续招仅 -Dnineyin.rush.stage=true 显式开启时存在。
      */
     @Test
     void chargeArrivalRadiusGatesActualCast() {
@@ -343,28 +359,22 @@ class GroundChargeAndRageTest {
         assumeTrue(rush != null, "无 CanRush 技能可测");
         int weapon = rush.weaponItemTypes().isEmpty() ? 0 : rush.weaponItemTypes().iterator().next();
 
+        // 2m（TSP2=3 内）：立即受理（msg19 锁定帧）
+        Harness in = new Harness(1000, 2f, 0f);
+        in.player.noteEquippedWeaponItemType(weapon);
+        in.learned.put(rush.id(), 1);
+        in.cast(rush.id(), 0f, 20f, 0f);
+        List<byte[]> accepted = in.drain();
+        assertTrue(accepted.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "2m 立即受理（CD 行）");
+        assertTrue(hasCustomMsg(accepted, 19), "2m 受理发 msg19 锁定帧");
+        assertFalse(hasCustomMsg(accepted, 25), "射程内不暂存");
+
+        // 12m（超 TSP2）：静默拒（零帧）
         Harness h = new Harness(1000, 12f, 0f);
         h.player.noteEquippedWeaponItemType(weapon);
         h.learned.put(rush.id(), 1);
         h.cast(rush.id(), 0f, 20f, 0f);
-        List<byte[]> staged = h.drain();
-        assertTrue(hasCustomMsg(staged, 25), "12m 只发冲锋标记（msg25）");
-        assertFalse(hasCustomMsg(staged, 20), "标记阶段不发技能动作");
-        assertTrue(h.player.rushInFlight(), "标记挂起");
-
-        // 阈值内（10m < 旧判定 castRange）但未到目标身位：不结算
-        SkillCastHandler.tryRushArrival(h.context(), 2f, 20f, 0f, 1.0f);
-        List<byte[]> mid = h.drain();
-        assertFalse(hasCustomMsg(mid, 20), "10m 仍不正式出招（到达阈值≠释放）");
-        assertTrue(h.player.rushInFlight(), "未到目标身位标记保持");
-
-        // 到达目标身位（4m ≤ 5m）：正式出招
-        SkillCastHandler.tryRushArrival(h.context(), 8f, 20f, 0f, 1.0f);
-        List<byte[]> arrived = h.drain();
-        assertTrue(hasCustomMsg(arrived, 26), "到位解除 skill_pause（msg26）");
-        assertTrue(arrived.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "到位才结算（CD 行）");
-        assertTrue(hasCustomMsg(arrived, 20), "到位正式出招（msg20）");
-        assertFalse(h.player.rushInFlight(), "到位清标记");
+        assertNull(h.channel.readOutbound(), "12m 超射程静默拒（零帧）");
     }
 
     /**

@@ -547,6 +547,22 @@
         amount: +document.querySelector("#item-amount").value,
       });
     }
+    function sendMail() {
+      let content = document.querySelector("#mail-content").value.trim();
+      let item = document.querySelector("#mail-item").value.trim();
+      if (!content && !item) return alert("正文与物品附件至少填一项");
+      let payload = {
+        action: "send_mail",
+        content,
+        itemConfig: item,
+        amount: +document.querySelector("#mail-amount").value,
+      };
+      let role = document.querySelector("#mail-role").value.trim();
+      if (role) payload.roleName = role;
+      let title = document.querySelector("#mail-title").value.trim();
+      if (title) payload.title = title;
+      command(payload);
+    }
     function chatBroadcast() {
       let t = document.querySelector("#chat-text").value.trim();
       if (!t) return alert("请输入聊天内容");

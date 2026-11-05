@@ -6,6 +6,7 @@ import com.nineyin.commom.cache.ResourceCache;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -44,6 +45,8 @@ public final class NeiGongCatalog {
     private final Map<Integer, String> belongTypes = new HashMap<>();
     private final Map<String, String> schools = new HashMap<>();
     private final Map<String, Integer> wuXing = new HashMap<>();
+    // GM learn_all_neigong 全目录（neigong.ini 声明序）：QName→静态档/上限/首级曲线。
+    private final Map<String, NeiGongDef> bookDefs = new LinkedHashMap<>();
 
     /** Go loadModernNeiGongCatalog 的 sync.Once 等价：目录级缓存（serverRoot 变化自动换表）。 */
     public static NeiGongCatalog load() {
@@ -151,6 +154,7 @@ public final class NeiGongCatalog {
         loadModifierPacks(shareRoot.resolve(Path.of("modifypack", "proppack.ini")), propPacks);
         loadModifierPacks(shareRoot.resolve(Path.of("modifypack", "skillpack.ini")), skillPacks);
         loadSchools(shareRoot.resolve(Path.of("skill", "neigong", "neigong.ini")));
+        loadBookDefs(shareRoot);
         ResourceCache.ini(shareRoot.resolve(Path.of("faculty", "wuxuebaseinfo.ini")),
                 java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
                     if ("nWuXing".equals(key)) {
@@ -176,6 +180,75 @@ public final class NeiGongCatalog {
         for (Map.Entry<String, String> entry : sectionSchool.entrySet()) {
             String configId = qnameToSection.getOrDefault(entry.getKey(), entry.getKey());
             schools.put(configId, entry.getValue());
+        }
+    }
+
+    /** neigong.ini 目录项（GM learn_all_neigong 补书源）：曲线缺档回退 starter 种子口径 700/120。 */
+    public record NeiGongDef(String configId, int staticData, int itemType, String school,
+                             int maxLevel, int firstTotal, int firstPower) {
+    }
+
+    /** 全部可收录内功（neigong.ini 声明序；仅收 QName+StaticData+varprop 区间齐全的条目）。 */
+    public List<NeiGongDef> allBooks() {
+        return new ArrayList<>(bookDefs.values());
+    }
+
+    /** 按 configId（ng_* QName）取内功目录项；未收录（无 varprop 区间/未知）返回 null。 */
+    public NeiGongDef book(String configId) {
+        return configId == null ? null : bookDefs.get(configId.trim());
+    }
+
+    /** neigong.ini 全量 + wuxuelevelinfo.ini 首级曲线（r=level,total,power；r=1 行）。 */
+    private void loadBookDefs(Path shareRoot) {
+        Map<String, int[]> firstLevel = new HashMap<>();
+        ResourceCache.ini(shareRoot.resolve(Path.of("faculty", "wuxuelevelinfo.ini")),
+                java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
+                    if (!"r".equals(key) || !section.startsWith("ng_")) {
+                        return;
+                    }
+                    String[] parts = value.split(",");
+                    if (parts.length < 3 || !"1".equals(parts[0].trim())) {
+                        return;
+                    }
+                    Integer total = parseInt(parts[1].trim());
+                    Integer power = parseInt(parts[2].trim());
+                    if (total != null && power != null) {
+                        firstLevel.put(section.trim(), new int[]{total, power});
+                    }
+                });
+        Map<String, String> qnames = new LinkedHashMap<>();
+        Map<String, Integer> staticDatas = new HashMap<>();
+        Map<String, Integer> itemTypes = new HashMap<>();
+        ResourceCache.ini(shareRoot.resolve(Path.of("skill", "neigong", "neigong.ini")),
+                java.nio.charset.StandardCharsets.ISO_8859_1, (section, key, value) -> {
+                    if (section.isBlank() || section.startsWith("-")) {
+                        return;
+                    }
+                    switch (key) {
+                        case "QName" -> qnames.put(section.trim(), value.trim());
+                        case "StaticData" -> staticDatas.put(section.trim(), parseIntOrDefault(value));
+                        case "ItemType" -> itemTypes.put(section.trim(), parseIntOrDefault(value));
+                        default -> {
+                        }
+                    }
+                });
+        for (Map.Entry<String, String> entry : qnames.entrySet()) {
+            String configId = entry.getValue();
+            if (configId.isEmpty()) {
+                continue;
+            }
+            int staticData = staticDatas.getOrDefault(entry.getKey(), 0);
+            Range range = ranges.get(staticData);
+            if (staticData <= 0 || range == null || range.min() <= 0 || range.max() < range.min()) {
+                continue; // 无 varprop 区间：effect() 无从解析，不收录
+            }
+            int[] curve = firstLevel.get(configId);
+            bookDefs.put(configId, new NeiGongDef(configId, staticData,
+                    itemTypes.getOrDefault(entry.getKey(), 1002),
+                    schools.getOrDefault(configId, ""),
+                    range.max() - range.min() + 1,
+                    curve != null ? curve[0] : 700,
+                    curve != null ? curve[1] : 120));
         }
     }
 

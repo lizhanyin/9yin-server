@@ -2,6 +2,7 @@ package com.nineyin.server.world.fight;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -27,13 +28,14 @@ import com.nineyin.server.world.scene.SceneLifecycle;
 import io.netty.channel.embedded.EmbeddedChannel;
 
 /**
- * 冲锋链两态（2026-11-05 用户拍板对齐参考服 exe；61653 抓包钉死链路）：
- * 默认（参考服 exe 语义）：超射程冲锋（skilllock+CanRush，判定值=CanRush&&RushRange>0
- * ? RushRange : TargetShapePara2——myjf02 无 RushRange 用 TSP2=6，目标 6.73m 触发）
- * → msg25[30000,skill_pause]+msg24 c1=61 疾跑去目标，落地 212 → 337 回显+msg26+
- * 重组 211 续招。
- * -Dnineyin.rush.stage=false（官服语义关回）：超距冲锋直接受理——337 终点驱动
- * 客户端本地冲，无 msg25/msg24/212（op2 实证：两次不同出招点 337 终点同收敛）。
+ * 冲锋链两态（2026-11-06 五轮定稿）：
+ * 默认：受理上限=max(RushRange,15m 回落)=客户端原生冲刺位移上限（op2 yqq02 实证：
+ * RushRange=15/TSP2=4，13.2m 距离受理后客户端自冲到位——受理口径是 RushRange 族，
+ * 参考服 61653 按 TSP2 暂存属其方言，真机四轮实证暂存链重组簇客户端不执行位移）。
+ * 射程内按下=立即受理（msg20 带目标 → 客户端本地冲刺）；超上限（真超距）才走
+ * 参考服暂存链：msg25[30000,skill_pause]+msg24 c1=61 疾跑去目标，msg15/212 进入
+ * 到达半径（5m）→ 337 回显+msg26+重组 211 续招。
+ * -Dnineyin.rush.stage=false（官服语义关回）：锁定/冲锋族 60m 兜底直接受理。
  */
 class RushStageFlowTest {
 
@@ -114,6 +116,7 @@ class RushStageFlowTest {
         void cast(String skillId, float px, float pz) {
             SkillCastHandler.handle(context(), useSkill(skillId, px, pz));
         }
+
 
         void land(float px, float pz) {
             CustomC2S.Message message = CustomC2S.Message.of(List.of(
@@ -216,66 +219,56 @@ class RushStageFlowTest {
     }
 
     /**
-     * 官服语义（-Dnineyin.rush.stage=false 显式关回，staged 默认开）：超距冲锋直接受理；
-     * 0x1F+337 双帧恒=上报原地，位移纯客户端。
+     * 默认语义（八轮：按技能真实射程 TSP2 控制）：射程内（3m ≤ yqq02 TSP2=4）立即
+     * 受理——0x1F+337 恒原地 + msg24 c61 冲刺指令 + location 终点锚 + msg19 锁定帧；
+     * 超射程（8m > TSP2=4，虽 < RushRange=15）静默拒（零帧）——RushRange 不再放宽受理。
      */
     @Test
-    void rushOutOfRangeAcceptedAnchorsOriginNotDestination() {
+    void rushInRangeDashesOutOfRangeRejected() {
         Assumptions.assumeTrue(
                 java.nio.file.Files.isDirectory(PROD_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "生产 share/skill 资源不可用，跳过冲锋链");
-        System.setProperty("nineyin.rush.stage", "false");
-        try {
-            rushOutOfRangeAcceptedBody();
-        } finally {
-            System.clearProperty("nineyin.rush.stage");
-        }
-    }
-
-    private void rushOutOfRangeAcceptedBody() {
         com.nineyin.util.ServerPaths.overrideServerRoot(PROD_ROOT);
         CombatSkill yqq02 = CombatSkillCatalog.load().definition("CS_jh_yqq02", 1);
         Assumptions.assumeTrue(yqq02 != null && yqq02.canRush() && yqq02.rushRange() > 0,
                 "CS_jh_yqq02 不满足冲锋前提（CanRush/RushRange）");
+
+        // 3m（射程内）：受理簇 = 0x1F 原地 + 337 原地 + c61 冲刺 + 0x1F 终点 + msg19
         Harness harness = new Harness();
         assertTrue(harness.fight.selectTarget(harness.world, 2, 1), "combat NPC selectable");
-
-        // 20 米外按下 yqq02（RushRange=15）：官服行为=直接受理（无射程闸）
-        harness.cast("CS_jh_yqq02", 100f, 100f);
+        // NPC 在 (120,0,100)：玩家在 (117,0,100) → 距 3m（> 绑定 2.5m → 有冲刺）
+        harness.cast("CS_jh_yqq02", 117f, 100f);
         List<byte[]> frames = harness.drain();
         String seq = describe(frames);
-        assertTrue(seq.contains("+rec109"), "超距冲锋受理仍发 CD 行: " + seq);
-        assertTrue(seq.contains("m20"), "超距冲锋受理仍发技能动作: " + seq);
-        assertFalse(seq.contains("m25"), "官服冲锋无 skill_pause: " + seq);
-        assertFalse(hasC61Dash(frames), "官服冲锋无 c1=61 疾跑帧（m24 伤害飘字不在此列）: " + seq);
-        assertFalse(harness.player.rushInFlight(), "无暂存即无冲锋标记");
-        // 0x1F 原点锚定 + 337 原地回显对帧（op2 字节级实证：两者 xyz 恒=211 上报原地，
-        // 337 携终点会被客户端当权威位置贴坐标=瞬移无动画，11-05 真机两轮反馈）
-        int locIdx = -1;
-        int syncIdx = -1;
-        for (int i = 0; i < frames.size(); i++) {
-            byte[] f = frames.get(i);
-            if (f[0] == 0x1F && locIdx < 0) {
-                locIdx = i;
-            } else if (f[0] == 0x1E && f.length > 4 && f[3] == 2 && int32(f, 4) == 337 && syncIdx < 0) {
-                syncIdx = i;
+        assertTrue(seq.contains("+rec109"), "射程内受理发 CD 行: " + seq);
+        assertTrue(seq.contains("m19"), "受理发 msg19 锁定帧: " + seq);
+        assertTrue(hasC61Dash(frames), "受理发 msg24 c1=61 冲刺指令（out2 官方序列）: " + seq);
+        assertFalse(seq.contains("m25"), "射程内无 skill_pause: " + seq);
+        assertFalse(harness.player.rushInFlight(), "无暂存标记");
+        // 0x1F 双帧：原地锚（=211 上报）+ 终点锚；337 恒原地（op2 字节级实证）
+        int locCount = 0;
+        float locFirstX = 0;
+        for (byte[] f : frames) {
+            if (f[0] == 0x1F && locCount == 0) {
+                locFirstX = Float.intBitsToFloat(int32(f, 9));
+            }
+            if (f[0] == 0x1F) {
+                locCount++;
             }
         }
-        assertTrue(locIdx >= 0, "冲锋必发 0x1F 原点锚定: " + seq);
-        assertTrue(syncIdx >= 0, "受理必发 337: " + seq);
-        assertTrue(locIdx < syncIdx, "0x1F 锚点须在 337 之前: " + seq);
-        List<Float> anchor = locationFloats(frames.get(locIdx));
-        assertEquals(100f, anchor.get(0), 0.01f, "0x1F x=出招原地");
-        assertEquals(0f, anchor.get(1), 0.01f, "0x1F y=出招原地");
-        assertEquals(100f, anchor.get(2), 0.01f, "0x1F z=出招原地");
-        assertEquals(1.0f, anchor.get(3), 0.01f, "0x1F orient=211 朝向");
+        assertTrue(locCount >= 2, "0x1F 原地锚+终点锚两帧: " + seq);
+        assertEquals(117f, locFirstX, 0.01f, "首帧 0x1F=出招原地（非终点）");
         byte[] sync = firstMsg(frames, 337);
         assertTrue(sync != null, "受理必发 337: " + seq);
         List<Float> vals = floatValues(sync);
-        assertEquals(100f, vals.get(0), 0.01f, "337 x=出招原地（非终点）");
-        assertEquals(0f, vals.get(1), 0.01f, "337 y=出招原地");
+        assertEquals(117f, vals.get(0), 0.01f, "337 x=出招原地（非终点）");
         assertEquals(100f, vals.get(2), 0.01f, "337 z=出招原地（非终点）");
-        assertEquals(1.0f, vals.get(3), 0.01f, "337 orient=211 朝向");
+
+        // 8m（超 TSP2=4，虽 < RushRange=15）：静默拒（零帧）——RushRange 不放宽受理
+        Harness far = new Harness();
+        assertTrue(far.fight.selectTarget(far.world, 2, 1), "combat NPC selectable");
+        far.cast("CS_jh_yqq02", 112f, 100f);
+        assertNull(far.channel.readOutbound(), "超技能射程静默拒（零帧）");
     }
 
     /** 参考服 exe 复刻（默认开；显式 setProperty 保持自包含）：暂存 + 落地 212 续招。 */
@@ -302,6 +295,15 @@ class RushStageFlowTest {
         Assumptions.assumeTrue(
                 java.nio.file.Files.isDirectory(PROD_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "生产 share/skill 资源不可用，跳过冲锋链");
+        System.setProperty("nineyin.rush.stage", "true");
+        try {
+            msg15ArrivalBody();
+        } finally {
+            System.clearProperty("nineyin.rush.stage");
+        }
+    }
+
+    private void msg15ArrivalBody() {
         com.nineyin.util.ServerPaths.overrideServerRoot(PROD_ROOT);
         CombatSkill yqq02 = CombatSkillCatalog.load().definition("CS_jh_yqq02", 1);
         Assumptions.assumeTrue(yqq02 != null && yqq02.canRush() && yqq02.rushRange() > 0,
@@ -330,59 +332,53 @@ class RushStageFlowTest {
         String seq = describe(arrived);
         assertTrue(seq.contains("m337"), "到位回显 337: " + seq);
         assertTrue(seq.contains("m26"), "到位解除 skill_pause msg26: " + seq);
-        assertTrue(seq.contains("m20"), "到位续招发攻击动作 msg20（攻击目标帧簇）: " + seq);
+        assertTrue(seq.contains("m19"), "到位续招发 msg19 锁定帧（攻击目标帧簇）: " + seq);
         assertFalse(harness.player.rushInFlight(), "到位清冲锋标记");
     }
 
     /**
-     * 真实射程闸（61653 抓包场景复刻）：myjf02（skilllock+CanRush=1 无 RushRange，
-     * TSP2=6）目标 6.7m ——超 6m 触发 msg25[30000,skill_pause]+msg24 c1=61（int 前
-     * 串后的值序）；目标 5m（TSP2 内）直接受理出招。
+     * 冲锋族受理=技能真实射程 TSP2（2026-11-06 八轮，用户拍板「按技能射程控制释放
+     * 距离」）：myjf02（skilllock+CanRush=1，TSP2=6）目标 5m（射程内）→ 直接受理
+     * msg19+c61 冲刺；目标 8m（超 TSP2）→ 静默拒（零帧）。
      */
     @Test
-    void myjf02OutOfRangeStagesByTargetShapePara2() {
+    void myjf02AcceptsWithinTsp2RejectsBeyond() {
         Assumptions.assumeTrue(
                 java.nio.file.Files.isDirectory(PROD_ROOT.resolve(Path.of("resources", "modern", "share", "skill"))),
                 "生产 share/skill 资源不可用，跳过冲锋链");
         com.nineyin.util.ServerPaths.overrideServerRoot(PROD_ROOT);
         CombatSkill myjf02 = CombatSkillCatalog.load().definition("CS_jh_myjf02", 1);
         Assumptions.assumeTrue(myjf02 != null && myjf02.canRush() && myjf02.rushRange() == 0,
-                "CS_jh_myjf02 不满足前提（CanRush 且无 RushRange，射程走 TSP2）");
+                "CS_jh_myjf02 不满足前提（CanRush 且无 RushRange，回落 15m 受理）");
         CombatSkillCatalog.SkillRowData row = CombatSkillCatalog.load().skillRowData("CS_jh_myjf02", 1);
         Assumptions.assumeTrue(row != null && row.targetShapePara2() == 6.0f,
                 "myjf02 TargetShapePara2 应为 6（varprop 215381→targetshape 7）");
 
-        // 场景 A：目标 6.7m（玩家 100,100 → NPC 106.7,100）——超 TSP2=6 触发暂存
-        // myjf02 UseLimit=2 → 单手剑 102：测试角色配武器过武器闸
-        Harness far = new Harness();
-        far.player.noteEquippedWeaponItemType(102);
-        far.world.registerNpc(3, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 106.7f, 0f, 100f));
-        far.learned.put("CS_jh_myjf02", 1);
-        far.skillRows.put("CS_jh_myjf02", 1);
-        assertTrue(far.fight.selectTarget(far.world, 3, 1), "combat NPC selectable");
-        far.cast("CS_jh_myjf02", 100f, 100f);
-        List<byte[]> staged = far.drain();
-        String seq = describe(staged);
-        assertTrue(seq.contains("m25"), "超 TSP2 触发 skill_pause msg25: " + seq);
-        assertTrue(hasC61Dash(staged), "超 TSP2 触发 msg24 c1=61 疾跑帧: " + seq);
-        assertTrue(far.player.rushInFlight(), "暂存标记 rush in flight");
-        // msg25 值序 = [25, 30000, 'skill_pause']（int 前、串后；61653 实测）
-        byte[] pause = firstMsg(staged, 25);
-        assertTrue(pause != null && (pause[8] & 0xFF) == 2, "msg25 第 1 值应为 i32=30000");
-        assertEquals(30000, int32(pause, 9), "msg25 窗口 30000ms");
-
-        // 场景 B：目标 5m（TSP2=6 内）——直接受理（m20 出招，无 m25）
+        // 场景 A：目标 5m（玩家 100,100 → NPC 105,100，TSP2=6 内）→ 直接受理
+        // msg19+c61 冲刺。myjf02 UseLimit=2 → 单手剑 102：测试角色配武器过武器闸
         Harness near = new Harness();
         near.player.noteEquippedWeaponItemType(102);
-        near.world.registerNpc(4, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 105f, 0f, 100f));
+        near.world.registerNpc(3, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 105f, 0f, 100f));
         near.learned.put("CS_jh_myjf02", 1);
         near.skillRows.put("CS_jh_myjf02", 1);
-        assertTrue(near.fight.selectTarget(near.world, 4, 1), "combat NPC selectable");
+        assertTrue(near.fight.selectTarget(near.world, 3, 1), "combat NPC selectable");
         near.cast("CS_jh_myjf02", 100f, 100f);
         List<byte[]> direct = near.drain();
         String directSeq = describe(direct);
-        assertTrue(directSeq.contains("m20"), "TSP2 内直接受理出招: " + directSeq);
-        assertFalse(directSeq.contains("m25"), "TSP2 内无 skill_pause: " + directSeq);
+        assertTrue(directSeq.contains("m19"), "TSP2 内直接受理出招（msg19）: " + directSeq);
+        assertFalse(directSeq.contains("m25"), "射程内无 skill_pause: " + directSeq);
+        assertFalse(near.player.rushInFlight(), "射程内不暂存");
+
+        // 场景 B：目标 8m（超 TSP2=6）——静默拒（零帧）；旧 15m 放宽/暂存链均废
+        // （-Dnineyin.rush.stage=true 显式回退见 rushStageAndLandingResume）
+        Harness far = new Harness();
+        far.player.noteEquippedWeaponItemType(102);
+        far.world.registerNpc(4, SkillCastHandlerFlowTest.combatNpc("monv030101", 1000, 108f, 0f, 100f));
+        far.learned.put("CS_jh_myjf02", 1);
+        far.skillRows.put("CS_jh_myjf02", 1);
+        assertTrue(far.fight.selectTarget(far.world, 4, 1), "combat NPC selectable");
+        far.cast("CS_jh_myjf02", 100f, 100f);
+        assertNull(far.channel.readOutbound(), "超技能射程静默拒（零帧）");
     }
 
     private void rushStageAndLandingResumeBody() {
@@ -411,7 +407,7 @@ class RushStageFlowTest {
         assertTrue(resumeSeq.contains("m337"), "落地回显 337: " + resumeSeq);
         assertTrue(resumeSeq.contains("m26"), "落地解除 skill_pause msg26: " + resumeSeq);
         assertTrue(resumeSeq.contains("+rec109"), "续招发 CD 行: " + resumeSeq);
-        assertTrue(resumeSeq.contains("m20"), "续招发技能动作: " + resumeSeq);
+        assertTrue(resumeSeq.contains("m19"), "续招发 msg19 锁定帧: " + resumeSeq);
         assertFalse(harness.player.rushInFlight(), "落地清冲锋标记");
         // 落地链含两帧 337：handleDashLanding 回显落地坐标 + 续招出招再发（=续招原地，
         // 即 211 重组上报的落地坐标——官服语义 337 恒原地不携终点）

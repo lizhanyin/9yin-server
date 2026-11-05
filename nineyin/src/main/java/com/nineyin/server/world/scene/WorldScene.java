@@ -76,6 +76,11 @@ public final class WorldScene {
         return generation;
     }
 
+    /** 当前场景 config（begin 时更新；副本波次门控等轻量查询用，不复制实体表）。 */
+    public synchronized String sceneConfig() {
+        return config;
+    }
+
     public synchronized void add(int id, int ownerId, EntityKind kind, Transform transform,
                                  Map<String, Value> properties) {
         validate(id, kind, transform, properties);

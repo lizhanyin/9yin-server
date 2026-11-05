@@ -13,8 +13,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -26,7 +28,7 @@ import java.util.TreeMap;
  * ini/idres 来源仍从部署目录（share 根）读取。所有加载器对缺失/损坏均优雅降级。
  *
  * <p>数据源（编码已核实）：equipment.ini / tool_item.ini / cloneinfo.ini / weathereffect.ini /
- * repute_level.ini / school_taolu.ini 为 GBK；stringname.idres / interface.idres 为 UTF-8+BOM；
+ * repute_level.ini / school_taolu.ini / scenes.ini 为 GBK；stringname.idres / interface.idres 为 UTF-8+BOM；
  * b_action_index.ini、senior_*.ini、data/*.json 为 UTF-8。idres 与部分 ini 位于 share 根的
  * 同级目录（resources/modern/ini、resources/modern/text/chineses）。
  */
@@ -51,6 +53,7 @@ public final class GmCatalog {
     private volatile JSONArray cards;
     private volatile JSONArray hairCards;
     private volatile JSONArray clones;
+    private volatile JSONArray scenes;
     private volatile JSONArray taolus;
     private volatile JSONArray fashionCatalog;
     private volatile JSONArray giftBoxes;
@@ -319,6 +322,69 @@ public final class GmCatalog {
             }
         }
         return c;
+    }
+
+    // ------------------------------------------------------------------
+    // /api/scenes —— share/rule/scenes.ini（GBK）全场景表 + stringname.idres 中文名
+    // ------------------------------------------------------------------
+
+    /**
+     * 场景目录（切图下拉）：纯数字 section + Config=ini\scene\xxx 才是场景
+     * （语义镜像 nineyin SceneNames），同一 config 小写去重首见保留。
+     * name 解析失败回退 resource 原值。
+     */
+    public JSONArray scenes() {
+        JSONArray s = scenes;
+        if (s == null) {
+            synchronized (this) {
+                if (scenes == null) {
+                    JSONArray out = new JSONArray();
+                    IniFile ini = IniFile.load(shareRoot == null ? null
+                            : shareRoot.resolve("rule").resolve("scenes.ini"), GBK);
+                    Set<String> seenConfigs = new HashSet<>();
+                    for (Map.Entry<String, Map<String, List<String>>> e : ini.sections().entrySet()) {
+                        String section = e.getKey();
+                        if (!section.chars().allMatch(Character::isDigit)) {
+                            continue;
+                        }
+                        String config = first(e.getValue(), "config");
+                        if (config == null || config.isBlank()
+                                || !seenConfigs.add(config.toLowerCase(Locale.ROOT))) {
+                            continue;
+                        }
+                        int id;
+                        try {
+                            id = Integer.parseInt(section);
+                        } catch (NumberFormatException ex) {
+                            continue;
+                        }
+                        int slash = Math.max(config.lastIndexOf('\\'), config.lastIndexOf('/'));
+                        String resource = slash >= 0 ? config.substring(slash + 1) : config;
+                        JSONObject o = new JSONObject();
+                        o.put("id", id);
+                        o.put("config", config);
+                        o.put("resource", resource);
+                        o.put("name", sceneDisplayName(config, resource));
+                        out.add(o);
+                    }
+                    scenes = out;
+                }
+                return scenes;
+            }
+        }
+        return s;
+    }
+
+    /** 场景中文名：stringname.idres 键 = ini\scene\xxx 或资源名（大小写不定，多级尝试）。 */
+    private String sceneDisplayName(String config, String resource) {
+        for (String key : new String[] {config, config.toLowerCase(Locale.ROOT),
+                resource, resource.toLowerCase(Locale.ROOT)}) {
+            String name = idresLookup(key);
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
+        }
+        return resource;
     }
 
     // ------------------------------------------------------------------

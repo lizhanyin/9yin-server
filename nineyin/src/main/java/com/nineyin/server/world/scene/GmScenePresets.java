@@ -9,13 +9,15 @@ import com.nineyin.server.db.role.Roles;
 
 /**
  * GM 常用传送预设表（Go cmd/protocol-probe/gm_scene_presets.go 38 项 + menu2 exe
- * 48 字节步长 {key,label,dest} 数组提取的 105 项并集，共 107 键，覆盖
- * gm-web console.html 全部 preset() 按钮）。
+ * 48 字节步长 {key,label,dest} 数组提取的 105 项并集共 107 键，加踢馆入口 35 键
+ * 共 142 键，覆盖 gm-web console.html 全部 preset() 按钮）。
  *
  * <p>坐标来源：主城/新手村/门派/隐世宗门为 Go 表人工核定（scenes.ini +
  * door_data.ini Target* / homepoint.ini Safe=1）；scene、adv、schoolwar、
  * worldwar、fight、prison 等为 exe 表原值（tools/smoke/extract_gm_presets.py
- * 可再生成，menu2_preset_full.tsv 为中间产物）。
+ * 可再生成，menu2_preset_full.tsv 为中间产物）；tiguan_1..35 中 27 项为 exe 表
+ * 踢馆段原值（menu2_preset_tables.tsv），其余 8 项由参考服 creator/npc_creator
+ * 入口 NPC 位置推导（见 buildPresets 内注释）。
  *
  * <p>免费格式输入（switch_scene 的 config,resource,x,y,z,orient 与 teleport 的
  * x,y,z,orient）解析共用 {@link #parseDestination}/{@link #parsePosition}，
@@ -124,6 +126,46 @@ public final class GmScenePresets {
             {"tianlundb", "活动-天伦夺宝", "ini\\scene\\adv034", "adv034", -298.927f, 151.821f, -195.300f, 1.970f},
             {"tianshanpai", "天山派", "ini\\scene\\school22_tianshan", "school22", 1245.243f, 183.172f, 998.789f, 0.000f},
             {"tianya", "天涯海阁", "ini\\scene\\school25_tianya", "school25", 1745.635f, 18.729f, 1066.640f, 0.000f},
+            // 踢馆 35 项（console.html「踢馆传送」区块 tiguan_1..tiguan_35）：27 项为
+            // menu2 exe 表原值（menu2_preset_tables.tsv，官方编号即 key 后缀）；8 项
+            // （2/8/14/17/24/27/31/32）exe 表缺失，取参考服 creator/npc_creator 入口
+            // NPC 位置推导（门口触发点/CloneDoorNpc/_tg_ 触发器/外围守卫，口径已用
+            // tiguan_26 秦王府官方坐标对齐验证）。
+            {"tiguan_1", "踢馆-浣花剑派(成都)", "ini\\scene\\city05_ChengDu", "city05", 1164.707f, 81.333f, 694.912f, 0.000f},
+            {"tiguan_2", "踢馆-天香茶林(千灯镇)", "ini\\scene\\born04_QianDengZhen", "born04", 398.917f, -25.258f, 849.236f, 0.000f},
+            {"tiguan_3", "踢馆-沈家堡(成都)", "ini\\scene\\city05_ChengDu", "city05", 207.834f, 70.688f, 759.697f, -0.815f},
+            {"tiguan_4", "踢馆-徐家庄(成都)", "ini\\scene\\city05_ChengDu", "city05", 642.834f, 35.970f, 300.054f, 2.465f},
+            {"tiguan_5", "踢馆-南宫世家(成都)", "ini\\scene\\city05_ChengDu", "city05", 287.806f, 104.694f, 335.735f, -0.605f},
+            {"tiguan_6", "踢馆-星宿派(恶人谷)", "ini\\scene\\born02_ERenGU", "born02", -128.729f, -5.635f, -239.790f, -0.220f},
+            {"tiguan_7", "踢馆-盐帮(烟雨庄)", "ini\\scene\\born03_YanYuZhuang", "born03", 116.126f, 18.812f, 1358.681f, 1.498f},
+            {"tiguan_8", "踢馆-仙霞派(蓬莱仙境)", "ini\\scene\\scene02_PengLaiXianJing", "scene02", -103.228f, 50.311f, 656.256f, -1.885f},
+            {"tiguan_9", "踢馆-霓裳宫(念萝坝)", "ini\\scene\\scene05_NianLuoBa", "scene05", 1724.060f, 87.147f, 1102.917f, -0.805f},
+            {"tiguan_10", "踢馆-霹雳堂(梅花岭)", "ini\\scene\\scene07_MeiHuaLing", "scene07", 736.688f, 36.457f, 535.424f, -2.230f},
+            {"tiguan_11", "踢馆-万兽山庄(丐帮)", "ini\\scene\\school02_GaiBang", "school02", 578.565f, 32.818f, 780.173f, 2.945f},
+            {"tiguan_12", "踢馆-嵩山派(少林)", "ini\\scene\\school08_ShaoLin", "school08", -91.459f, 37.823f, 476.172f, 0.030f},
+            {"tiguan_13", "踢馆-神风帮(烟雨庄)", "ini\\scene\\born03_YanYuZhuang", "born03", 1018.685f, 81.292f, 593.530f, -1.528f},
+            {"tiguan_14", "踢馆-幽冥宫(泛黄平原)", "ini\\scene\\scene03_FanHuangPingYuan", "scene03", 1084.417f, -31.095f, 929.733f, 0.000f},
+            {"tiguan_15", "踢馆-古墓派(燕京)", "ini\\scene\\city01_YanJing", "city01", 1424.199f, -14.641f, 1496.115f, -1.525f},
+            {"tiguan_16", "踢馆-沐云庄(唐门)", "ini\\scene\\school05_TangMen", "school05", 795.724f, 33.126f, 705.564f, 1.132f},
+            {"tiguan_17", "踢馆-十二连环坞(唐门)", "ini\\scene\\school05_TangMen", "school05", 202.598f, -14.097f, 570.078f, 3.465f},
+            {"tiguan_18", "踢馆-东方世家(燕京)", "ini\\scene\\city01_YanJing", "city01", 351.118f, -151.660f, 1218.729f, -3.108f},
+            {"tiguan_19", "踢馆-慕容世家(苏州)", "ini\\scene\\city02_SuZhou", "city02", 1173.469f, 17.266f, 2163.734f, -3.080f},
+            {"tiguan_20", "踢馆-燕门世家(洛阳)", "ini\\scene\\city04_LuoYang", "city04", 621.062f, -60.678f, 267.438f, 0.000f},
+            {"tiguan_21", "踢馆-素云宫(恶人谷)", "ini\\scene\\born02_ERenGU", "born02", -319.208f, 26.089f, 688.274f, 1.208f},
+            {"tiguan_22", "踢馆-凌霄城", "ini\\scene\\scene06_LingXiaoCheng", "scene06", 549.860f, 105.622f, 233.435f, 1.830f},
+            {"tiguan_23", "踢馆-杀人庄(燕京)", "ini\\scene\\city01_YanJing", "city01", 1449.476f, 96.392f, 55.485f, 0.000f},
+            {"tiguan_24", "踢馆-大漠鬼城(塞外大漠)", "ini\\scene\\scene08_SaiWaiDaMo", "scene08", 181.000f, 31.581f, -312.000f, 0.000f},
+            {"tiguan_25", "踢馆-天外天(烟雨庄)", "ini\\scene\\born03_YanYuZhuang", "born03", -788.071f, 15.742f, 493.305f, -2.773f},
+            {"tiguan_26", "踢馆-秦王府(洛阳)", "ini\\scene\\city04_LuoYang", "city04", 492.636f, -10.160f, 909.090f, 1.995f},
+            {"tiguan_27", "踢馆-恶虎山寨(漠河镇)", "ini\\scene\\born01_MoHeZhen", "born01", -197.018f, 151.321f, 1053.132f, 0.545f},
+            {"tiguan_28", "踢馆-抱犊寨(洛阳)", "ini\\scene\\city04_LuoYang", "city04", 12.391f, -13.360f, 478.930f, -0.335f},
+            {"tiguan_29", "踢馆-天宝寨(唐门)", "ini\\scene\\school05_TangMen", "school05", 894.850f, 23.306f, 325.396f, -2.025f},
+            {"tiguan_30", "踢馆-虎啸山庄(武当)", "ini\\scene\\school07_WuDang", "school07", 857.179f, -10.055f, 871.049f, 0.000f},
+            {"tiguan_31", "踢馆-幽灵山庄(锦衣卫)", "ini\\scene\\school01_JinYiWei", "school01", 557.048f, 40.899f, 383.622f, 0.000f},
+            {"tiguan_32", "踢馆-天罗教(塞外大漠)", "ini\\scene\\scene08_SaiWaiDaMo", "scene08", 1013.373f, 21.689f, 922.035f, 0.000f},
+            {"tiguan_33", "踢馆-双龙堡(峨眉)", "ini\\scene\\school03_JunZiTang", "school03", 375.171f, 17.862f, 1066.494f, -3.125f},
+            {"tiguan_34", "踢馆-冥岳", "ini\\scene\\adv148", "adv148", -79.554f, 6.216f, -59.283f, 0.725f},
+            {"tiguan_35", "踢馆-净天宫", "ini\\scene\\adv153", "adv153", -6.650f, 37.172f, 45.083f, 0.000f},
             {"wanghui", "王回洲", "ini\\scene\\school28_wanghui", "school28", 119.267f, 12.734f, 3.625f, 0.000f},
             {"wanshou", "万兽山庄", "ini\\scene\\school02_GaiBang", "school02", 338.321f, 87.146f, 1016.193f, 2.927f},
             {"worldwar01", "世界战场(一)", "ini\\scene\\world_war_01", "world_war_01", 870.736f, 54.420f, 76.830f, 0.000f},

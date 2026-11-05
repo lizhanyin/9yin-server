@@ -410,8 +410,9 @@
           onclick="preset('tiguan_9')">霓裳宫(念萝坝)</button><button
           onclick="preset('tiguan_10')">霹雳堂(梅花岭)</button><button
           onclick="preset('tiguan_11')">万兽山庄(丐帮)</button><button
-          onclick="preset('tiguan_12')">嵩山派(少林)</button><button
-          onclick="preset('tiguan_14')">幽冥宫(泛黄平原)</button><button
+              onclick="preset('tiguan_12')">嵩山派(少林)</button><button
+              onclick="preset('tiguan_14')">幽冥宫(泛黄平原)</button><button
+              onclick="preset('tiguan_19')">慕容世家(苏州)</button><button
           onclick="preset('tiguan_22')">凌霄城</button><button
           onclick="preset('tiguan_27')">恶虎山寨(漠河镇)</button><button
           onclick="preset('tiguan_30')">虎啸山庄(武当)</button><button
@@ -422,8 +423,9 @@
       <section>
         <h2>世界 BOSS</h2>
         <p class="muted">
-          定时刷新由 normalboss/jhsceneboss 四表驱动：门派固定点按每日时间档刷新，
-          江湖 BOSS 每日 12:00 在随机场景随机坐标降世、24:00 前未被击败则消失。击杀不重生，等下个时间档。
+          强制生成按 normalboss/jhsceneboss 刷新表驱动：在当前场景的门派固定点每点生成
+          1 只（bosslist 轮选），江湖 BOSS 仅当当前场景在其随机场景池内时于随机点降世。
+          bossnpc 官方模板（真实血量、命中反击），击杀后消失不重生；会话级摆放，切图清空。
         </p>
         <button onclick="command({ action: 'worldboss_spawn' })">强制生成全部</button>
         <button onclick="command({ action: 'worldboss_clear' })">清除在场BOSS</button>
@@ -432,8 +434,10 @@
       <section>
         <h2>副本</h2>
         <p class="muted">
-          列表来自服务端已安装的 cloneinfo、clonecolset
-          与首领配置。进入时走每日次数、切场景、首领波次和退出回原场景的完整链路。
+          列表来自服务端已安装的 cloneinfo.ini（clonecolset 掉落计分链本期未接）。
+          进入即切场景并按 creator 表 NpcProgress 波次逐级揭示（≤当前波可见）；
+          副本内击杀不复活，当前波战斗怪全灭自动推进；难度档仅记录展示；
+          进入不限次（会话内计数提示），销毁回进本前位置。
         </p>
         <select id="clone-config">
           <option value="ini\scene\clone003">读取副本列表中……</option>
@@ -453,11 +457,17 @@
         <input id="destination" value="ini\scene\city04_LuoYang,city04,243.387,43.277,403.821,5.024" /><button
           onclick="scene(document.querySelector('#destination').value)">
           切换场景</button><br />
+        <input id="scene-filter" placeholder="按场景名/资源名过滤" oninput="filterScenes()" /><select
+          id="scene-select" onchange="fillSceneDestination()"></select><br />
         <input id="teleport" placeholder="X,Y,Z,朝向" /><button onclick="useCurrentPosition()">
           填入当前坐标</button><button onclick="teleportPlayer()">场景内瞬移</button>
       </section>
       <section>
         <h2>门派</h2>
+        <p class="muted">
+          修改角色原生门派属性（School/Force/NewSchool）并持久化落库；
+          不自动赠送对应套路、身份装或任务线（身份装可用「外观」区另行激活）。
+        </p>
         <select id="faction">
           <optgroup label="八大门派">
             <option value="shaolin">少林</option>
@@ -469,6 +479,13 @@
             <option value="jinyiwei">锦衣卫</option>
             <option value="jilegu">极乐谷</option>
           </optgroup>
+          <optgroup label="后续门派">
+            <option value="mingjiao">明教</option>
+            <option value="tianshan">天山派</option>
+            <option value="kunlun">昆仑派</option>
+            <option value="xingtianbao">刑天城</option>
+            <option value="wuxu">无虚门</option>
+          </optgroup>
           <optgroup label="江湖势力">
             <option value="yihuagong">移花宫</option>
             <option value="taohuadao">桃花岛</option>
@@ -477,23 +494,22 @@
             <option value="wanshou">万兽山庄</option>
             <option value="jinzhen">金针沈家</option>
             <option value="tianlun">天轮寺</option>
-            <option value="qingyi">青衣楼</option>
+            <option value="qingyi">青衣阁</option>
           </optgroup>
           <optgroup label="宗门">
             <option value="xuedao">血刀门</option>
             <option value="huashan">华山派</option>
             <option value="gumu">古墓派</option>
-            <option value="damo">达摩宗</option>
+            <option value="damo">达摩派</option>
             <option value="shenshui">神水宫</option>
             <option value="changfeng">长风镖局</option>
-            <option value="nianluo">念萝崖</option>
+            <option value="nianluo">念萝坝</option>
             <option value="wuxian">无仙教</option>
             <option value="shenji">神机营</option>
             <option value="xingmiao">星渺阁</option>
             <option value="tianya">天涯海阁</option>
-            <option value="wanghui">王回庄</option>
-            <option value="shenjihui">神机营</option>
-            <option value="wuxu">无虚</option>
+            <option value="wanghui">王回洲</option>
+            <option value="shenjihui">神机汇</option>
           </optgroup>
         </select>
         <button onclick="setFaction()">应用门派</button>

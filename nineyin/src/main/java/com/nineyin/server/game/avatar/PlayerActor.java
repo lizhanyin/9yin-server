@@ -1590,6 +1590,11 @@ public final class PlayerActor {
         return properties;
     }
 
+    /** Go setFaction 返回帧：faction 变更专用单帧（仅 School/Force/NewSchool 三属性）。 */
+    public byte[] factionUpdate() {
+        return SceneMessages.objectProperties(PLAYER_OBJECT_ID, PLAYER_OWNER_ID, 0, factionProperties(faction));
+    }
+
     /** Go baseMotionProperties：Gravity/GravityAdd/DropHeightPub。 */
     static List<PropertyValues.Indexed> baseMotionProperties(Motion motion) {
         List<PropertyValues.Indexed> properties = new ArrayList<>(3);

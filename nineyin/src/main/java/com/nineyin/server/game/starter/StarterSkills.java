@@ -22,16 +22,20 @@ public final class StarterSkills {
     }
 
     /**
-     * 默认分类「基础武学 → 三脚猫招式」三技能（bug.txt：官服全角色默认已学）：
-     * 打坐调息 / 自断经脉 / 骑术精通。staticData/itemType 与 game_skills 目录一致
-     * （zs_default_01=22 / zs_suicide=55 / riding_start=21515）。
+     * 默认分类「基础武学 → 三脚猫招式」五技能（bug.txt：官服全角色默认已学）：
+     * 剑普攻 / 飞刀普攻 / 打坐调息 / 自断经脉 / 骑术精通。普攻族固定发剑+飞刀两件
+     * （官方观测同款，不随门派变——其余武器普攻 zs_normal_ 与 hw_normal_ 族官方未授）。
+     * staticData/itemType 与 game_skills 目录一致（zs_normal_02=15 / hw_normal_fd=626 /
+     * zs_default_01=22 / zs_suicide=55 / riding_start=21515）。
      */
     static final List<LearnedSkill> DEFAULT_BASIC_SKILLS = List.of(
+            new LearnedSkill("zs_normal_02", 15, 1000, 1, 1, 0, 0, 0),
+            new LearnedSkill("hw_normal_fd", 626, 1000, 1, 1, 0, 0, 0),
             new LearnedSkill("zs_default_01", 22, 1000, 1, 1, 0, 0, 0),
             new LearnedSkill("zs_suicide", 55, 1000, 1, 1, 0, 0, 0),
             new LearnedSkill("riding_start", 21515, 1000, 1, 1, 0, 0, 0));
 
-    /** 当前 starter 已学集：基础武学三件套 + 花神七式 + 心佛掌七招 + 太极拳(古谱)八式。 */
+    /** 当前 starter 已学集：基础武学五件套 + 花神七式 + 心佛掌七招 + 太极拳(古谱)八式。 */
     static final List<LearnedSkill> STARTER_SKILL_VIEWS = starterSkillViews();
 
     private static List<LearnedSkill> starterSkillViews() {
@@ -65,8 +69,8 @@ public final class StarterSkills {
     }
 
     /**
-     * 登录全量下发补集（bug.txt 基础武学项）：DB 已学行缺默认三技能时按默认序补在
-     * 队首——内存合成不落库，幂等可重放；空表原样返回（starter 回退集本就含三件套）。
+     * 登录全量下发补集（bug.txt 基础武学项）：DB 已学行缺默认五技能时按默认序补在
+     * 队首——内存合成不落库，幂等可重放；空表原样返回（starter 回退集本就含五件套）。
      * staticData/itemType 取 DEFAULT_BASIC_SKILLS 内联值（与 game_skills 目录一致，
      * 客户端 GoodsGrid 图标解析不受影响）。
      */

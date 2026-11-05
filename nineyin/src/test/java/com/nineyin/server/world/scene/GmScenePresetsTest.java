@@ -14,17 +14,18 @@ import com.nineyin.server.db.role.Roles;
 import com.nineyin.server.world.scene.GmScenePresets;
 
 /**
- * GM 常用传送预设表：107 键覆盖 gm-web console.html 全部按钮；抽样值对齐
- * Go gm_scene_presets.go（主城/门派）与 menu2 exe 提取表（scene/adv/schoolwar）；
- * 免费格式解析（switch_scene/teleport）数值域与失败文案。
+ * GM 常用传送预设表：142 键（107 基础 + 踢馆 35）覆盖 gm-web console.html 全部按钮；
+ * 抽样值对齐 Go gm_scene_presets.go（主城/门派）、menu2 exe 提取表（scene/adv/
+ * schoolwar）与踢馆入口（exe 表 27 项 + 参考服 creator 推导 8 项）；免费格式解析
+ * （switch_scene/teleport）数值域与失败文案。
  */
 class GmScenePresetsTest {
 
     @Test
     void tableCoversAllConsoleHtmlPresetKeys() {
-        // console.html 的 preset() slug 全集（2026-11 提取 107 个）——数量下限 +
-        // 关键抽样，避免 HTML 变更时静默漂移。
-        assertTrue(GmScenePresets.keys().size() >= 107, "预设表至少覆盖面板全部按钮");
+        // console.html 的 preset() slug 全集（2026-11 提取 107 个 + 踢馆 35 个）——
+        // 数量下限 + 关键抽样，避免 HTML 变更时静默漂移。
+        assertTrue(GmScenePresets.keys().size() >= 142, "预设表至少覆盖面板全部按钮");
         for (String key : new String[]{
                 "yanjing", "suzhou", "jimingyi", "erengu", "jinyiwei", "wudang", "shaolin",
                 "yihuagong", "taohuadao", "wugenmen", "xujia", "tianlun", "qingyi",
@@ -33,7 +34,7 @@ class GmScenePresetsTest {
                 "scene01", "scene04b", "scene33", "adv011", "adv199", "schoolwar5",
                 "schoolwar22", "worldwar01", "fight05", "prison", "loading01",
                 "tianlundb", "groupscene045", "mingjiao", "tianshanpai", "kunlunpai",
-                "xingtianbao"}) {
+                "xingtianbao", "tiguan_1", "tiguan_19", "tiguan_35"}) {
             assertNotNull(GmScenePresets.preset(key), "面板按钮预设缺失: " + key);
         }
         Set<String> keys = GmScenePresets.keys();
@@ -81,6 +82,39 @@ class GmScenePresetsTest {
         GmScenePresets.Destination mingjiao = GmScenePresets.preset("mingjiao");
         assertEquals("ini\\scene\\school20_mingjiao", mingjiao.scene().config());
         assertEquals(274.763f, mingjiao.position().x(), 1e-4f);
+    }
+
+    /**
+     * 踢馆 35 键（console.html「踢馆传送」区块）：全部可解析、label 前缀一致；
+     * 抽样官方 exe 表原值（tiguan_1/tiguan_19）与参考服 creator 入口 NPC 推导值
+     * （tiguan_32，EventNpc_lzy_tg_tlj001 位置）。
+     */
+    @Test
+    void tiguanPresetsCoverAll35Entrances() {
+        for (int i = 1; i <= 35; i++) {
+            GmScenePresets.Destination dest = GmScenePresets.preset("tiguan_" + i);
+            assertNotNull(dest, "踢馆预设缺失: tiguan_" + i);
+            assertTrue(dest.label().startsWith("踢馆-"), "tiguan_" + i + " label 应带踢馆前缀");
+            assertTrue(dest.scene().config().startsWith("ini\\scene\\"),
+                    "tiguan_" + i + " config 应为场景配置");
+        }
+
+        GmScenePresets.Destination huanhua = GmScenePresets.preset("tiguan_1");
+        assertEquals("踢馆-浣花剑派(成都)", huanhua.label());
+        assertEquals("ini\\scene\\city05_ChengDu", huanhua.scene().config());
+        assertEquals("city05", huanhua.scene().resource());
+        assertEquals(1164.707f, huanhua.position().x(), 1e-4f);
+        assertEquals(694.912f, huanhua.position().z(), 1e-4f);
+
+        GmScenePresets.Destination murong = GmScenePresets.preset("tiguan_19");
+        assertEquals("ini\\scene\\city02_SuZhou", murong.scene().config());
+        assertEquals(2163.734f, murong.position().z(), 1e-4f);
+
+        GmScenePresets.Destination tianluo = GmScenePresets.preset("tiguan_32");
+        assertEquals("踢馆-天罗教(塞外大漠)", tianluo.label());
+        assertEquals("ini\\scene\\scene08_SaiWaiDaMo", tianluo.scene().config());
+        assertEquals(1013.373f, tianluo.position().x(), 1e-4f);
+        assertEquals(922.035f, tianluo.position().z(), 1e-4f);
     }
 
     @Test

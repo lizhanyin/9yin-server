@@ -115,6 +115,11 @@ public final class SceneLifecycle {
         stopTimersLocked();
     }
 
+    /** 当前场景 config（副本波次门控等轻量查询用）。 */
+    public synchronized String sceneConfig() {
+        return scene.sceneConfig();
+    }
+
     /**
      * Go registerNPC：预编码 0x0D 载荷并入世界实体（不上线）。
      * 巡逻 NPC 按共同时钟采样当前时刻位置（入参须为每次注册的独立克隆，
@@ -152,8 +157,8 @@ public final class SceneLifecycle {
         }
     }
 
-    /** Go npcInteractionFor 的战斗判定（巡逻排除敌对 actor）。 */
-    static boolean isCombatScriptClass(String scriptClass) {
+    /** Go npcInteractionFor 的战斗判定（巡逻排除敌对 actor）；副本波次推进同口径。 */
+    public static boolean isCombatScriptClass(String scriptClass) {
         String normalized = scriptClass == null ? "" : scriptClass.trim().toLowerCase(java.util.Locale.ROOT);
         return normalized.equals("attacknpc") || normalized.equals("bossnpc");
     }

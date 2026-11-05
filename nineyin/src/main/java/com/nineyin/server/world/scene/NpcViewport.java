@@ -17,10 +17,20 @@ public final class NpcViewport {
     /** 返回（活跃数，是否有变化）。 */
     public static boolean synchronizeNpcViewport(SceneLifecycle world, java.util.List<NpcSpawn> catalog,
                                                  Set<Integer> active, Roles.Position position, float radius) {
+        return synchronizeNpcViewport(world, catalog, active, position, radius, npc -> true);
+    }
+
+    /**
+     * 带额外门控的视口同步：gate=false 的目录项不进 desired（副本波次门控——
+     * NpcProgress 大于当前波的摆位不上线，波次推进后重跑即 0x0D 补上）。
+     */
+    public static boolean synchronizeNpcViewport(SceneLifecycle world, java.util.List<NpcSpawn> catalog,
+                                                 Set<Integer> active, Roles.Position position, float radius,
+                                                 java.util.function.Predicate<NpcSpawn> gate) {
         float radiusSquared = radius * radius;
         Set<Integer> desired = new TreeSet<>();
         for (int i = 0; i < catalog.size(); i++) {
-            if (!visibleInLocalViewport(catalog.get(i))) {
+            if (!visibleInLocalViewport(catalog.get(i)) || !gate.test(catalog.get(i))) {
                 continue;
             }
             float dx = catalog.get(i).x - position.x();

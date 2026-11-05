@@ -512,6 +512,25 @@ class LoginFlowGmCommandTest {
         assertNull(env.channel.readOutbound(), "失败命令不写帧");
     }
 
+    /** 世界 BOSS 三动作：未进场景（无 world）明确失败且不写帧。 */
+    @Test
+    void worldBossActionsFailWithoutScene() {
+        Env env = new Env();
+        GmCommand spawn = env.enqueue("worldboss_spawn", Map.of());
+        GmCommand clear = env.enqueue("worldboss_clear", Map.of());
+        GmCommand list = env.enqueue("worldboss_list", Map.of());
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(spawn).ok(), "未进场景生成 BOSS 应失败");
+        assertEquals("生成世界 BOSS 失败：角色尚未进入场景", reply(spawn).message());
+        assertFalse(reply(clear).ok(), "未进场景清除 BOSS 应失败");
+        assertEquals("清除世界 BOSS 失败：角色尚未进入场景", reply(clear).message());
+        assertFalse(reply(list).ok(), "未进场景查看 BOSS 应失败");
+        assertEquals("查看世界 BOSS 失败：角色尚未进入场景", reply(list).message());
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+    }
+
     /**
      * 战斗假人生成/清除全链（真实 attacknpc 表克隆进临时根，mountSkin 同款
      * overrideServerRoot + finally 还原）：机关木人 AttackNpc 模板 → gmSpawns 打
@@ -588,6 +607,83 @@ class LoginFlowGmCommandTest {
             assertFalse(env.session.gmSpawns.values().iterator().next().combatDummy,
                     "保留条目是木桩非假人");
             assertEquals(1, env.session.world.combatNpcs().size(), "战斗快照剩木桩");
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /**
+     * 世界 BOSS 生成/查看/清除全链（真实 bossnpc 表 + 合成刷新表进临时根，
+     * combatDummySpawnAndClearRoundTrip 同款 overrideServerRoot + finally 还原）：
+     * 场景 school09 经合成 scenes.ini 映射场景号 11 → 门派固定点每点 1 只
+     * （bosslist 逐点轮选）+ 江湖 BOSS 场景池命中取随机点；gmSpawns 打 worldBoss
+     * 标志 + BossNpc 入战斗快照（模板真实血量）；list 报在场数；clear 一键摘除。
+     */
+    @Test
+    void worldBossSpawnListClearRoundTrip(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "share", "npc",
+                        "npcconfig", "worldnpc", "bossnpc.txt")),
+                "参考服 bossnpc 表不可用，跳过世界 BOSS 编排断言");
+        java.nio.charset.Charset gbk = java.nio.charset.Charset.forName("GBK");
+        Path shareRoot = tempRoot.resolve(Path.of("resources", "modern", "share"));
+        Path npcRoot = shareRoot.resolve("npc");
+        java.nio.file.Files.createDirectories(npcRoot);
+        java.nio.file.Files.createDirectories(shareRoot.resolve("rule"));
+        java.nio.file.Files.writeString(shareRoot.resolve(Path.of("rule", "scenes.ini")),
+                "[11]\nConfig=school09\n", gbk);
+        java.nio.file.Files.writeString(npcRoot.resolve("normalbossrefreshinfo.ini"), """
+                [1]
+                bosslist=bossworld001_hd;bossworld002_hd
+                scene=11
+                position=100.5,-6.3,200.25
+
+                [2]
+                bosslist=bossworld002_hd;bossworld004_hd
+                scene=11
+                position=300,-11.5,400
+                """, gbk);
+        java.nio.file.Files.writeString(npcRoot.resolve("jhscenebossrefreshinfo.ini"),
+                "[bossnewworld001]\nScene=11,364\n", gbk);
+        java.nio.file.Files.writeString(npcRoot.resolve("jhscenebossrefreshpoint.ini"),
+                "[11]\nPoint=500,10,600\nPoint=700,20,800\n", gbk);
+
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            env.session.world = new com.nineyin.server.world.scene.SceneLifecycle(
+                    new Connection(env.channel), new NpcDialogFlowTest.NoopScheduler());
+            env.session.world.begin("school09", "school09");
+
+            GmCommand spawn = env.enqueue("worldboss_spawn", Map.of());
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+            assertTrue(reply(spawn).ok(), "强制生成应成功: " + reply(spawn).message());
+            assertEquals(3, env.session.gmSpawns.size(), "两个门派点 + 一只江湖 BOSS");
+            var templates = new java.util.ArrayList<String>();
+            for (LoginSession.GmSpawn spawnEntry : env.session.gmSpawns.values()) {
+                assertTrue(spawnEntry.worldBoss, "全部摆放打 worldBoss 标志");
+                templates.add(spawnEntry.npc.resolved.configId);
+                assertTrue(spawnEntry.npc.resolved.properties.get("MaxHP").i32() > 0,
+                        "bossnpc 模板自带真实血量");
+            }
+            assertTrue(templates.contains("bossworld001_hd"), "第 1 点取 bosslist 首模板");
+            assertTrue(templates.contains("bossworld004_hd"), "第 2 点跨列表轮转到次位模板");
+            assertTrue(templates.contains("bossnewworld001"), "江湖 BOSS 池命中生成");
+            assertEquals(3, env.session.world.combatNpcs().size(), "BossNpc 全入战斗快照");
+
+            GmCommand list = env.enqueue("worldboss_list", Map.of());
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+            assertTrue(reply(list).ok(), "查看在场应成功");
+            assertTrue(reply(list).message().contains("在场世界 BOSS 3 只"), "list 报在场数");
+
+            GmCommand clear = env.enqueue("worldboss_clear", Map.of());
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+            assertTrue(reply(clear).ok(), "清除应成功");
+            assertEquals("已清除 3 只世界 BOSS", reply(clear).message());
+            assertTrue(env.session.gmSpawns.isEmpty(), "摆放表清空");
+            assertEquals(0, env.session.world.combatNpcs().size(), "战斗快照同步清空");
         } finally {
             com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
         }
@@ -807,5 +903,59 @@ class LoginFlowGmCommandTest {
         } finally {
             com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
         }
+    }
+
+    /**
+     * set_faction（Go set_faction 同序）：闭名单预设 → saveFaction CAS 落库
+     * （appearance[8]，重开仓库可读回）→ 内存 faction + 专用单帧 0x10 →
+     * 面板快照 faction/lastAction；未知预设失败且零帧。默认档 force_yihua → school_wudang。
+     */
+    @Test
+    void factionSetPersistsSnapshotAndPushesFrame(@TempDir Path tempRoot) throws Exception {
+        com.nineyin.server.db.role.RoleStoreFacade store = new com.nineyin.server.db.role.RoleStoreFacade(
+                com.nineyin.server.db.role.JsonRoleRepository.open(tempRoot.resolve("roles.json")));
+        GmHub hub = new GmHub();
+        LoginFlow flow = new LoginFlow(store, null, hub, Clock.systemUTC(), null, null);
+        EmbeddedChannel channel = new EmbeddedChannel();
+        LoginSession session = new LoginSession();
+        session.selected = store.create(store.login("faction-gm-test").account(), "赵灵儿", null);
+        assertEquals(com.nineyin.server.db.role.RoleStoreFacade.DEFAULT_ROLE_FACTION,
+                session.selected.appearance().values().get(8), "新档默认门派应为移花宫");
+        session.player = PlayerActor.create("赵灵儿", 1, Clock.systemUTC());
+        GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
+        snapshot.sessionId = session.machine.id();
+        snapshot.name = "赵灵儿";
+        hub.attach(snapshot.sessionId, snapshot);
+
+        GmCommand set = new GmCommand(session.machine.id(), "set_faction",
+                new JSONObject(Map.of("faction", "wudang")));
+        GmCommand unknown = new GmCommand(session.machine.id(), "set_faction",
+                new JSONObject(Map.of("faction", "no_such_school")));
+        hub.enqueue(set);
+        hub.enqueue(unknown);
+        flow.drainGmCommands(new Connection(channel), session);
+
+        assertTrue(reply(set).ok(), "武当预设应成功: " + reply(set).message());
+        assertTrue(reply(set).message().contains("武当"));
+        assertTrue(reply(set).message().contains("school_wudang"));
+        assertFalse(reply(unknown).ok(), "未知预设应失败");
+        assertTrue(reply(unknown).message().contains("no_such_school"));
+
+        // 内存 + 会话快照 + hub 快照同步。
+        assertEquals("school_wudang", session.player.faction());
+        assertEquals("school_wudang", session.selected.appearance().values().get(8));
+        assertEquals("school_wudang", hub.get(session.machine.id()).faction);
+        assertTrue(hub.get(session.machine.id()).lastAction.contains("武当"));
+
+        // 持久化：重开仓库按 key 登录读回 appearance[8]（CAS 版本已随新 snapshot 前进）。
+        assertEquals("school_wudang", com.nineyin.server.db.role.RoleStoreFacade.roleFaction(
+                new com.nineyin.server.db.role.RoleStoreFacade(
+                        com.nineyin.server.db.role.JsonRoleRepository.open(tempRoot.resolve("roles.json")))
+                        .login("faction-gm-test").snapshot().appearance().values()));
+
+        // 成功路径单帧 0x10（School/Force/NewSchool 三属性专用帧），拒绝路径零帧。
+        byte[] frame = channel.readOutbound();
+        assertTrue(frame != null && (frame[0] & 0xFF) == 0x10, "应写出 faction 单帧 0x10");
+        assertNull(channel.readOutbound(), "未知预设不应写帧");
     }
 }

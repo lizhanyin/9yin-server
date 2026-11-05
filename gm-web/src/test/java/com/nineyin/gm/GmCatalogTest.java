@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -99,6 +100,35 @@ class GmCatalogTest {
         JSONArray hair = catalog.hairCards();
         assertEquals(1, hair.size());
         assertEquals("Head", hair.getJSONObject(0).getString("category"));
+    }
+
+    /** scenes.ini 全表 → {id,config,resource,name}；非数字节/无 config 键跳过，同 config 去重。 */
+    @Test
+    void scenesCatalogFromRuleIniAndIdres(@TempDir Path modern) throws IOException {
+        Path share = Files.createDirectories(modern.resolve("share"));
+        Files.write(Files.createDirectories(share.resolve("rule")).resolve("scenes.ini"), (
+                "[11]\nConfig=ini\\scene\\city04_LuoYang\nMaxVisuals=100\n"
+                        + "[setting]\nConfig=ini\\scene\\skip_me\n"
+                        + "[17]\nconfig=ini\\scene\\school07_WuDang\n"
+                        + "[18]\nConfig=ini\\scene\\city04_LuoYang\n"
+                        + "[19]\nName=no_config_key\n").getBytes(Charset.forName("GBK")));
+        Path chineses = Files.createDirectories(modern.resolve("text").resolve("chineses"));
+        Files.writeString(chineses.resolve("stringname.idres"),
+                "ini\\scene\\city04_luoyang=洛阳\nschool07_wudang=武当\n",
+                StandardCharsets.UTF_8);
+        GmCatalog fileCatalog = GmCatalog.createForTest(share, dataDir);
+
+        JSONArray scenes = fileCatalog.scenes();
+        // setting 节非数字、19 节无 config、18 节与 11 节同 config（首见保留）→ 只剩 11、17。
+        assertEquals(2, scenes.size());
+        JSONObject luoyang = scenes.getJSONObject(0);
+        assertEquals(11, luoyang.getIntValue("id"));
+        assertEquals("ini\\scene\\city04_LuoYang", luoyang.getString("config"));
+        assertEquals("city04_LuoYang", luoyang.getString("resource"));
+        assertEquals("洛阳", luoyang.getString("name"), "idres 键为小写 config，应经小写回退命中");
+        JSONObject wudang = scenes.getJSONObject(1);
+        assertEquals("武当", wudang.getString("name"), "资源名小写键命中");
+        assertEquals("school07_WuDang", wudang.getString("resource"));
     }
 
     private void write(String relative, String json) throws IOException {

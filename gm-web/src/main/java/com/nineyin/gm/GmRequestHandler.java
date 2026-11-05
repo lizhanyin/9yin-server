@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
  * <li>动态数据 /api/status、/api/sessions、POST /api/sessions/{id}/command、
  *     /api/minimal-login（GET/POST）— 按 __s=host:port 经 {@link GameServerRpc} 路由到
  *     所选游戏服；断连时降级（sessions=[]、game_connected=false）。</li>
- * <li>17 个目录接口（装备/时装/经脉/称号…）— 本地 {@link GmCatalog}
+ * <li>18 个目录接口（装备/时装/经脉/称号/场景…）— 本地 {@link GmCatalog}
  *     （resources/modern + MySQL 优先、data/*.json 回退；本机所有游戏服共享数据源）。</li>
  * </ul>
  * OPTIONS 204（CORS）。
@@ -113,7 +113,7 @@ public final class GmRequestHandler {
             case "/api/minimal-login" -> {
                 return proxyMinimalLogin(serverParam(params));
             }
-            // ---- 17 个目录接口：本地 GmCatalog ----
+            // ---- 18 个目录接口：本地 GmCatalog ----
             case "/api/bots" -> {
                 return GmHttpUtil.json(HttpResponseStatus.OK, catalog.bots());
             }
@@ -125,6 +125,9 @@ public final class GmRequestHandler {
             }
             case "/api/clones" -> {
                 return GmHttpUtil.json(HttpResponseStatus.OK, catalog.clones());
+            }
+            case "/api/scenes" -> {
+                return GmHttpUtil.json(HttpResponseStatus.OK, catalog.scenes());
             }
             case "/api/combat-dummy/taolus" -> {
                 return GmHttpUtil.json(HttpResponseStatus.OK, catalog.taolus());

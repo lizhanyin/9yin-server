@@ -10,6 +10,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.IntPredicate;
 
 import com.nineyin.server.game.avatar.appearance.AppearanceSync;
 import com.nineyin.server.game.avatar.skin.SkinMessages;
@@ -21,11 +23,14 @@ import com.nineyin.server.game.item.ItemUseCatalog;
 import com.nineyin.server.protocol.EquipmentModels;
 import com.nineyin.server.protocol.InventoryMessages;
 import com.nineyin.server.world.fight.SkillCastHandler;
+import com.nineyin.server.world.fight.FightState;
 import com.nineyin.server.world.npc.NpcDialog;
+import com.nineyin.server.world.npc.WorldBossRefreshTable;
 import com.nineyin.server.world.npc.NpcSpawn;
 import com.nineyin.server.world.npc.OptionTalkCatalog;
 import com.nineyin.server.world.npc.SceneNpcRegistry;
 import com.nineyin.server.world.npc.ShopCatalog;
+import com.nineyin.server.world.scene.CloneScenes;
 import com.nineyin.server.world.scene.NpcViewport;
 import com.nineyin.server.world.scene.SceneLifecycle;
 import com.nineyin.server.protocol.NpcMessages;
@@ -45,6 +50,7 @@ import com.nineyin.server.world.db.RoleInventoryStore;
 import com.nineyin.server.world.db.PanelDataStore;
 import com.nineyin.server.game.starter.StarterQingGong;
 import com.nineyin.server.gm.GmCommand;
+import com.nineyin.server.gm.GmFactionPresets;
 import com.nineyin.server.gm.GmHub;
 import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.protocol.CustomMessages;
@@ -585,7 +591,7 @@ public final class LoginFlow {
         if (!session.sceneNpcs.isEmpty()) {
             try {
                 NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
-                        session.activeNpcs, location.position(), NPC_RADIUS);
+                        session.activeNpcs, location.position(), NPC_RADIUS, cloneWaveGate(session));
             } catch (RuntimeException e) {
                 log.warn("session={} register scene NPC viewport: {}", session.machine.id(), e.getMessage());
             }
@@ -873,11 +879,20 @@ public final class LoginFlow {
             case "grant_all_fashion" -> applyGrantAllFashion(connection, session, command);
             case "set_showequip_type" -> applySetShowEquipType(connection, session, command);
             case "grant_identity_suits" -> applyGrantIdentitySuits(connection, session, command);
+            // 门派切换（Go set_faction 同款）：闭名单预设 → saveFaction CAS 落库（appearance[8]）
+            // → 内存 faction + School/Force/NewSchool 单帧 → 面板快照。不自动赠身份装/套路。
+            case "set_faction" -> applyFaction(connection, session, command);
             // 传送三动作（Go sceneRuntime）：预设切图=常用传送按钮，自定义切图=免费格式目的地，
             // teleport=场景内瞬移（仅 0x1F，不读图）。切图走 0x0C 重入链，行恢复在目标场景 0x09。
             case "switch_scene_preset" -> applySwitchScenePreset(connection, session, command);
             case "switch_scene" -> applySwitchScene(connection, session, command);
             case "teleport" -> applyTeleportWithinScene(connection, session, command);
+            // 副本三动作（面板「副本」区块）：进本=切图+波次链起跑（NpcProgress 累积揭示、
+            // 副本怪击杀不复活、当前波全灭自动推进）；重进=保留波次回本；销毁=回进本前
+            // 位置。会话即实例——每连接独立 world/目录，无需跨会话副本管理器。
+            case "enter_clone" -> applyEnterClone(connection, session, command);
+            case "reenter_clone" -> applyReenterClone(connection, session, command);
+            case "destroy_clone" -> applyDestroyClone(connection, session, command);
             // 弹出游戏 GM 面板（GMCC）：客户端 lua close_gmcc_form msg_id=2 → open_gmcc_chat。
             case "popup_gm_panel" -> applyPopupGmPanel(connection, session, command);
             // 洗练六动作（四池 senior_*，词条=proppack 包号）：随机/定向/抛光/招式开光/加词条/清空。
@@ -892,6 +907,12 @@ public final class LoginFlow {
             // 配套一键清除本会话生成的全部假人。
             case "spawn_combat_dummy" -> applySpawnCombatDummy(connection, session, command);
             case "clear_combat_dummies" -> applyClearCombatDummies(connection, session, command);
+            // 世界 BOSS（worldboss_*）：官方刷新表驱动——当前场景门派固定点每点 1 只 +
+            // 场景池命中的江湖 BOSS 随机点，bossnpc 模板（BossNpc 进战斗反击链）；
+            // 击杀后消失不重生（bossKillOverride），clear/list 按会话摆放记账。
+            case "worldboss_spawn" -> applyWorldBossSpawn(connection, session, command);
+            case "worldboss_clear" -> applyWorldBossClear(connection, session, command);
+            case "worldboss_list" -> applyWorldBossList(connection, session, command);
             case "giftbox_merchant_here" -> applyGiftboxMerchantHere(connection, session, command);
             case "send_test_mail" -> applySendTestMail(connection, session, command);
             // 坐骑管理：按道具 config 骑乘（再点同骑=下马），NewRideRec 记录 + Mount 属性族下发。
@@ -946,6 +967,219 @@ public final class LoginFlow {
     }
 
     /**
+     * GM 进本（enter_clone）：{@link CloneScenes}（cloneinfo.ini）存在性校验 + 预取
+     * 副本目录（入口坐标/最大波次）→ 建 {@link LoginSession.CloneRun}（会话即实例，
+     * 快照回城点）→ 复用 {@link #applySceneSwitch} 切图（波次门控随 CloneRun 生效，
+     * NpcProgress ≤ wave 累积揭示）。难度档 1普通/2困难/3地狱/4炼狱本期仅记录展示；
+     * 进入不限次，会话内计数提示。
+     */
+    private void applyEnterClone(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        if (session.cloneRun != null) {
+            command.fail("已有打开的副本「" + session.cloneRun.desc + "」，请先销毁或直接进入");
+            return;
+        }
+        CloneScenes.CloneInfo info = CloneScenes.info(command.strParam("cloneConfig"));
+        if (info == null) {
+            command.fail("未知副本: " + command.strParam("cloneConfig"));
+            return;
+        }
+        Roles.Scene scene = normalizeClientScene(cloneScene(info.config()));
+        List<NpcSpawn> spawns = List.of();
+        if (npcRegistry != null) {
+            try {
+                spawns = npcRegistry.catalogFor(scene).spawns();
+            } catch (Exception e) {
+                log.warn("session={} load clone NPC catalog {}: {}", session.machine.id(),
+                        scene.resource(), e.getMessage());
+            }
+        }
+        LoginSession.CloneRun run = new LoginSession.CloneRun(scene, info.desc(),
+                command.intParam("value", 1), CloneScenes.maxWave(spawns),
+                session.selected.location(), CloneScenes.entryPosition(scene, spawns));
+        session.cloneRun = run;
+        applySceneSwitch(connection, session, command,
+                new Roles.Location(run.scene, run.entryPosition,
+                        session.selected.location().version()),
+                cloneLabel(run) + "，今日第 " + run.enterCount + " 次进入");
+        if (!repliedOk(command)) {
+            session.cloneRun = null; // 相位/调度器拒绝切图：回滚实例
+            return;
+        }
+        log.info("session={} GM enter clone {} difficulty={} wave={}/{} npcs={}",
+                session.machine.id(), info.config(), run.difficulty, run.wave,
+                run.maxWave, spawns.size());
+    }
+
+    /**
+     * GM 重进副本（reenter_clone）：普通切图离开不销毁实例（保留 CloneRun），本动作
+     * 带着波次进度回到副本入口；已在副本场景则仅回报进度。世界世代重置后怪物满血
+     * 重摆，波次门控按保留的 wave 揭示。
+     */
+    private void applyReenterClone(Connection connection, LoginSession session, GmCommand command) {
+        LoginSession.CloneRun run = session.cloneRun;
+        if (run == null) {
+            command.fail("当前没有已打开的副本，请先创建并进入");
+            return;
+        }
+        if (inCloneScene(session)) {
+            command.succeed("已在" + cloneLabel(run));
+            return;
+        }
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        run.enterCount++;
+        applySceneSwitch(connection, session, command,
+                new Roles.Location(run.scene, run.entryPosition,
+                        session.selected.location().version()),
+                cloneLabel(run) + "，今日第 " + run.enterCount + " 次进入");
+    }
+
+    /**
+     * GM 销毁副本（destroy_clone）：回进本前快照位置（正常落库），清实例与波次
+     * 门控。人不在副本场景时同样销毁并送回快照点。
+     */
+    private void applyDestroyClone(Connection connection, LoginSession session, GmCommand command) {
+        LoginSession.CloneRun run = session.cloneRun;
+        if (run == null) {
+            command.fail("当前没有已打开的副本");
+            return;
+        }
+        if (session.selected == null || session.world == null) {
+            command.fail("角色尚未进入场景");
+            return;
+        }
+        session.cloneRun = null; // 先清：回程切图的视口注册不受波次门控
+        Roles.Location back = run.returnLocation;
+        applySceneSwitch(connection, session, command,
+                new Roles.Location(back.scene(), back.position(),
+                        session.selected.location().version()),
+                "原场景 " + back.scene().resource() + "（副本「" + run.desc + "」已销毁）");
+    }
+
+    /** 副本 config（cloneinfo.ini 节名）→ Scene：resource 取 config 基名（GmScenePresets 行口径）。 */
+    private static Roles.Scene cloneScene(String config) {
+        String clean = config.trim();
+        int slash = Math.max(clean.lastIndexOf('\\'), clean.lastIndexOf('/'));
+        String base = slash >= 0 ? clean.substring(slash + 1) : clean;
+        return new Roles.Scene(clean, base);
+    }
+
+    /** 副本进度文案：名称 + 当前/最大波次 + 难度档。 */
+    private static String cloneLabel(LoginSession.CloneRun run) {
+        return "副本「" + run.desc + "」第 " + run.wave + "/" + run.maxWave
+                + " 波(难度" + run.difficulty + ")";
+    }
+
+    /** 当前世界是否就是打开中的副本场景（config 归一比较；门控/击杀认领共用）。 */
+    private static boolean inCloneScene(LoginSession session) {
+        LoginSession.CloneRun run = session.cloneRun;
+        if (run == null || session.world == null) {
+            return false;
+        }
+        String current = session.world.sceneConfig();
+        return current != null && current.trim().equalsIgnoreCase(run.scene.config().trim());
+    }
+
+    /** applySceneSwitch 家族同步回执已定（succeed/fail 在返回前完成）：取回是否成功。 */
+    private static boolean repliedOk(GmCommand command) {
+        try {
+            GmCommand.Reply reply = command.reply().getNow(null);
+            return reply != null && reply.ok();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 副本波次门控：仅在「打开中的副本且当前世界就是该副本场景」时按
+     * NpcProgress ≤ wave 累积过滤（无 NpcProgress 恒可见），其余场景恒真。
+     */
+    static java.util.function.Predicate<NpcSpawn> cloneWaveGate(LoginSession session) {
+        LoginSession.CloneRun run = session.cloneRun;
+        if (run == null || !inCloneScene(session)) {
+            return npc -> true;
+        }
+        return npc -> {
+            Integer progress = CloneScenes.waveOf(npc);
+            return progress == null || progress <= run.wave;
+        };
+    }
+
+    /**
+     * 副本目录击杀认领（killOverride 副本分支）：在副本场景且对象属目录小号段
+     * （对象号=下标+2）→ 死后不复活（副本怪一次性），随后尝试波次推进。尸体保留
+     * 在场（与常规死亡一致，只是无 15s 重生）。
+     */
+    boolean claimCloneKill(LoginSession session, int objectId) {
+        if (!inCloneScene(session)) {
+            return false;
+        }
+        int index = objectId - 2;
+        if (index < 0 || index >= session.sceneNpcs.size()) {
+            return false;
+        }
+        advanceCloneWave(session, session.cloneRun);
+        return true;
+    }
+
+    /**
+     * 波次推进：当前波（NpcProgress==wave）的战斗型目录 NPC（attacknpc/bossnpc）
+     * 全部死亡（未物化视为存活——玩家需找齐击杀）→ wave+1 并按玩家最新位置对账
+     * 视口（下一波 0x0D 上线）+ 面板回执；最终波全灭只标记通关一次。
+     */
+    void advanceCloneWave(LoginSession session, LoginSession.CloneRun run) {
+        if (run == null || run.cleared || !cloneWaveCleared(session, run)) {
+            return;
+        }
+        String message;
+        if (run.wave >= run.maxWave) {
+            run.cleared = true;
+            message = "副本「" + run.desc + "」最终波已全灭，可继续探索或销毁副本回原场景";
+        } else {
+            run.wave++;
+            message = cloneLabel(run) + "，新一波怪物现身";
+        }
+        Roles.Position position = session.pendingLocation != null
+                ? session.pendingLocation.position() : run.entryPosition;
+        try {
+            boolean changed = NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
+                    session.activeNpcs, position, NPC_RADIUS, cloneWaveGate(session));
+            if (changed) {
+                session.world.reconcileViewport();
+            }
+        } catch (RuntimeException e) {
+            log.warn("session={} materialize clone wave {}: {}", session.machine.id(),
+                    run.wave, e.getMessage());
+        }
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        log.info("session={} clone wave -> {}/{} ({})", session.machine.id(),
+                run.wave, run.maxWave, run.desc);
+    }
+
+    /** 当前波战斗 NPC 是否全部死亡：NpcCombat hp≤0；未物化（未交战）视为存活。 */
+    private boolean cloneWaveCleared(LoginSession session, LoginSession.CloneRun run) {
+        for (int i = 0; i < session.sceneNpcs.size(); i++) {
+            NpcSpawn spawn = session.sceneNpcs.get(i);
+            Integer progress = CloneScenes.waveOf(spawn);
+            if (progress == null || progress != run.wave
+                    || !SceneLifecycle.isCombatScriptClass(spawn.resolved.scriptClass)) {
+                continue;
+            }
+            FightState.NpcCombat combat = session.fight == null ? null : session.fight.npc(i + 2);
+            if (combat == null || combat.state().hp() > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Go sceneRuntime.SwitchScene 的在线切图链：0x0C 退场 → 世界世代重置 →（750ms，
      * 等旧场景 on_exit_scene 的 ClearAll 收尾）→ 0x0B 进场 + 0x0D 玩家归档；NPC
      * 目录/视口按目标场景重建（注册不上线）。0x1F 与 NPC 物化延迟到目标场景 0x09
@@ -992,7 +1226,7 @@ public final class LoginFlow {
         session.giftMerchantObjectId = null;
         try {
             NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
-                    session.activeNpcs, destination.position(), NPC_RADIUS);
+                    session.activeNpcs, destination.position(), NPC_RADIUS, cloneWaveGate(session));
         } catch (RuntimeException e) {
             log.warn("session={} register target-scene NPC viewport: {}",
                     session.machine.id(), e.getMessage());
@@ -1068,7 +1302,7 @@ public final class LoginFlow {
                 SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, position));
         try {
             boolean changed = NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
-                    session.activeNpcs, position, NPC_RADIUS);
+                    session.activeNpcs, position, NPC_RADIUS, cloneWaveGate(session));
             if (changed) {
                 session.world.reconcileViewport();
             }
@@ -1342,6 +1576,10 @@ public final class LoginFlow {
     /** 礼包测试商人模板（同表「难民-江湖郎中」，人形 CommonNpc → 可点击开 gm_giftbox 商店）。 */
     private static final String MERCHANT_TABLE = "worldnpc/monsternpc_commonnpc.txt";
     private static final String MERCHANT_TEMPLATE = "citywar03_npc_010";
+    /** 世界 BOSS 模板表（官方 BOSS 全集 ~2600 行；BossNpc scriptClass 天然进战斗反击链）。 */
+    private static final String WORLD_BOSS_TABLE = "worldnpc/bossnpc.txt";
+    /** 世界 BOSS 击杀摘除延迟（毫秒）：击杀结算帧先发，随后 0x0E 消失。 */
+    private static final long WORLD_BOSS_REMOVE_DELAY_MS = 300;
     /** GM 摆放对象号基（目录 NPC = 下标+2 的小号段；900000+ 永不冲突）。 */
     private static final int GM_OBJECT_ID_BASE = 900_000;
     /** 生成点距玩家距离（身前 2.5 米，朝向按 0x26 motion 的 orient）。 */
@@ -1489,6 +1727,176 @@ public final class LoginFlow {
                 session.machine.id(), dummyIds.size());
     }
 
+    /**
+     * 世界 BOSS（worldboss_spawn）：官方刷新表驱动——当前场景（scenes.ini 场景号）
+     * 的门派固定点每点 1 只（bosslist 逐点轮选）+ 场景池命中的江湖 BOSS 在该场景
+     * 随机点池取点；bossnpc 模板真实血量/名字，BossNpc scriptClass 命中即反击。
+     * 击杀后消失不重生（{@link #bossKillOverride}）；切图随 gmSpawns 清空同其他摆放。
+     */
+    private void applyWorldBossSpawn(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("生成世界 BOSS 失败：角色尚未进入场景");
+            return;
+        }
+        Roles.Location location = session.pendingLocation != null
+                ? session.pendingLocation : session.selected.location();
+        Integer sceneId = SceneNames.sceneId(location.scene().config(), location.scene().resource());
+        if (sceneId == null) {
+            command.fail("生成世界 BOSS 失败：无法识别当前场景号（scenes.ini 缺失或未收录）");
+            return;
+        }
+        WorldBossRefreshTable table = WorldBossRefreshTable.load();
+        if (!table.present()) {
+            command.fail("生成世界 BOSS 失败：刷新表缺失（share/npc/normalbossrefreshinfo.ini 等）");
+            return;
+        }
+        List<WorldBossRefreshTable.NormalPoint> points = table.normalPointsForScene(sceneId);
+        List<WorldBossRefreshTable.JhBoss> jhBosses = table.jhBossesForScene(sceneId);
+        if (points.isEmpty() && jhBosses.isEmpty()) {
+            command.fail("当前场景 " + SceneNames.sceneDisplayName(
+                            location.scene().config(), location.scene().resource())
+                    + "（场景号 " + sceneId + "）无世界 BOSS 刷新配置；"
+                    + "门派固定点见场景 5-12，江湖 BOSS 场景池见 jhscenebossrefreshinfo.ini");
+            return;
+        }
+        List<String> names = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        int pointIndex = 0;
+        for (WorldBossRefreshTable.NormalPoint point : points) {
+            String template = point.bossList().get(pointIndex % point.bossList().size());
+            pointIndex++;
+            spawnWorldBoss(session, template, point.x(), point.y(), point.z(), names, failures);
+        }
+        for (WorldBossRefreshTable.JhBoss boss : jhBosses) {
+            List<float[]> pool = table.jhPointsForScene(sceneId);
+            if (pool.isEmpty()) {
+                failures.add(boss.bossId() + "（场景 " + sceneId + " 无随机点池）");
+                continue;
+            }
+            float[] at = pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+            spawnWorldBoss(session, boss.bossId(), at[0], at[1], at[2], names, failures);
+        }
+        if (names.isEmpty()) {
+            command.fail("生成世界 BOSS 失败：" + String.join("；", failures));
+            return;
+        }
+        session.world.reconcileViewport();
+        String message = "已强制生成 " + names.size() + " 只世界 BOSS：" + String.join("、", names);
+        if (!failures.isEmpty()) {
+            message += "（另有 " + failures.size() + " 失败：" + String.join("；", failures) + "）";
+        }
+        final String summary = message;
+        gmHub.update(session.machine.id(), s -> s.lastAction = summary);
+        command.succeed(message);
+        log.info("session={} GM worldboss spawn scene={} spawned={} failed={}",
+                session.machine.id(), sceneId, names.size(), failures.size());
+    }
+
+    /** 清除世界 BOSS（worldboss_clear）：摘除本会话生成的全部 BOSS（击杀消失同口径）。 */
+    private void applyWorldBossClear(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("清除世界 BOSS 失败：角色尚未进入场景");
+            return;
+        }
+        List<Integer> bossIds = new ArrayList<>();
+        for (LoginSession.GmSpawn spawn : session.gmSpawns.values()) {
+            if (spawn.worldBoss) {
+                bossIds.add(spawn.objectId);
+            }
+        }
+        for (int objectId : bossIds) {
+            removeGmSpawn(session, objectId);
+        }
+        String message = "已清除 " + bossIds.size() + " 只世界 BOSS";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM worldboss clear: {} removed", session.machine.id(), bossIds.size());
+    }
+
+    /** 在场世界 BOSS（worldboss_list）：对象号/名字/血量（受击后实时，否则满血）/坐标。 */
+    private void applyWorldBossList(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("查看世界 BOSS 失败：角色尚未进入场景");
+            return;
+        }
+        List<LoginSession.GmSpawn> bosses = new ArrayList<>();
+        for (LoginSession.GmSpawn spawn : session.gmSpawns.values()) {
+            if (spawn.worldBoss) {
+                bosses.add(spawn);
+            }
+        }
+        String message;
+        if (bosses.isEmpty()) {
+            message = "在场世界 BOSS：0（worldboss_spawn 按当前场景强制生成）";
+        } else {
+            StringBuilder built = new StringBuilder("在场世界 BOSS ").append(bosses.size()).append(" 只：");
+            for (LoginSession.GmSpawn spawn : bosses) {
+                SceneLifecycle.CombatNpcInfo info = session.world.combatNpcInfo(spawn.objectId);
+                FightState.NpcCombat combat =
+                        session.fight != null ? session.fight.npc(spawn.objectId) : null;
+                int hp = combat != null ? combat.state().hp()
+                        : info != null ? info.maxHp() : 0;
+                int maxHp = info != null ? info.maxHp() : 0;
+                built.append(spawn.objectId).append(' ').append(gmSpawnName(spawn))
+                        .append("（血 ").append(hp).append('/').append(maxHp)
+                        .append("，位 ").append(String.format(java.util.Locale.ROOT, "%.1f", spawn.npc.x))
+                        .append(',').append(String.format(java.util.Locale.ROOT, "%.1f", spawn.npc.z))
+                        .append("） ");
+            }
+            message = built.toString().trim();
+        }
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM worldboss list: {} alive", session.machine.id(), bosses.size());
+    }
+
+    /** 克隆 bossnpc 模板并按世界 BOSS 口径注册（名字进名单，失败进 failures）。 */
+    private void spawnWorldBoss(LoginSession session, String template, float x, float y, float z,
+                                List<String> names, List<String> failures) {
+        try {
+            NpcSpawn boss = com.nineyin.server.world.npc.GmNpcFactory.spawnFromTemplate(
+                    WORLD_BOSS_TABLE, template, x, y, z, 0f, Map.of());
+            int objectId = registerGmSpawn(session, boss, false, false, false, true);
+            names.add(gmSpawnName(session.gmSpawns.get(objectId)) + "×" + objectId);
+        } catch (IOException | RuntimeException e) {
+            failures.add(template + "：" + e.getMessage());
+        }
+    }
+
+    /** GM 摆放显示名（模板 Name 属性，缺省回退 configId）。 */
+    private static String gmSpawnName(LoginSession.GmSpawn spawn) {
+        PropertyValues.Value name = spawn.npc.resolved.properties.get("Name");
+        return name != null && name.text() != null && !name.text().isEmpty()
+                ? name.text() : spawn.npc.resolved.configId;
+    }
+
+    /**
+     * 击杀接管（msg211 击杀分支钩子）：世界 BOSS 认领 worldBoss 摆放 → 跳过 15s
+     * 重生，延迟 {@link #WORLD_BOSS_REMOVE_DELAY_MS} 摘除（击杀帧先发）+ 面板回执；
+     * 副本目录 NPC 由 {@link #claimCloneKill} 认领 → 死后不复活并尝试波次推进。
+     */
+    private IntPredicate killOverride(LoginSession session) {
+        return objectId -> {
+            LoginSession.GmSpawn spawn = session.gmSpawns.get(objectId);
+            if (spawn != null && spawn.worldBoss) {
+                String name = gmSpawnName(spawn);
+                scheduler.schedule(() -> {
+                    LoginSession.GmSpawn current = session.gmSpawns.get(objectId);
+                    if (current == null || !current.worldBoss) {
+                        return; // 已被 worldboss_clear 摘除
+                    }
+                    removeGmSpawn(session, objectId);
+                    String message = "已击杀世界 BOSS " + name + "（对象 " + objectId + "，消失不重生）";
+                    gmHub.update(session.machine.id(), s -> s.lastAction = message);
+                    log.info("session={} world boss {} ({}) killed and removed",
+                            session.machine.id(), objectId, name);
+                }, WORLD_BOSS_REMOVE_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                return true;
+            }
+            return claimCloneKill(session, objectId);
+        };
+    }
+
     /** 注册 GM 摆放并返回对象号（0x0D+0x1F 由随后的 reconcileViewport 物化）。 */
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest) {
         return registerGmSpawn(session, npc, chest, false);
@@ -1500,10 +1908,15 @@ public final class LoginFlow {
 
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest,
                                 boolean merchant, boolean combatDummy) {
+        return registerGmSpawn(session, npc, chest, merchant, combatDummy, false);
+    }
+
+    private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest,
+                                boolean merchant, boolean combatDummy, boolean worldBoss) {
         int objectId = session.nextGmObjectId++;
         session.world.registerNpc(objectId, npc);
         session.gmSpawns.put(objectId,
-                new LoginSession.GmSpawn(objectId, npc, chest, merchant, combatDummy));
+                new LoginSession.GmSpawn(objectId, npc, chest, merchant, combatDummy, worldBoss));
         return objectId;
     }
 
@@ -4050,6 +4463,39 @@ public final class LoginFlow {
                 session.machine.id(), session.player.faction(), suits.size(), missing.size());
     }
 
+    /**
+     * GM set_faction（Go main.go 同序）：闭名单预设 → saveFaction CAS 落库
+     * （appearance[8]，失败即回滚不动作内存）→ 内存 faction + 专用单帧
+     * （School/Force/NewSchool 三属性）→ 面板快照。身份装/套路/任务线不自动赠送
+     * （grant_identity_suits 与登录期自动激活另行覆盖）。
+     */
+    private void applyFaction(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null) {
+            command.fail("角色尚未选定");
+            return;
+        }
+        GmFactionPresets.Faction preset = GmFactionPresets.preset(command.strParam("faction"));
+        if (preset == null) {
+            command.fail("未知门派预设: " + command.strParam("faction"));
+            return;
+        }
+        try {
+            session.selected = roleStore.saveFaction(session.selected, preset.faction());
+        } catch (RuntimeException e) {
+            command.fail("门派保存失败: " + e.getMessage());
+            return;
+        }
+        session.player.setFaction(preset.faction());
+        connection.writeFrame(session.player.factionUpdate());
+        String action = "门派设为 " + preset.label() + "（" + preset.faction() + "）";
+        gmHub.update(session.machine.id(), s -> {
+            s.faction = preset.faction();
+            s.lastAction = action;
+        });
+        command.succeed(action);
+        log.info("session={} GM set_faction={} ({})", session.machine.id(), preset.faction(), preset.label());
+    }
+
     private static String showEquipTypeLabel(int type) {
         return switch (type) {
             case 1 -> "身份装";
@@ -4333,7 +4779,7 @@ public final class LoginFlow {
             }
         }
         if (session.player != null && !session.neigongGranted) {
-            // 全量下发补集：基础武学→三脚猫招式三件套缺则补齐（View40/211 已学表/CanUse 行同源）。
+            // 全量下发补集：基础武学→三脚猫招式五件套缺则补齐（View40/211 已学表/CanUse 行同源）。
             java.util.List<RoleInventoryStore.Skill> dbSkills =
                     StarterSkills.withDefaultBasics(loadDbSkills(session));
             StarterGrants.grantStarterProgress(connection, session.player,
@@ -4588,7 +5034,7 @@ public final class LoginFlow {
                     SkillCastHandler.handleDashLanding(new SkillCastHandler.CastContext(
                             connection, session.player, session.world, session.fight,
                             session.learnedSkills, session.skillRows, scheduler, clock,
-                            session.combatRandom), custom);
+                            session.combatRandom, killOverride(session)), custom);
                 }
             }
             // msg15 移动上报（9 值：[15, state, moveType, f32 x/y/z, f32 orient, (会话哈希),
@@ -4844,7 +5290,7 @@ public final class LoginFlow {
         SkillCastHandler.handle(new SkillCastHandler.CastContext(
                 connection, session.player, session.world, session.fight,
                 session.learnedSkills, session.skillRows, scheduler, clock,
-                session.combatRandom), custom);
+                session.combatRandom, killOverride(session)), custom);
     }
 
     /**
@@ -4866,7 +5312,7 @@ public final class LoginFlow {
         SkillCastHandler.tryRushArrival(new SkillCastHandler.CastContext(
                 connection, session.player, session.world, session.fight,
                 session.learnedSkills, session.skillRows, scheduler, clock,
-                session.combatRandom), values.get(3).float32, values.get(4).float32,
+                session.combatRandom, killOverride(session)), values.get(3).float32, values.get(4).float32,
                 values.get(5).float32, orient);
     }
 
@@ -6323,7 +6769,7 @@ public final class LoginFlow {
         boolean changed = false;
         try {
             changed = NpcViewport.synchronizeNpcViewport(session.world, session.sceneNpcs,
-                    session.activeNpcs, location.position(), NPC_RADIUS);
+                    session.activeNpcs, location.position(), NPC_RADIUS, cloneWaveGate(session));
             if (changed) {
                 session.world.reconcileViewport();
             }

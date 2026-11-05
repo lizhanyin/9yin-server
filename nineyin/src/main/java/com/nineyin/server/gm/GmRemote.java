@@ -160,6 +160,16 @@ public class GmRemote {
                 yield bad;
             }
             case "set_alignment", "set_vitals", "cancel_title" -> null;
+            // 门派切换：闭名单（GmFactionPresets 面板键 → school_/force_/newschool_ 规范编码），
+            // 不接受任意字符串；落库与帧下发在游戏侧 applyFaction。
+            case "set_faction" -> {
+                String keyBad = nonEmpty(params, "faction");
+                if (keyBad != null) {
+                    yield keyBad;
+                }
+                String key = params.getString("faction");
+                yield GmFactionPresets.preset(key) != null ? null : "unknown faction preset: " + key;
+            }
             case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
             // V2 装备外观挂载：物品发放（wearNow 可选 0/1；不可穿戴由游戏侧降级入背包）。
             case "grant_item", "add_item" -> {
@@ -206,7 +216,8 @@ public class GmRemote {
             // 配套：模板生成护腕（无参——模板挑选与词条构造全部在游戏侧）。
             case "gm_generate_bracer" -> null;
             // 传送三动作（Go gm_panel.go switch_scene/switch_scene_preset/teleport）：
-            // 预设键入口即校验（表=GmScenePresets 107 键）；免费格式由游戏侧解析。
+            // 预设键入口即校验（表=GmScenePresets 142 键，含踢馆 tiguan_1..35）；
+            // 免费格式由游戏侧解析。
             case "switch_scene_preset" -> {
                 String presetBad = nonEmpty(params, "preset");
                 if (presetBad != null) {
@@ -218,6 +229,17 @@ public class GmRemote {
             }
             case "switch_scene" -> nonEmpty(params, "destination");
             case "teleport" -> nonEmpty(params, "position");
+            // 副本三动作（面板「副本」区块）：enter 带 cloneConfig（cloneinfo.ini 节名，
+            // 形如 ini\scene\clone003）+ value 难度档 1普通/2困难/3地狱/4炼狱；
+            // 存在性校验与波次链在游戏侧（LoginFlow，需资源根）。
+            case "enter_clone" -> {
+                String configBad = nonEmpty(params, "cloneConfig");
+                if (configBad != null) {
+                    yield configBad;
+                }
+                yield intRange(params, "value", 1, 4);
+            }
+            case "reenter_clone", "destroy_clone" -> null;
             // 弹出游戏 GM 面板（GMCC）：无参，帧由 LoginFlow.applyPopupGmPanel 组。
             case "popup_gm_panel" -> null;
             // 洗练六动作：随机/定向/抛光/招式开光（slot）；加词条（slot+packIDs+affixKind）；清空（slot）。
@@ -277,6 +299,9 @@ public class GmRemote {
                 yield lengthLimit(params, "dummySkills", 512);
             }
             case "clear_combat_dummies" -> null;
+            // 世界 BOSS（worldboss_*）：官方刷新表驱动，无参——当前场景门派固定点每点
+            // 1 只 + 场景池命中的江湖 BOSS 随机点；击杀后消失不重生；clear/list 按会话记账。
+            case "worldboss_spawn", "worldboss_clear", "worldboss_list" -> null;
             // 坐骑管理：按道具 config 骑乘/再点同骑下马（pack 解析与记录帧由游戏侧）。
             case "mount_ride" -> nonEmpty(params, "mountConfig");
             // 待机站姿（持久化）：b_action_index.ini 节名；空串 = 恢复默认站姿。

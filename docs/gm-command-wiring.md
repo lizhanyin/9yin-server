@@ -99,14 +99,16 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 
 ## 5. 动作清单（2026-11-04）
 
-已实现（白名单+case 双接线，33 个）：
+已实现（白名单+case 双接线，34 个）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
 reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, set_five_attributes,
 wear_title, cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
 add_livepoint, set_hold_faculty, set_live_speed_power,
 set_act_day_limit, clear_team_fatigue, set_team_faculty_last,
 switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here,
-spawn_combat_dummy, clear_combat_dummies`
+spawn_combat_dummy, clear_combat_dummies, worldboss_spawn, worldboss_clear, worldboss_list,
+set_faction`
+（2026-11-05 追加 worldboss 三动作与 set_faction；其余批次——洗练/外观坐骑/生成族等见各节）
 
 修为三动作参数：
 
@@ -130,9 +132,15 @@ spawn_combat_dummy, clear_combat_dummies`
 
 | action | 参数 | 落库 |
 | --- | --- | --- |
-| `switch_scene_preset` | `preset` 键 ∈ GmScenePresets 107 键（Go 表 38 + menu2 exe 提取 105 的并集，覆盖 console.html 全部按钮） | roles 位置（版本沿用当前值） |
+| `switch_scene_preset` | `preset` 键 ∈ GmScenePresets 142 键（Go 表 38 + menu2 exe 提取 105 的并集 107 键，加踢馆 `tiguan_1..35`：27 项 exe 表原值、8 项参考服 creator 入口 NPC 推导；覆盖 console.html 全部按钮） | roles 位置（版本沿用当前值） |
 | `switch_scene` | `destination` = `config,resource,x,y,z,orient` 免费格式 | 同上 |
 | `teleport` | `position` = `x,y,z,orient`（同场景，仅 0x1F 不读图） | 同上 |
+
+- 面板「自定义切图与场景内瞬移」区块 2026-11-05 加**场景下拉**：gm-web `/api/scenes`
+  目录接口（本地 GmCatalog 读 `share/rule/scenes.ini` GBK 全表 + `stringname.idres`
+  中文名，语义镜像 nineyin `SceneNames`——纯数字节 + config 键、同 config 去重），
+  可按中文名/资源名过滤，选中自动回填 destination 的 `config,resource` 段（坐标尾段
+  保留可改，无逐场景出生点数据默认 `0,0,0,0`；精确坐标仍走 142 预设按钮）。
 
 弹出游戏 GM 面板（2026-11-04）：
 
@@ -190,6 +198,24 @@ spawn_combat_dummy, clear_combat_dummies`
   AttackNpc → combat 链自动接通——玩家命中后 NpcCombatAi 周期还手（2.2s、恒 1 伤、
   6m；removeGmSpawn 后下一拍自停），死亡不删对象 15s 回满。
 - 全链深挖（模板克隆/注册物化/战斗接入/测试模式）见 `gm-command-chain.md`（2026-11-05）。
+
+世界 BOSS 三动作（2026-11-05，官方刷新表驱动 + bossnpc 模板）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `worldboss_spawn` | 无参（当前场景强制生成：门派固定点每点 1 只 bosslist 轮选 + 场景池命中的江湖 BOSS 随机点） | 无（会话内实体） |
+| `worldboss_clear` | 无参（按 worldBoss 标志摘除本会话全部 BOSS） | 无 |
+| `worldboss_list` | 无参（对象号/名字/血量/坐标回执文案） | 无 |
+
+- **数据源** = `share/npc/` 三张 GBK INI（`WorldBossRefreshTable`，ResourceCache 缓存）：
+  normalbossrefreshinfo（门派固定点 scene+position+bosslist）、jhscenebossrefreshinfo
+  （江湖 BOSS Scene 随机场景池）、jhscenebossrefreshpoint（Point= 重复键点池）；
+  场景号匹配经 `SceneNames.sceneId`（rule/scenes.ini config/resource → id）。
+- **模板** = worldnpc/bossnpc.txt（BossNpc scriptClass → 战斗快照 + NpcCombatAi 反击），
+  真实血量/名字（GBK）；**击杀不重生**：CastContext.npcKillOverride（bossKillOverride）
+  认领 worldBoss 摆放 → 跳过 15s 重生、延迟 300ms removeGmSpawn（0x0E 消失）+ 面板回执。
+- 会话级摆放（同木桩/假人口径），切图随 world.begin 清空；定时刷新
+  （normalbossrefreshtime 时间窗）、掉落/伤害排行、全服公告与跨会话共享留待后续。
 
 模板生成三动作（2026-11-04，60501 家族基座 + 官方洗练池词条）：
 
@@ -263,12 +289,37 @@ faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100
 
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
 `learn_all_neigong, learn_all_taolu, forget_all_taolu,
-set_faction, set_jingmai_tier,
-worldboss_*, bot_*, ninjiuzhi_*, set_pk_mode,
+set_jingmai_tier,
+bot_*, ninjiuzhi_*, set_pk_mode,
 set_weather, story(剧情族剩余), custom_probe, keybind` 等。
 （add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线；
 equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_set
-已于 2026-11-05 随「外观与坐骑」六区块补全接线，详见 docs/坐骑与待机站姿.md。）
+已于 2026-11-05 随「外观与坐骑」六区块补全接线，详见 docs/坐骑与待机站姿.md；
+worldboss_spawn/clear/list 已于 2026-11-05 接线，见上文世界 BOSS 三动作节；
+set_faction 已于 2026-11-05 接线，见下文门派一动作节。）
+
+门派一动作（2026-11-05，Go gm_factions.go 闭名单移植）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_faction` | `faction` 面板键 ∈ GmFactionPresets 34 键（八大门派 8 + 后续门派 5 + 江湖势力 8 + 宗门 13） | roles appearance[8]（CAS） |
+
+- **闭名单**（`GmFactionPresets`，镜像 Go gm_factions.go 同表）：面板裸键
+  （shaolin/yihuagong/huashan…）→ 规范编码（school_/force_/newschool_ 前缀，即
+  appearance[8] 与 0x10 School/Force/NewSchool 属性的存储形式），与 modern 客户端
+  form_main_player.ini [school_name] 段一致（`FactionNames` 显示名同源）。
+  **绝不接受任意字符串**（入口与游戏侧双重校验；原始编码 school_wudang 也不收，只收面板键）。
+- **落序**（Go main.go 同序）：saveFaction CAS 落库（失败即回执不动作内存）→
+  内存 `player.faction` + 专用单帧 0x10（`PlayerActor.factionUpdate`，仅
+  School/Force/NewSchool 三属性，镜像 form_main_player.refresh_role_changed 消费口径）
+  → 面板快照 faction + lastAction。
+- 不自动赠送套路/身份装/任务线（身份装走 grant_identity_suits 或登录期自动激活；
+  重登后 `activateIdentitySuits` 按新 faction 幂等激活）。
+- 面板下拉同步补 5 个后续门派（明教/天山/昆仑/刑天城/无虚门）并修正宗门标签
+  （神机汇/王回洲/达摩派/念萝坝/青衣阁，与预设表一致）。
+- 测试：`GmFactionPresetsTest`（34 键/三段前缀分布/面板选项全覆盖/未知键拒绝）+
+  `LoginFlowGmCommandTest.factionSetPersistsSnapshotAndPushesFrame`
+  （JsonRoleRepository 真实落库回读/单帧 0x10/快照同步/未知预设零帧）。
 
 五维属性一动作（2026-11-04，面板「五维属性」区块）：
 
@@ -309,7 +360,7 @@ equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_
   （@TempDir 复制表 + overrideServerRoot 全链生成/缺省/清除隔离）；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分/生存属性 vitals 回环+JSON 落盘回读）；
   演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）；
   传送域：`LoginFlowSceneSwitchTest`（0x0C 重入帧序/残余包忽略/0x09 收尾/瞬移单帧/加载中拒绝，
-  ManualScheduler 驱动 750ms 延迟任务）+ `GmScenePresetsTest`（107 键/抽样值/免费格式解析）。
+  ManualScheduler 驱动 750ms 延迟任务）+ `GmScenePresetsTest`（142 键/抽样值/踢馆 35 键专项/免费格式解析）。
   模板生成域：`GenerateEquipFlowTest`（真实 MySQL+参考服 share：60501 家族/官方池词条/
   固定红词条/护腕臂力+招式/饰品穿戴帧序；临时角色 990033 测后清理）。
   邮件域：`MailFlowTest`（真实 MySQL+go-server1 share：发信帧字节/353 已读/359 领附件

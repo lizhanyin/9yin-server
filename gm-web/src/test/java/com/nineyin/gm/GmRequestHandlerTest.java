@@ -77,6 +77,12 @@ class GmRequestHandlerTest {
                         + "[ini\\scene\\clone002]\nDesc=龙门客栈\n").getBytes(GBK));
         Files.write(Files.createDirectories(share.resolve("rule").resolve("weather"))
                 .resolve("weathereffect.ini"), "[light_rain]\nConfigID=rain01\n".getBytes(GBK));
+        // GBK INI：场景目录（切图下拉）+ 中文名 idres
+        Files.write(share.resolve("rule").resolve("scenes.ini"),
+                "[11]\nConfig=ini\\scene\\city04_LuoYang\n".getBytes(GBK));
+        Files.write(Files.createDirectories(share.getParent().resolve("text").resolve("chineses"))
+                .resolve("stringname.idres"),
+                "ini\\scene\\city04_luoyang=洛阳\n".getBytes(StandardCharsets.UTF_8));
         // data JSON：称号 + 经脉
         Files.write(data.resolve("称号数据.json"),
                 "{\"catalog\":{\"titles\":[{\"id\":1,\"name\":\"小沙弥\",\"type\":1}]}}".getBytes(StandardCharsets.UTF_8));
@@ -229,6 +235,14 @@ class GmRequestHandlerTest {
 
         JSONArray weather = JSON.parseArray(content(request("GET", "/api/weather", null)));
         assertEquals("rain01", weather.getJSONObject(0).getString("TXID"));
+
+        JSONArray scenes = JSON.parseArray(content(request("GET", "/api/scenes", null)));
+        assertEquals(1, scenes.size());
+        JSONObject luoyang = scenes.getJSONObject(0);
+        assertEquals(11, luoyang.getIntValue("id"));
+        assertEquals("ini\\scene\\city04_LuoYang", luoyang.getString("config"));
+        assertEquals("city04_LuoYang", luoyang.getString("resource"));
+        assertEquals("洛阳", luoyang.getString("name"));
 
         JSONArray titles = JSON.parseArray(content(request("GET", "/api/titles", null)));
         assertEquals("小沙弥", titles.getJSONObject(0).getString("name"));

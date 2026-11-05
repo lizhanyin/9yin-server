@@ -119,6 +119,8 @@ public final class LoginSession {
         final boolean merchant;
         /** true=战斗假人（AttackNpc 人形模板，clear_combat_dummies 按此口径清除）。 */
         final boolean combatDummy;
+        /** true=世界 BOSS（bossnpc 模板，击杀后消失不重生，worldboss_clear/list 按此口径）。 */
+        final boolean worldBoss;
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest) {
             this(objectId, npc, chest, false);
@@ -129,11 +131,17 @@ public final class LoginSession {
         }
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant, boolean combatDummy) {
+            this(objectId, npc, chest, merchant, combatDummy, false);
+        }
+
+        GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant,
+                boolean combatDummy, boolean worldBoss) {
             this.objectId = objectId;
             this.npc = npc;
             this.chest = chest;
             this.merchant = merchant;
             this.combatDummy = combatDummy;
+            this.worldBoss = worldBoss;
         }
     }
 
@@ -141,6 +149,42 @@ public final class LoginSession {
     int nextGmObjectId = 900_000;
     /** 礼包商人对象号（重复拉人时先摘旧再放新，身边至多一名）。 */
     Integer giftMerchantObjectId;
+
+    /**
+     * GM 副本运行态（enter_clone 建、destroy_clone 清）：会话即实例——每连接
+     * 独立 world/sceneNpcs，副本实例就是 CloneRun 标记下的一次切图。wave 是
+     * 当前首领波次（NpcProgress 累积揭示：progress ≤ wave 可见），当前波战斗
+     * NPC 全灭自动 +1；reenter_clone 用 entryPosition 回到本进度。普通切图离开
+     * 副本不销毁实例（保留进度供重进），销毁才回 returnLocation。
+     */
+    static final class CloneRun {
+        final Roles.Scene scene;
+        final String desc;
+        /** 难度档 1普通/2困难/3地狱/4炼狱：本期仅记录展示，不改 NPC 数值。 */
+        final int difficulty;
+        final int maxWave;
+        /** 进本前位置快照（destroy_clone 回城点）。 */
+        final Roles.Location returnLocation;
+        final Roles.Position entryPosition;
+        /** 会话内进入计数（GM 不限次，仅回执提示"今日第 N 次"）。 */
+        int enterCount = 1;
+        int wave = 1;
+        /** 最终波全灭标记（提示通关，不再推进）。 */
+        boolean cleared;
+
+        CloneRun(Roles.Scene scene, String desc, int difficulty, int maxWave,
+                 Roles.Location returnLocation, Roles.Position entryPosition) {
+            this.scene = scene;
+            this.desc = desc;
+            this.difficulty = difficulty;
+            this.maxWave = maxWave;
+            this.returnLocation = returnLocation;
+            this.entryPosition = entryPosition;
+        }
+    }
+
+    /** 当前打开的副本实例；null=无（enter 前置校验/reenter/destroy 均按此判空）。 */
+    CloneRun cloneRun;
 
     public LoginSession() {
     }

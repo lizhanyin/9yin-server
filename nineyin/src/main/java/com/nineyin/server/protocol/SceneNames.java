@@ -85,6 +85,17 @@ public final class SceneNames {
         return id != null ? String.format("scene_name_%03d", id) : FALLBACK_KEY;
     }
 
+    /**
+     * 场景号（scenes.ini 的 config/resource → id）：GM 世界 BOSS 等按官方
+     * 刷新表场景号（scene=11）匹配当前场景用；表缺失/未知场景返回 null。
+     */
+    public static Integer sceneId(String config, String resource) {
+        Tables tables = tables();
+        return sceneId(tables,
+                config == null ? "" : config.toLowerCase(Locale.ROOT),
+                resource == null ? "" : resource.toLowerCase(Locale.ROOT));
+    }
+
     /** 剧本标题本地化键；未知剧本回退 book 原值。 */
     public static String bookIntroKey(String book) {
         String code = BOOK_INTRO_CODE.get(book);

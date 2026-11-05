@@ -323,6 +323,105 @@ class GmRemoteRoundTripTest {
         assertTrue(JSON.parseObject(clearDummiesQueued).getBooleanValue("ok"),
                 "clear_combat_dummies 应白名单透传: " + clearDummiesQueued);
 
+        // command：世界 BOSS 三动作（无参）白名单透传 + 游戏侧回执回环。
+        Thread worldBossConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 3; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "worldboss_spawn" -> command.succeed("已强制生成 5 只世界 BOSS：…");
+                    case "worldboss_clear" -> command.succeed("已清除 5 只世界 BOSS");
+                    case "worldboss_list" -> command.succeed("在场世界 BOSS 5 只：…");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-worldboss-consumer");
+        worldBossConsumer.start();
+        Map<String, Object> bossSpawnData = Map.of(
+                "sessionId", 7, "action", "worldboss_spawn", "params", Map.of());
+        Map<String, Object> bossClearData = Map.of(
+                "sessionId", 7, "action", "worldboss_clear", "params", Map.of());
+        Map<String, Object> bossListData = Map.of(
+                "sessionId", 7, "action", "worldboss_list", "params", Map.of());
+        String bossSpawnQueued = remote.syncRemote("GmRemote", "command", bossSpawnData, String.class);
+        String bossClearQueued = remote.syncRemote("GmRemote", "command", bossClearData, String.class);
+        String bossListQueued = remote.syncRemote("GmRemote", "command", bossListData, String.class);
+        worldBossConsumer.join(5000);
+        assertTrue(JSON.parseObject(bossSpawnQueued).getBooleanValue("ok"),
+                "worldboss_spawn 应白名单透传: " + bossSpawnQueued);
+        assertTrue(JSON.parseObject(bossClearQueued).getBooleanValue("ok"),
+                "worldboss_clear 应白名单透传: " + bossClearQueued);
+        assertTrue(JSON.parseObject(bossListQueued).getBooleanValue("ok"),
+                "worldboss_list 应白名单透传: " + bossListQueued);
+
+        // command：副本三动作——enter_clone 参数域（空 config / 难度越界入口即拒，不入队）。
+        Map<String, Object> noConfig = Map.of(
+                "sessionId", 7, "action", "enter_clone", "params", Map.of("value", 1));
+        String noConfigRejected = remote.syncRemote("GmRemote", "command", noConfig, String.class);
+        assertFalse(JSON.parseObject(noConfigRejected).getBooleanValue("ok"),
+                "空 cloneConfig 应被拒: " + noConfigRejected);
+        assertNull(HUB.tryPop(7), "被拒副本命令不应入队");
+        Map<String, Object> badFun = Map.of(
+                "sessionId", 7, "action", "enter_clone",
+                "params", Map.of("cloneConfig", "ini\\scene\\clone003", "value", 5));
+        String badFunRejected = remote.syncRemote("GmRemote", "command", badFun, String.class);
+        assertFalse(JSON.parseObject(badFunRejected).getBooleanValue("ok"),
+                "难度档越界（5）应被拒: " + badFunRejected);
+
+        // command：副本三动作白名单透传 + 游戏侧回执回环（cloneConfig/value 原样到达）。
+        Thread cloneConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 3; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "enter_clone" -> {
+                        assertEquals("ini\\scene\\clone003", command.params().getString("cloneConfig"));
+                        assertEquals(2, command.params().getIntValue("value"));
+                        command.succeed("已发送切图到 副本「暮色之村」第 1/5 波(难度2)…");
+                    }
+                    case "reenter_clone" -> command.succeed("已在副本「暮色之村」第 1/5 波(难度2)");
+                    case "destroy_clone" -> command.succeed("已发送切图到 原场景 city02…");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-clone-consumer");
+        cloneConsumer.start();
+        Map<String, Object> enterCloneData = Map.of(
+                "sessionId", 7, "action", "enter_clone",
+                "params", Map.of("cloneConfig", "ini\\scene\\clone003", "value", 2));
+        Map<String, Object> reenterCloneData = Map.of(
+                "sessionId", 7, "action", "reenter_clone", "params", Map.of());
+        Map<String, Object> destroyCloneData = Map.of(
+                "sessionId", 7, "action", "destroy_clone", "params", Map.of());
+        String enterCloneQueued = remote.syncRemote("GmRemote", "command", enterCloneData, String.class);
+        String reenterCloneQueued = remote.syncRemote("GmRemote", "command", reenterCloneData, String.class);
+        String destroyCloneQueued = remote.syncRemote("GmRemote", "command", destroyCloneData, String.class);
+        cloneConsumer.join(5000);
+        assertTrue(JSON.parseObject(enterCloneQueued).getBooleanValue("ok"),
+                "enter_clone 应白名单透传: " + enterCloneQueued);
+        assertTrue(JSON.parseObject(reenterCloneQueued).getBooleanValue("ok"),
+                "reenter_clone 应白名单透传: " + reenterCloneQueued);
+        assertTrue(JSON.parseObject(destroyCloneQueued).getBooleanValue("ok"),
+                "destroy_clone 应白名单透传: " + destroyCloneQueued);
+
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);
         assertFalse(JSON.parseObject(before).getBooleanValue("enabled"));

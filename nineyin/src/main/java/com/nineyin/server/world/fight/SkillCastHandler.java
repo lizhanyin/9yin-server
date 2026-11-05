@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntPredicate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +30,8 @@ import com.nineyin.server.world.scene.SceneLifecycle;
  * 动作总时长后 0x12 + State="stand"。
  *
  * <p>被拒（未学/未编译/无目标/门控失败/消息畸形）：静默吞掉只记日志（抓包 35 发 12 中实证）。
- * 伤害经 formula.lua（Lua 权威，Java 兜底）；击杀不删对象，15s 后满血重生。
+ * 伤害经 formula.lua（Lua 权威，Java 兜底）；击杀默认不删对象 15s 后满血重生，
+ * 会话层击杀接管钩子（世界 BOSS）认领的目标改为消失不重生。
  */
 public final class SkillCastHandler {
 
@@ -86,11 +88,23 @@ public final class SkillCastHandler {
         return (double) value * value;
     }
 
-    /** 出招上下文（LoginFlow 装配；learnedSkills 为 View40 已学集 id→level，skillRows 为 id→View40 行号）。 */
+    /**
+     * 出招上下文（LoginFlow 装配；learnedSkills 为 View40 已学集 id→level，skillRows 为 id→View40 行号）。
+     * npcKillOverride：击杀接管钩子（世界 BOSS 消失不重生）——认领目标对象号并返回
+     * true 时跳过 15s 重生，由会话层善后；null = 全部走默认重生。
+     */
     public record CastContext(
             Connection connection, PlayerActor player, SceneLifecycle world, FightState fight,
             Map<String, Integer> learnedSkills, Map<String, Integer> skillRows,
-            ScheduledExecutorService scheduler, Clock clock, Random random) {
+            ScheduledExecutorService scheduler, Clock clock, Random random,
+            IntPredicate npcKillOverride) {
+
+        /** 兼容构造（无击杀接管）：既有装配点与测试沿用 9 参签名。 */
+        public CastContext(Connection connection, PlayerActor player, SceneLifecycle world, FightState fight,
+                           Map<String, Integer> learnedSkills, Map<String, Integer> skillRows,
+                           ScheduledExecutorService scheduler, Clock clock, Random random) {
+            this(connection, player, world, fight, learnedSkills, skillRows, scheduler, clock, random, null);
+        }
     }
 
     /** 暂存的已生效 buff（帧与到期清理用）。 */
@@ -728,7 +742,7 @@ public final class SkillCastHandler {
                         context.fight().applyDamage(target.combat(), damage, now);
                 if (outcome.applied()) {
                     if (outcome.killed()) {
-                        scheduleRespawn(context, target);
+                        onNpcKilled(context, target);
                     }
                     hits.add(new Hit(target, damage));
                     continue;
@@ -809,7 +823,7 @@ public final class SkillCastHandler {
                     }
                     if (outcome.killed()) {
                         killed = true;
-                        scheduleRespawn(context, target);
+                        onNpcKilled(context, target);
                     }
                     hits.add(new Hit(target, damage));
                 }
@@ -1054,6 +1068,18 @@ public final class SkillCastHandler {
                 }
             }, Math.max(until, 1), TimeUnit.MILLISECONDS);
         }
+    }
+
+    /**
+     * 击杀分发：会话层击杀接管钩子（世界 BOSS）认领目标 → 跳过重生由其善后
+     * （摘对象 + 面板回执）；未认领走默认 15s 满血重生。
+     */
+    private static void onNpcKilled(CastContext context, FightState.HitTarget hit) {
+        IntPredicate override = context.npcKillOverride();
+        if (override != null && override.test(hit.info().id())) {
+            return;
+        }
+        scheduleRespawn(context, hit);
     }
 
     private static void scheduleRespawn(CastContext context, FightState.HitTarget hit) {

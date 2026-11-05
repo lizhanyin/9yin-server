@@ -84,6 +84,26 @@ class GmNpcFactoryTest {
                 "与 bak monm080701 同模型（机关木人 npc\\monster026）");
     }
 
+    /**
+     * 世界 BOSS 模板（worldboss_spawn 数据面）：bossnewworld001 在 bossnpc 表——
+     * scriptClass=BossNpc（小写归一后即 bossnpc combat 判定）自带真实血量/名字，
+     * worldboss_spawn 不覆盖属性（区别于木桩/假人）。
+     */
+    @Test
+    void bossTemplateClonesWithRealHpAndName() throws Exception {
+        Path root = configRoot();
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null,
+                "参考服 npcconfig 不可用，跳过 GM 摆放工厂断言");
+        NpcSpawn boss = GmNpcFactory.spawnFromTemplate(root, "worldnpc/bossnpc.txt",
+                "bossnewworld001", 100f, 5f, 200f, 0f, Map.of());
+        assertEquals("bossnewworld001", boss.resolved.configId);
+        assertEquals("BossNpc", boss.resolved.scriptClass,
+                "世界 BOSS 须为 BossNpc（combat 快照 + 反击链入口）");
+        assertTrue(boss.resolved.properties.get("MaxHP").i32() > 0, "模板自带真实血量");
+        assertNotNull(boss.resolved.properties.get("Name"), "模板自带名字（GBK 解码）");
+        assertNotNull(boss.resolved.properties.get("Resource"), "BOSS 模型存在");
+    }
+
     @Test
     void unknownTemplateFailsWithClearMessage() {
         Path root = configRoot();

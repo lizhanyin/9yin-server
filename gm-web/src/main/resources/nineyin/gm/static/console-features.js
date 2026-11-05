@@ -408,6 +408,42 @@
         position: document.querySelector("#teleport").value,
       });
     }
+    let SCENES = [];
+    async function loadScenes() {
+      SCENES = await (await fetch("/api/scenes")).json();
+      let s = document.querySelector("#scene-select");
+      s.innerHTML = "";
+      for (let sc of SCENES) {
+        let o = document.createElement("option");
+        o.value = sc.config;
+        o.dataset.resource = sc.resource;
+        o.textContent = sc.name + " — " + sc.resource + " (" + sc.id + ")";
+        s.appendChild(o);
+      }
+    }
+    function filterScenes() {
+      let kw = document.querySelector("#scene-filter").value.trim().toLowerCase();
+      let s = document.querySelector("#scene-select");
+      let i = 0;
+      for (let sc of SCENES) {
+        let text = (sc.name + " " + sc.resource + " " + sc.config).toLowerCase();
+        s.options[i++].hidden = kw && !text.includes(kw);
+      }
+    }
+    function fillSceneDestination() {
+      let o = document.querySelector("#scene-select");
+      if (!o.value) return;
+      let tail = document.querySelector("#destination").value.split(",").slice(-4);
+      if (tail.length !== 4 || tail.some((v) => isNaN(parseFloat(v)))) {
+        tail = ["0", "0", "0", "0"];
+      }
+      document.querySelector("#destination").value = [
+        o.value,
+        o.selectedOptions[0].dataset.resource,
+      ]
+        .concat(tail)
+        .join(",");
+    }
     function enterClone() {
       command({
         action: "enter_clone",
@@ -1013,6 +1049,7 @@
     loadClones();
     loadGiftBoxes();
     loadWeather();
+    loadScenes();
     loadCardCategories();
     loadAllCards();
     loadAllTitles();

@@ -315,13 +315,17 @@ class RushStageFlowTest {
         assertTrue(describe(staged).contains("m25"), "暂存必发 skill_pause: " + describe(staged));
         assertTrue(harness.player.rushInFlight(), "rush in flight");
 
-        // 疾跑过程 msg15 逐帧上报：仍在射程外（距 NPC 16m）→ 无续招
+        // 疾跑过程 msg15 逐帧上报：距 NPC 16m / 10m（虽已进入 RushRange=15 阈值）
+        // → 仍不续招——「到达阈值就释放」已废，标记阶段只跑不结算
         SkillCastHandler.tryRushArrival(harness.context(), 104f, 0f, 100f, 1.0f);
-        List<byte[]> mid = harness.drain();
-        assertFalse(describe(mid).contains("m20"), "射程外不续招: " + describe(mid));
-
-        // msg15 上报进入射程（距 NPC 10m）→ 服务端主动落地续招（无 212）
+        assertFalse(describe(harness.drain()).contains("m20"), "距 16m 不续招");
         SkillCastHandler.tryRushArrival(harness.context(), 110f, 0f, 100f, 1.0f);
+        List<byte[]> mid = harness.drain();
+        assertFalse(describe(mid).contains("m20"), "距 10m（阈值内）仍不续招——伤害不到目标身位不发: " + describe(mid));
+        assertTrue(harness.player.rushInFlight(), "标记阶段持续（rush in flight）");
+
+        // msg15 上报到达目标身位（距 NPC 4m ≤ 到达半径 5m）→ 服务端主动落地续招（无 212）
+        SkillCastHandler.tryRushArrival(harness.context(), 116f, 0f, 100f, 1.0f);
         List<byte[]> arrived = harness.drain();
         String seq = describe(arrived);
         assertTrue(seq.contains("m337"), "到位回显 337: " + seq);

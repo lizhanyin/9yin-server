@@ -496,6 +496,103 @@ class LoginFlowGmCommandTest {
         assertNull(env.channel.readOutbound(), "失败命令不写帧");
     }
 
+    /** 战斗假人两动作：未进场景（无 world）明确失败且不写帧（bak 同款前缀文案）。 */
+    @Test
+    void combatDummyActionsFailWithoutScene() {
+        Env env = new Env();
+        GmCommand spawn = env.enqueue("spawn_combat_dummy", Map.of("dummyHp", 50000));
+        GmCommand clear = env.enqueue("clear_combat_dummies", Map.of());
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertFalse(reply(spawn).ok(), "未进场景生成假人应失败");
+        assertEquals("生成战斗假人失败：角色尚未进入场景", reply(spawn).message());
+        assertFalse(reply(clear).ok(), "未进场景清除假人应失败");
+        assertEquals("清除战斗假人失败：角色尚未进入场景", reply(clear).message());
+        assertNull(env.channel.readOutbound(), "失败命令不写帧");
+    }
+
+    /**
+     * 战斗假人生成/清除全链（真实 attacknpc 表克隆进临时根，mountSkin 同款
+     * overrideServerRoot + finally 还原）：机关木人 AttackNpc 模板 → gmSpawns 打
+     * combatDummy 标志 + combatNpcs 快照就位（血量/名字为入参，缺省 5 万/「战斗假人」）
+     * → 一键清除只摘假人（同表训练木桩隔离不受影响）。
+     */
+    @Test
+    void combatDummySpawnAndClearRoundTrip(@TempDir Path tempRoot) throws Exception {
+        Path attackNpc = Path.of("E:/Workspace/project/game/9yin-go-server1")
+                .resolve(Path.of("resources", "modern", "share", "npc", "npcconfig",
+                        "worldnpc", "attacknpc.txt"));
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.file.Files.isRegularFile(attackNpc),
+                "参考服 attacknpc 表不可用，跳过战斗假人编排断言");
+        Path worldDir = tempRoot.resolve(Path.of("resources", "modern", "share",
+                "npc", "npcconfig", "worldnpc"));
+        java.nio.file.Files.createDirectories(worldDir);
+        java.nio.file.Files.copy(attackNpc, worldDir.resolve("attacknpc.txt"));
+
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            env.session.world = new com.nineyin.server.world.scene.SceneLifecycle(
+                    new Connection(env.channel), new NpcDialogFlowTest.NoopScheduler());
+            env.session.world.begin("ini\\scene\\born04", "born04");
+
+            // 自定义假人 + 同表训练木桩（clear 隔离口径）。
+            GmCommand spawn = env.enqueue("spawn_combat_dummy",
+                    Map.of("dummyName", "木人甲", "dummyHp", 12345));
+            GmCommand dummy = env.enqueue("spawn_dummy", Map.of("dummyHp", 777));
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+            assertTrue(reply(spawn).ok(), "生成战斗假人应成功: " + reply(spawn).message());
+            assertTrue(reply(spawn).message().contains("木人甲"), "回执含假人名");
+            assertTrue(reply(spawn).message().contains("12345"), "回执含血量");
+            assertTrue(reply(dummy).ok(), "训练木桩应成功");
+            assertEquals(2, env.session.gmSpawns.size(), "假人与木桩均入摆放表");
+            int dummyCombatId = 0;
+            for (LoginSession.GmSpawn spawnEntry : env.session.gmSpawns.values()) {
+                if (spawnEntry.combatDummy) {
+                    dummyCombatId = spawnEntry.objectId;
+                }
+            }
+            assertTrue(dummyCombatId > 0, "假人打 combatDummy 标志");
+            assertEquals(2, env.session.world.combatNpcs().size(),
+                    "假人与木桩（同表 AttackNpc）均入战斗快照");
+
+            // 缺省参数：血量 5 万、名字「战斗假人」（bak 同款默认）。
+            GmCommand defaults = env.enqueue("spawn_combat_dummy", Map.of());
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+            assertTrue(reply(defaults).ok(), "缺省生成应成功");
+            var combatNpcs = env.session.world.combatNpcs();
+            assertEquals(3, combatNpcs.size(), "第二只假人入快照");
+            boolean foundDefault = false;
+            for (var info : combatNpcs) {
+                if (info.id() == dummyCombatId) {
+                    assertEquals(12345, info.maxHp(), "自定义血量生效");
+                    assertEquals("木人甲", info.name(), "自定义名字生效");
+                } else if ("战斗假人".equals(info.name())) {
+                    assertEquals(50_000, info.maxHp(), "缺省血量 5 万");
+                    foundDefault = true;
+                }
+            }
+            assertTrue(foundDefault, "缺省名「战斗假人」的假人在快照中");
+
+            // 一键清除：只摘两只假人，木桩保留。
+            GmCommand clear = env.enqueue("clear_combat_dummies", Map.of());
+            env.flow.drainGmCommands(new Connection(env.channel), env.session);
+            assertTrue(reply(clear).ok(), "清除应成功");
+            assertEquals("已清除 2 只战斗假人", reply(clear).message());
+            assertEquals(1, env.session.gmSpawns.size(), "仅训练木桩保留");
+            assertFalse(env.session.gmSpawns.values().iterator().next().combatDummy,
+                    "保留条目是木桩非假人");
+            assertEquals(1, env.session.world.combatNpcs().size(), "战斗快照剩木桩");
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
     /** propBuilt 串方言（"1,id;1,id"，PanelState.recomputeEquipBonuses 同款）解析/构建往返。 */
     @Test
     void propBuiltParseBuildRoundTrip() {

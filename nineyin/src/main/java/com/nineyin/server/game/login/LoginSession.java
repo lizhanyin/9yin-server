@@ -107,8 +107,8 @@ public final class LoginSession {
     boolean lettersGranted;
 
     /**
-     * GM 运行时摆放（训练木桩/世界宝箱/礼包商人）：对象号 900000 起递增（目录 NPC 是
-     * 下标+2 的小号段，永不冲突）；切图随 world.begin 整体清空。
+     * GM 运行时摆放（训练木桩/世界宝箱/礼包商人/战斗假人）：对象号 900000 起递增
+     * （目录 NPC 是下标+2 的小号段，永不冲突）；切图随 world.begin 整体清空。
      */
     static final class GmSpawn {
         final int objectId;
@@ -117,16 +117,23 @@ public final class LoginSession {
         final boolean chest;
         /** true=礼包测试商人（点击开 gm_giftbox 商店，可反复拉到身边）。 */
         final boolean merchant;
+        /** true=战斗假人（AttackNpc 人形模板，clear_combat_dummies 按此口径清除）。 */
+        final boolean combatDummy;
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest) {
             this(objectId, npc, chest, false);
         }
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant) {
+            this(objectId, npc, chest, merchant, false);
+        }
+
+        GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant, boolean combatDummy) {
             this.objectId = objectId;
             this.npc = npc;
             this.chest = chest;
             this.merchant = merchant;
+            this.combatDummy = combatDummy;
         }
     }
 

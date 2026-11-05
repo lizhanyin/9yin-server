@@ -253,6 +253,30 @@ public class GmRemote {
                 yield hp == null ? null : intRange(params, "dummyHp", 0, 100_000_000);
             }
             case "spawn_chest" -> null;
+            // 战斗假人（bak spawn_combat_dummy 同款）：血量可选 0=默认 5 万（上限与木桩一致）；
+            // 名字/招式为自由文本限长；单段伤害可选（当前仅记日志，数值域先行校验）。
+            case "spawn_combat_dummy" -> {
+                Integer hp = params != null ? params.getInteger("dummyHp") : null;
+                if (hp != null) {
+                    String hpBad = intRange(params, "dummyHp", 0, 100_000_000);
+                    if (hpBad != null) {
+                        yield hpBad;
+                    }
+                }
+                Integer damage = params != null ? params.getInteger("dummyDamage") : null;
+                if (damage != null) {
+                    String damageBad = intRange(params, "dummyDamage", 0, 1_000_000);
+                    if (damageBad != null) {
+                        yield damageBad;
+                    }
+                }
+                String nameBad = lengthLimit(params, "dummyName", 64);
+                if (nameBad != null) {
+                    yield nameBad;
+                }
+                yield lengthLimit(params, "dummySkills", 512);
+            }
+            case "clear_combat_dummies" -> null;
             // 坐骑管理：按道具 config 骑乘/再点同骑下马（pack 解析与记录帧由游戏侧）。
             case "mount_ride" -> nonEmpty(params, "mountConfig");
             // 待机站姿（持久化）：b_action_index.ini 节名；空串 = 恢复默认站姿。
@@ -270,6 +294,15 @@ public class GmRemote {
         String value = params != null ? params.getString(key) : null;
         if (value == null || value.trim().isEmpty()) {
             return key + " must be a non-empty string";
+        }
+        return null;
+    }
+
+    /** 可选字符串限长（null/缺省放行，超长拒绝）。 */
+    private static String lengthLimit(JSONObject params, String key, int max) {
+        String value = params != null ? params.getString(key) : null;
+        if (value != null && value.length() > max) {
+            return key + " must be a string of at most " + max + " chars";
         }
         return null;
     }

@@ -70,6 +70,15 @@ public final class SkillCastHandler {
     public static final long WUJI_DEBUFF_LEASE_MS = 2_000;
     /** 冲锋暂存窗口（IDA stagePreCast msg25 skill_pause 恒 30000ms；超时未落地作废）。 */
     public static final long RUSH_PENDING_WINDOW_MS = 30_000;
+    /**
+     * 冲锋到达半径（米，2026-11-05 用户拍板时序「到达限制阈值时下发冲锋标记、到达
+     * 目标位置后才正式触发特效伤害」）：按下时距目标超过本半径 → 只发冲锋标记
+     * （msg25 暂存+msg24 c61 疾跑去目标位，不结算）；msg15/212 上报进入本半径
+     * （=到达目标身位）才落地续招正式出招。取值依据：61653 实证客户端疾跑终点
+     * =目标位、到过 1m 内；近战身位 8m 偏远（8m 出伤仍是「阈值处释放」），碰撞
+     * 停距 ~1-3m，5m 兼大体型 NPC 停距余量。
+     */
+    public static final float RUSH_ARRIVAL_RADIUS_METERS = 5.0f;
     /** 战斗闲时退出扑空后的重查周期（毫秒）。 */
     public static final long COMBAT_IDLE_RETRY_MS = 2_000;
 
@@ -180,28 +189,34 @@ public final class SkillCastHandler {
             if (targetInfo != null) {
                 double distance = Math.sqrt(square(x - targetInfo.x()) + square(y - targetInfo.y())
                         + square(z - targetInfo.z()));
-                // 冲锋暂存（参考服 exe 61653 抓包实证，2026-11-05 用户拍板对齐）：
-                // 超射程冲锋（skilllock+CanRush）→ msg25[30000,skill_pause] + msg24
-                // c1=61 疾跑去目标位置（qg_fastruning_s_2h_01），30s 窗口内 C2S 212
-                // 落地续招。官服（正版抓包 op2）无此链、337 终点驱动本地冲——如需
-                // 官服语义可 -Dnineyin.rush.stage=false 关回。
-                if (distance > castRange
-                        && skill.canRush()
+                // 冲锋标记两段时序（2026-11-05 用户拍板：到达限制阈值时下发冲锋的
+                // 标记，到达目标位置后才正式触发技能特效造成伤害）：锁定+冲锋族
+                // ①距目标超过到达半径（5m）→ 只发标记=暂存（msg25[30000,skill_pause]
+                // + msg24 c1=61 疾跑去目标位，参考服 exe 61653 实证链路），不结算，
+                // 也不吃 castRange 拒（TSP2 可小于到达半径，如 cqgf01=3m——否则
+                // (TSP2,5m] 成静默死区）；msg15/212 上报进入到达半径才落地续招。
+                // ②已在目标身位（≤5m）→ 直接受理正式出招。此前「进 castRange 即
+                // 续招」=阈值处就出伤害（真机反馈「到达阈值就释放」），已按本时序修正。
+                // 官服（正版抓包 op2）无此链、337 终点驱动本地冲——如需官服语义可
+                // -Dnineyin.rush.stage=false 关回（60m 防跨图滥用兜底闸）。
+                boolean stagedRushFamily = skill.canRush()
                         && "skilllock".equalsIgnoreCase(skill.script())
-                        && rushStageEnabled()) {
-                    stageRushCast(context, skill, targetInfo, distance);
-                    return;
-                }
-                double maxRange = castRange;
-                if (!rushStageEnabled() && skill.lockSkill()) {
-                    // 官服语义关回（-Dnineyin.rush.stage=false）：锁定/冲锋族不做射程闸
-                    //（op2 实证 33m 直冲受理、337 终点驱动本地冲）。60m 防跨图滥用兜底。
-                    maxRange = Math.max(maxRange, 60.0);
-                }
-                if (distance > maxRange) {
-                    LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
-                            + "m > " + (int) maxRange + "m");
-                    return;
+                        && rushStageEnabled();
+                if (stagedRushFamily) {
+                    if (distance > RUSH_ARRIVAL_RADIUS_METERS) {
+                        stageRushCast(context, skill, targetInfo, distance);
+                        return;
+                    }
+                } else {
+                    double maxRange = castRange;
+                    if (!rushStageEnabled() && skill.lockSkill()) {
+                        maxRange = Math.max(maxRange, 60.0);
+                    }
+                    if (distance > maxRange) {
+                        LOG.info("reject skill id=" + skillId + " out of range " + (int) distance
+                                + "m > " + (int) maxRange + "m");
+                        return;
+                    }
                 }
             }
         } else if (skill.targetMode() == CombatSkill.TargetMode.GROUND_AREA
@@ -439,11 +454,12 @@ public final class SkillCastHandler {
     }
 
     /**
-     * msg15 移动上报驱动的冲锋到位续招（2026-11-05 用户需求「冲到目标范围内后下发帧
-     * 数据让角色攻击目标」）：客户端疾跑到位后不必然发 212（61653 实证：玩家到过目标
-     * 1m 内仍未发）——服务端在每次移动上报时探测，玩家与暂存目标距离进入技能射程
-     * （CanRush&&RushRange>0?RushRange:TSP2，同出招闸模型）即主动落地续招。212 路径
-     * 保留（consumePendingCast 幂等，双触发只生效一次）。
+     * msg15 移动上报驱动的冲锋到位续招（2026-11-05 用户拍板时序：到达目标位置后才
+     * 正式触发特效伤害）：客户端疾跑到位后不必然发 212（61653 实证：玩家到过目标
+     * 1m 内仍未发）——服务端在每次移动上报时探测，玩家与暂存目标距离进入**到达
+     * 半径**（{@link #RUSH_ARRIVAL_RADIUS_METERS}=近身身位，非技能射程——「进射程
+     * 即出伤害」即真机反馈的「到达阈值就释放」）才落地续招。212 路径保留
+     * （consumePendingCast 幂等，双触发只生效一次）。
      */
     public static void tryRushArrival(CastContext context, float x, float y, float z, float orient) {
         PlayerActor player = context.player();
@@ -458,25 +474,13 @@ public final class SkillCastHandler {
         if (target == null) {
             return;
         }
-        Integer level = context.learnedSkills().get(pending.skillId());
-        CombatSkill skill = level != null
-                ? CombatSkillCatalog.load().definition(pending.skillId(), level) : null;
-        if (skill == null) {
-            return;
-        }
-        CombatSkillCatalog.SkillRowData rowData = CombatSkillCatalog.load()
-                .skillRowData(pending.skillId(), level != null ? level : 1);
-        float shapeRange = rowData != null ? rowData.targetShapePara2() : 0;
-        double castRange = skill.canRush() && skill.rushRange() > 0 ? skill.rushRange()
-                : shapeRange > 0 ? shapeRange
-                : Math.max(skill.areaRadius(), SELECTED_RANGE_METERS);
         double distance = Math.sqrt(square(x - target.x()) + square(y - target.y())
                 + square(z - target.z()));
-        if (distance > castRange) {
+        if (distance > RUSH_ARRIVAL_RADIUS_METERS) {
             return;
         }
-        LOG.info("rush arrival in range skill id=" + pending.skillId() + " dist="
-                + (int) distance + "m <= " + (int) castRange + "m");
+        LOG.info("rush arrival at target skill id=" + pending.skillId() + " dist="
+                + (int) distance + "m <= " + (int) RUSH_ARRIVAL_RADIUS_METERS + "m");
         resumePendingCastAt(context, x, y, z, orient, "msg15-arrival");
     }
 

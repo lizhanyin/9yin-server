@@ -182,12 +182,14 @@ class MultiHitAndRangeTest {
     @Test
     void selectedSkillOutOfRangeIsSilentlyRejected() {
         // 找一个 SELECTED（单体需目标）模式的已编译技能做距离闸验证（default 分支即 SELECTED）。
+        // 排除 CanRush 冲锋族——超距走暂存标记链（msg25/msg24，2026-11-05 两段时序），
+        // 不再是静默拒。
         CombatSkillCatalog catalog = CombatSkillCatalog.load();
         CombatSkill selected = null;
         for (String id : List.of("CS_wd_tjq02", "CS_jh_sfgp01", "CS_jh_sfgp04", "CS_yhwq_hsqs04",
                 "CS_wd_tjq04", "CS_wd_tjq07", "CS_jh_sfgp02", "CS_jh_yydf04_hide")) {
             CombatSkill skill = catalog.definition(id, 1);
-            if (skill != null && skill.requiresTarget()) {
+            if (skill != null && skill.requiresTarget() && !skill.canRush()) {
                 selected = skill;
                 break;
             }

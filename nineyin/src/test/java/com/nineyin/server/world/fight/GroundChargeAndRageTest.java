@@ -170,24 +170,35 @@ class GroundChargeAndRageTest {
         }
         assumeTrue(plain != null, "无普通单体技能做射程对比");
 
-        // 12 米：非冲锋技能超 8m 兜底静默拒；冲锋技能在回落射程（15m）内受理
+        // 12 米：非冲锋技能超距静默拒（不进暂存链——msg25 只属 skilllock+CanRush 族）
         Harness plainFar = new Harness(1000, 12f, 0f);
         plainFar.learned.put(plain.id(), 1);
         plainFar.cast(plain.id(), 0f, 20f, 0f);
         assertNull(plainFar.channel.readOutbound(), "非冲锋技能 12m 超距静默拒");
 
+        // 冲锋两段时序（2026-11-05 拍板）：距目标 > 到达半径（5m）→ 只发冲锋标记
+        // （msg25 暂存+疾跑），不结算（无 CD 行/伤害）；25m 同样走标记不拒
         Harness rushIn = new Harness(1000, 12f, 0f);
         rushIn.learned.put(rush.id(), 1);
         rushIn.cast(rush.id(), 0f, 20f, 0f);
-        List<byte[]> inFrames = rushIn.drain();
-        assertTrue(inFrames.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11),
-                "冲锋技能 12m 受理（射程闸放宽）");
+        List<byte[]> staged = rushIn.drain();
+        assertTrue(hasCustomMsg(staged, 25), "冲锋 12m 只发冲锋标记（msg25 skill_pause）");
+        assertFalse(staged.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "标记阶段不结算（无 CD 行）");
+        assertTrue(rushIn.player.rushInFlight(), "冲锋标记挂起（rush in flight）");
 
-        // 25 米：超回落射程拒绝
         Harness rushOut = new Harness(1000, 25f, 0f);
         rushOut.learned.put(rush.id(), 1);
         rushOut.cast(rush.id(), 0f, 20f, 0f);
-        assertNull(rushOut.channel.readOutbound(), "冲锋技能 25m 超回落射程拒绝");
+        List<byte[]> farStaged = rushOut.drain();
+        assertTrue(hasCustomMsg(farStaged, 25), "冲锋 25m 同样走标记链（30s 窗口兜底）");
+
+        // 到达目标身位（≤5m）：直接正式出招（受理=CD 行下发）
+        Harness atTarget = new Harness(1000, 4f, 0f);
+        atTarget.learned.put(rush.id(), 1);
+        atTarget.cast(rush.id(), 0f, 20f, 0f);
+        List<byte[]> direct = atTarget.drain();
+        assertTrue(direct.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "目标身位直接受理（CD 行）");
+        assertFalse(hasCustomMsg(direct, 25), "身位内无标记链");
     }
 
     @Test
@@ -204,7 +215,7 @@ class GroundChargeAndRageTest {
         assertNull(low.channel.readOutbound(), "SP 不足静默拒（零帧）");
         assertEquals(rage.spCost() - 1, low.player.sp(), "SP 不被扣减");
 
-        // 怒气足够：受理 → 扣 SP → 每次落血 +2 回怒（msg24 计数确定性校验）
+        // 怒气足够：受理 → 扣 SP → 每次落血 +2 回怒 + 被击 +1（NPC 反击 AI 接线后计入）
         Harness ok = new Harness(100_000, 100f, 100f);
         ok.learned.put(rage.id(), 1);
         int before = rage.spCost() + 10;
@@ -213,9 +224,12 @@ class GroundChargeAndRageTest {
         ok.scheduler.runAll();
         List<byte[]> frames = ok.drain();
         assertTrue(frames.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "怒气足够受理出招");
-        int landed = msg24Count(frames);
-        int expected = before - rage.spCost() + landed * SkillCastHandler.RAGE_PER_HIT_DEALT;
-        assertEquals(expected, ok.player.sp(), "扣 SP 后每次命中 +2（多段按段计）");
+        int[] tally = rageTally(frames, rage.id());
+        int landed = tally[0];
+        int expected = before - rage.spCost()
+                + landed * SkillCastHandler.RAGE_PER_HIT_DEALT
+                + tally[1] * SkillCastHandler.RAGE_TAKEN_UNPARRIED;
+        assertEquals(expected, ok.player.sp(), "扣 SP 后每次命中 +2、被击 +1（多段按段计）");
         if (landed > 0) {
             final int sp = expected;
             assertTrue(frames.stream().anyMatch(f -> (f[0] & 0xFF) == 0x10 && f[1] == 0
@@ -254,8 +268,10 @@ class GroundChargeAndRageTest {
         long npcKey = (2 & 0xFFFFFFFFL) | (1L << 32);
         int weapon = rush.weaponItemTypes().isEmpty() ? 0 : rush.weaponItemTypes().iterator().next();
 
-        // 冲锋技 12m 受理：msg20 目标=选中 NPC（无 211 目标对象时回落选中目标）
-        Harness rushIn = new Harness(1000, 12f, 0f);
+        // 冲锋技贴身（4m ≤ 到达半径）直接受理：msg20 目标=选中 NPC（无 211 目标对象
+        // 时回落选中目标）。超 5m 走暂存标记链（见 chargeSkillRangeWidenedByCanRush），
+        // msg20 只随到达后的正式出招下发。
+        Harness rushIn = new Harness(1000, 4f, 0f);
         rushIn.player.noteEquippedWeaponItemType(weapon);
         rushIn.learned.put(rush.id(), 1);
         rushIn.cast(rush.id(), 0f, 20f, 0f);
@@ -263,11 +279,11 @@ class GroundChargeAndRageTest {
                 "冲锋招 msg20 第三参=目标对象");
 
         // 211 长格式带目标对象：msg20 动作目标随 aim 对象（官服每发均带）
-        Harness aim = new Harness(1000, 12f, 0f);
+        Harness aim = new Harness(1000, 4f, 0f);
         aim.player.noteEquippedWeaponItemType(weapon);
         aim.learned.put(rush.id(), 1);
         assertTrue(aim.fight.selectTarget(aim.world, 2, 1), "combat NPC selectable");
-        aim.handle(useSkillAimMessage(rush.id(), 0f, 20f, 0f, 1.0f, 2, 1, 12f, 20f, 0f));
+        aim.handle(useSkillAimMessage(rush.id(), 0f, 20f, 0f, 1.0f, 2, 1, 4f, 20f, 0f));
         assertEquals(npcKey, msg20Target(aim.drain(), rush.id()),
                 "211 目标对象作为 msg20 动作目标");
 
@@ -312,6 +328,42 @@ class GroundChargeAndRageTest {
     }
 
     /**
+     * 冲锋两段时序主链（RushStageFlowTest 因生产资源盘不可达跳过时的本域覆盖）：
+     * 12m 按下 → 只发标记（msg25 暂存，无 CD/无 msg20/无伤害）；msg15 上报 10m
+     * （阈值内但未到目标身位）→ 仍不结算；msg15 上报 4m（≤到达半径 5m）→ 落地
+     * 续招正式出招（msg26+CD 行+msg20 带目标+伤害结算）。
+     */
+    @Test
+    void chargeArrivalRadiusGatesActualCast() {
+        CombatSkill rush = firstCompiled(List.of("CS_jh_cqgf01", "CS_wd_tjj01", "CS_sl_djgq07"));
+        assumeTrue(rush != null, "无 CanRush 技能可测");
+        int weapon = rush.weaponItemTypes().isEmpty() ? 0 : rush.weaponItemTypes().iterator().next();
+
+        Harness h = new Harness(1000, 12f, 0f);
+        h.player.noteEquippedWeaponItemType(weapon);
+        h.learned.put(rush.id(), 1);
+        h.cast(rush.id(), 0f, 20f, 0f);
+        List<byte[]> staged = h.drain();
+        assertTrue(hasCustomMsg(staged, 25), "12m 只发冲锋标记（msg25）");
+        assertFalse(hasCustomMsg(staged, 20), "标记阶段不发技能动作");
+        assertTrue(h.player.rushInFlight(), "标记挂起");
+
+        // 阈值内（10m < 旧判定 castRange）但未到目标身位：不结算
+        SkillCastHandler.tryRushArrival(h.context(), 2f, 20f, 0f, 1.0f);
+        List<byte[]> mid = h.drain();
+        assertFalse(hasCustomMsg(mid, 20), "10m 仍不正式出招（到达阈值≠释放）");
+        assertTrue(h.player.rushInFlight(), "未到目标身位标记保持");
+
+        // 到达目标身位（4m ≤ 5m）：正式出招
+        SkillCastHandler.tryRushArrival(h.context(), 8f, 20f, 0f, 1.0f);
+        List<byte[]> arrived = h.drain();
+        assertTrue(hasCustomMsg(arrived, 26), "到位解除 skill_pause（msg26）");
+        assertTrue(arrived.stream().anyMatch(f -> (f[0] & 0xFF) == 0x11), "到位才结算（CD 行）");
+        assertTrue(hasCustomMsg(arrived, 20), "到位正式出招（msg20）");
+        assertFalse(h.player.rushInFlight(), "到位清标记");
+    }
+
+    /**
      * 官方 CanUse 语义（52795 取证：11730 帧中仅 QGP 门控行出 0，怒招行 SP=26
      * 低于消耗 50 仍恒推 1；SP 跨阈值无任何行帧）：出招置 0、个人 CD 尽置 1
      * （不看 SP）；SP 变化（消耗/回怒）不推兄弟行——资源灰由客户端按 SP+行内
@@ -349,10 +401,11 @@ class GroundChargeAndRageTest {
         assertFalse(pushes.stream().anyMatch(p -> p[0] == rowSmall),
                 "SP 被压到小阈值下也不推兄弟行，实际=" + pushes);
 
-        int landed = msg24Count(frames);
+        int[] tally = rageTally(frames, rage.id());
         int finalSp = h.player.sp();
-        assertEquals(5 + landed * SkillCastHandler.RAGE_PER_HIT_DEALT, finalSp,
-                "扣到 5 后按落血次数回怒");
+        assertEquals(5 + tally[0] * SkillCastHandler.RAGE_PER_HIT_DEALT
+                        + tally[1] * SkillCastHandler.RAGE_TAKEN_UNPARRIED, finalSp,
+                "扣到 5 后按落血次数回怒（+被击 +1，NPC 反击 AI 已接线）");
         if (finalSp < costBig) {
             assertTrue(pushes.stream().anyMatch(p -> p[0] == rowBig && p[1] == 1),
                     "CD 尽置 1（不看 SP 是否够），实际=" + pushes);
@@ -380,6 +433,43 @@ class GroundChargeAndRageTest {
             }
         }
         return count;
+    }
+
+    /** 是否存在指定 id 的 custom 帧（0x1E）。 */
+    private static boolean hasCustomMsg(List<byte[]> frames, int msgId) {
+        for (byte[] frame : frames) {
+            CustomC2S.Message parsed = CustomC2S.parseDirect(frame);
+            if (parsed != null && !parsed.values.isEmpty()
+                    && parsed.values.get(0).exactInt32() == msgId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 怒气收支口径（NpcCombatAi 反击介入后）：[玩家技能形态落血次数, 被击次数]。
+     * msg24 只计 11 值技能形态（c1=17 且技能 id 匹配）——NPC 反击飘字（c1=7 十值
+     * 形态）与 c61 疾跑帧不计入落血；被击次数按 NPC 反击帧计（未格挡 +1/次）。
+     */
+    private static int[] rageTally(List<byte[]> frames, String skillId) {
+        int landed = 0;
+        int taken = 0;
+        for (byte[] frame : frames) {
+            CustomC2S.Message parsed = CustomC2S.parseDirect(frame);
+            if (parsed == null || parsed.values.isEmpty()
+                    || parsed.values.get(0).exactInt32() != 24 || parsed.values.size() < 7) {
+                continue;
+            }
+            if (parsed.values.get(2).tag == 2 && parsed.values.get(2).exactInt32() == 17
+                    && skillId.equals(parsed.values.get(6).textOrNull())) {
+                landed++;
+            } else if (parsed.values.get(2).tag == 2
+                    && parsed.values.get(2).exactInt32() == 7) {
+                taken++; // NPC→玩家反击飘字（c1=7 形态）
+            }
+        }
+        return new int[]{landed, taken};
     }
 
     /** View40 CanUse 推送序列（0x10 isView=1 15B 形态 → [row,val] 列表）。 */

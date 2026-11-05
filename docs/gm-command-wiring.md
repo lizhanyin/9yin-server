@@ -99,13 +99,14 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 
 ## 5. 动作清单（2026-11-04）
 
-已实现（白名单+case 双接线，31 个）：
+已实现（白名单+case 双接线，33 个）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
 reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, set_five_attributes,
 wear_title, cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
 add_livepoint, set_hold_faculty, set_live_speed_power,
 set_act_day_limit, clear_team_fatigue, set_team_faculty_last,
-switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here`
+switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here,
+spawn_combat_dummy, clear_combat_dummies`
 
 修为三动作参数：
 
@@ -176,6 +177,19 @@ switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox
   一件入背包（可穿戴 ∪ 开箱类 ItemType 2102/2103）→ unregister + reconcile
   （0x0E 消失）。拾取词缀暂不附（背包行无 propBuilt 通道）。切图随 world.begin
   清空（session.gmSpawns，两处 begin 站点同步清）。
+
+战斗假人两动作（2026-11-05，bak GmActions spawn_combat_dummy 最早版移植）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `spawn_combat_dummy` | `dummyHp` 可选（0=默认 5 万，≤1 亿）+ `dummyName` ≤64 + `dummyDamage`/`dummySkills`（仅记日志不生效，bak 对齐） | 无（会话内实体） |
+| `clear_combat_dummies` | 无参（按 combatDummy 标志摘除本会话全部假人，木桩/宝箱/商人隔离） | 无 |
+
+- **假人** = attacknpc.txt `monf022202`「机关木人」克隆（与 bak monm080701 同名同模型
+  npc\monster026；monsternpc 表的同名是 CommonNpc 不可战斗，故选 attacknpc 版）：
+  AttackNpc → combat 链自动接通——玩家命中后 NpcCombatAi 周期还手（2.2s、恒 1 伤、
+  6m；removeGmSpawn 后下一拍自停），死亡不删对象 15s 回满。
+- 全链深挖（模板克隆/注册物化/战斗接入/测试模式）见 `gm-command-chain.md`（2026-11-05）。
 
 模板生成三动作（2026-11-04，60501 家族基座 + 官方洗练池词条）：
 
@@ -290,7 +304,9 @@ equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_
 - 回环门禁：`nineyin/src/test/java/com/nineyin/server/gm/GmRemoteRoundTripTest.java`
   ——进程内起真实 summer（main+minor.gm），**Summer.hot 整个 JVM 只允许一次**，
   所有断言必须合在单个测试方法内；consumer 线程 tryPop + succeed 模拟游戏侧回执。
-- 分发单测：`LoginFlowGmCommandTest`（含 set_vitals 落快照/回填断言）；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分/生存属性 vitals 回环+JSON 落盘回读）；
+- 分发单测：`LoginFlowGmCommandTest`（含 set_vitals 落快照/回填断言）；战斗假人域：
+  `GmNpcFactoryTest`（真实表模板克隆）+ `LoginFlowGmCommandTest.combatDummySpawnAndClearRoundTrip`
+  （@TempDir 复制表 + overrideServerRoot 全链生成/缺省/清除隔离）；修炼域：`FacultyProgressTest`（帧序/结算/GM 填满/修速拆分/生存属性 vitals 回环+JSON 落盘回读）；
   演武碎银/团练疲劳域：`ActTeamBlockTest`（下发块/扣费/超限拒绝/GM/演武 108↔0 线帧回归）；
   传送域：`LoginFlowSceneSwitchTest`（0x0C 重入帧序/残余包忽略/0x09 收尾/瞬移单帧/加载中拒绝，
   ManualScheduler 驱动 750ms 延迟任务）+ `GmScenePresetsTest`（107 键/抽样值/免费格式解析）。
@@ -302,5 +318,6 @@ equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_
   礼包/排序/免费、View61 头+行帧、msg70 零价购买入包；临时角色 990035）；
   物品发放域：`GrantItemFlowTest`（入包行+成对帧/wearNow 穿戴帧序/换装让位旧装回收
   装备页/双槽耳环 11+12 不覆盖/不可穿戴降级入包；临时角色 990036）。
-- 已知存量失败 7 个（View40 CD 显示修复遗留，与 GM 链路无关）：PlayerActorGoldenTest 2、
-  LoginFlowTest 1、SkillCastHandlerFlowTest 3、RoleInventoryStoreIntegrationTest 1（需 MySQL）。
+- 已知存量失败随在制改动漂移，以当次实测为准（2026-11-05 全量 370 例实测 4 个存量失败：
+  PlayerPanelRealtimeTest 1、RoleInventoryStoreIntegrationTest 1（需 MySQL）、MailFlowTest
+  tearDown 2；stash 往返验证与 GM 链路无关。更早口径：View40 CD 修复遗留 7 个）。

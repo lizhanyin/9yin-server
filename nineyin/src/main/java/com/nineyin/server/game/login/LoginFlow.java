@@ -888,6 +888,10 @@ public final class LoginFlow {
             // 场景生成：训练木桩（AttackNpc 木桩模板克隆，血量自定义）+ 世界宝箱（点击开箱拾取）。
             case "spawn_dummy" -> applySpawnDummy(connection, session, command);
             case "spawn_chest" -> applySpawnChest(connection, session, command);
+            // 战斗假人（bak spawn_combat_dummy 移植）：人形机关木人，命中后经 NpcCombatAi 还手；
+            // 配套一键清除本会话生成的全部假人。
+            case "spawn_combat_dummy" -> applySpawnCombatDummy(connection, session, command);
+            case "clear_combat_dummies" -> applyClearCombatDummies(connection, session, command);
             case "giftbox_merchant_here" -> applyGiftboxMerchantHere(connection, session, command);
             case "send_test_mail" -> applySendTestMail(connection, session, command);
             // 坐骑管理：按道具 config 骑乘（再点同骑=下马），NewRideRec 记录 + Mount 属性族下发。
@@ -1321,6 +1325,17 @@ public final class LoginFlow {
     /** 训练木桩模板（worldnpc/attacknpc.txt 官方「木桩」，AttackNpc → 可选中/受击）。 */
     private static final String DUMMY_TABLE = "worldnpc/attacknpc.txt";
     private static final String DUMMY_TEMPLATE = "monv010100";
+    /**
+     * 战斗假人模板（bak spawn_combat_dummy 同款）：attacknpc 表「机关木人」，
+     * 模型 npc\monster026 与 bak monm080701 同名同模型；AttackNpc scriptClass
+     * 天然进战斗链（命中后 NpcCombatAi 反击），等价 bak 的 monster=true。
+     */
+    private static final String COMBAT_DUMMY_TABLE = "worldnpc/attacknpc.txt";
+    private static final String COMBAT_DUMMY_TEMPLATE = "monf022202";
+    /** 战斗假人默认血量（bak 同款 5 万）。 */
+    private static final int COMBAT_DUMMY_DEFAULT_HP = 50_000;
+    private static final int COMBAT_DUMMY_MAX_HP = 100_000_000;
+    private static final String COMBAT_DUMMY_DEFAULT_NAME = "战斗假人";
     /** 世界宝箱模板（worldnpc/monsternpc_commonnpc.txt「特殊财宝箱」，CommonNpc → 可点击）。 */
     private static final String CHEST_TABLE = "worldnpc/monsternpc_commonnpc.txt";
     private static final String CHEST_TEMPLATE = "stormbox_10";
@@ -1403,15 +1418,92 @@ public final class LoginFlow {
                 session.machine.id(), objectId, at[0], at[1], at[2]);
     }
 
+    /**
+     * 战斗假人（spawn_combat_dummy，bak 同款语义）：玩家身前克隆「机关木人」
+     * AttackNpc 模板——AttackNpc scriptClass 即 combat，玩家命中后由 NpcCombatAi
+     * 周期反击（等价 bak 的 monster=true 世界 BOSS 战斗链）。血量默认 5 万、
+     * 名字默认「战斗假人」；dummyDamage/dummySkills 面板参数对齐 bak 仅记日志。
+     */
+    private void applySpawnCombatDummy(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("生成战斗假人失败：角色尚未进入场景");
+            return;
+        }
+        String name = command.strParam("dummyName").trim();
+        if (name.isEmpty()) {
+            name = COMBAT_DUMMY_DEFAULT_NAME;
+        }
+        int hp = command.intParam("dummyHp", 0);
+        if (hp <= 0) {
+            hp = COMBAT_DUMMY_DEFAULT_HP;
+        }
+        if (hp > COMBAT_DUMMY_MAX_HP) {
+            command.fail("dummyHp 至多 " + COMBAT_DUMMY_MAX_HP);
+            return;
+        }
+        float[] at = gmSpawnPosition(session);
+        NpcSpawn dummy;
+        try {
+            dummy = com.nineyin.server.world.npc.GmNpcFactory.spawnFromTemplate(
+                    COMBAT_DUMMY_TABLE, COMBAT_DUMMY_TEMPLATE, at[0], at[1], at[2], at[3],
+                    Map.of("Name", name, "MaxHP", Integer.toString(hp), "HP", Integer.toString(hp)));
+        } catch (IOException e) {
+            command.fail("战斗假人模板加载失败: " + e.getMessage());
+            return;
+        }
+        int objectId;
+        try {
+            objectId = registerGmSpawn(session, dummy, false, false, true);
+        } catch (RuntimeException e) {
+            command.fail("战斗假人注册失败: " + e.getMessage());
+            return;
+        }
+        session.world.reconcileViewport();
+        String message = "已生成战斗假人（对象=" + objectId + " " + name + " 血量=" + hp + "），选中攻击后会还手";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM combat dummy {} hp={} name={} damage={} skills={}",
+                session.machine.id(), objectId, hp, name,
+                command.intParam("dummyDamage", 0), command.strParam("dummySkills"));
+    }
+
+    /** 清除战斗假人（clear_combat_dummies，bak 同款）：摘除本会话生成的全部假人。 */
+    private void applyClearCombatDummies(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("清除战斗假人失败：角色尚未进入场景");
+            return;
+        }
+        List<Integer> dummyIds = new ArrayList<>();
+        for (LoginSession.GmSpawn spawn : session.gmSpawns.values()) {
+            if (spawn.combatDummy) {
+                dummyIds.add(spawn.objectId);
+            }
+        }
+        for (int objectId : dummyIds) {
+            removeGmSpawn(session, objectId);
+        }
+        String message = "已清除 " + dummyIds.size() + " 只战斗假人";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM clear combat dummies: {} removed",
+                session.machine.id(), dummyIds.size());
+    }
+
     /** 注册 GM 摆放并返回对象号（0x0D+0x1F 由随后的 reconcileViewport 物化）。 */
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest) {
         return registerGmSpawn(session, npc, chest, false);
     }
 
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest, boolean merchant) {
+        return registerGmSpawn(session, npc, chest, merchant, false);
+    }
+
+    private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest,
+                                boolean merchant, boolean combatDummy) {
         int objectId = session.nextGmObjectId++;
         session.world.registerNpc(objectId, npc);
-        session.gmSpawns.put(objectId, new LoginSession.GmSpawn(objectId, npc, chest, merchant));
+        session.gmSpawns.put(objectId,
+                new LoginSession.GmSpawn(objectId, npc, chest, merchant, combatDummy));
         return objectId;
     }
 

@@ -61,6 +61,29 @@ class GmNpcFactoryTest {
         assertNotNull(chest.resolved.properties.get("Resource"), "宝箱模型存在");
     }
 
+    /**
+     * 战斗假人模板（bak spawn_combat_dummy 同名同模型）：monf022202「机关木人」
+     * 在 attacknpc 表——scriptClass=AttackNpc 即 combat（命中后 NpcCombatAi 反击），
+     * 名字/血量覆盖走官方线型。
+     */
+    @Test
+    void combatDummyTemplateClonesAttackClassedWithOverrides() throws Exception {
+        Path root = configRoot();
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null,
+                "参考服 npcconfig 不可用，跳过 GM 摆放工厂断言");
+        NpcSpawn dummy = GmNpcFactory.spawnFromTemplate(root, "worldnpc/attacknpc.txt",
+                "monf022202", 8f, 1f, 9f, 0.5f,
+                Map.of("Name", "战斗假人", "MaxHP", "50000", "HP", "50000"));
+        assertEquals("monf022202", dummy.resolved.configId);
+        assertEquals("AttackNpc", dummy.resolved.scriptClass,
+                "战斗假人须为 AttackNpc（combat 标记 + 反击链入口）");
+        assertEquals("战斗假人", dummy.resolved.properties.get("Name").text());
+        assertEquals(50000, dummy.resolved.properties.get("MaxHP").i32());
+        assertEquals(50000, dummy.resolved.properties.get("HP").i32());
+        assertEquals("npc\\monster026", dummy.resolved.properties.get("Resource").text(),
+                "与 bak monm080701 同模型（机关木人 npc\\monster026）");
+    }
+
     @Test
     void unknownTemplateFailsWithClearMessage() {
         Path root = configRoot();

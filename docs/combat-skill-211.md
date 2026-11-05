@@ -290,9 +290,27 @@ Java 旧实现串在前已同批修正）+ `msg24[玩家,61,目标位置,2,'qg_f
 **实现**：msg15 移动上报（9 值 `[15, state, moveType, f32 x/y/z, f32 orient,
 (会话哈希), tick]`，此前 default 分支仅 log）→ `LoginFlow.handleMovementUpload`：
 冲锋暂存挂起（rushInFlight）时取 idx 3-6 坐标交 `SkillCastHandler.tryRushArrival`
-——玩家与暂存目标距离 ≤ 技能射程（闸模型同 §11.1c）即调 `resumePendingCastAt`
+——玩家与暂存目标距离 ≤ **到达半径**（§11.1e）即调 `resumePendingCastAt`
 （与 212 共用本体：337+msg26+重组 211 出招）。`consumePendingCast` 幂等，双触发
 只生效一次。msg15 高频：非冲锋态直接 return 不落日志。
+
+### 11.1e 冲锋两段时序：标记在阈值、结算在目标身位（2026-11-05 四轮，用户拍板）
+
+用户复盘三次半成品迭代（①原地释放 ②337 携终点=瞬移 ③进 castRange 即续招=阈值处
+出伤害）后定准时序：**到达限制阈值时下发冲锋的标记，到达目标位置后才正式触发
+技能特效造成伤害**。修正 §11.1c/1d 的「进 castRange 即续招」：
+
+| 距目标距离 | 行为 |
+|---|---|
+| > 到达半径 5m（含超射程） | **只发冲锋标记**：暂存（msg25[30000]+msg24 c61 疾跑去目标位），不结算、不发 CD/msg20/伤害；也不吃 castRange 拒（TSP2 可小于 5m，如 cqgf01=3m——否则 (TSP2,5m] 成静默死区） |
+| ≤ 到达半径 5m（msg15/212 上报；按下时已在身位则直接） | **落地续招正式出招**：337(落点)+msg26+CD 行+msg20(带目标)+伤害段，全部从到达坐标结算 |
+
+`RUSH_ARRIVAL_RADIUS_METERS=5` 依据：61653 实证客户端疾跑终点=目标位、到过 1m
+内；近战 8m 兜底偏远（8m 出伤仍是阈值处释放），碰撞停距 ~1-3m，5m 兼大体型 NPC。
+`-Dnineyin.rush.stage=false` 时整链关回官服语义（60m 兜底直接受理）。
+测试：`GroundChargeAndRageTest.chargeArrivalRadiusGatesActualCast`（12m 只标记/
+10m 仍不结算/4m 正式出招）+ `chargeSkillRangeWidenedByCanRush`（>5m 标记、贴身
+直接受理、非冲锋仍拒）。
 
 ### 11.2 怒气获得（官方机制，用户 2026-11-03 确认）
 

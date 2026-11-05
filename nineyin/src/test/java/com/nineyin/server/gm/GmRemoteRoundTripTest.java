@@ -264,6 +264,65 @@ class GmRemoteRoundTripTest {
         assertTrue(JSON.parseObject(recastQueued).getBooleanValue("ok"),
                 "recast_slot_prop 应白名单透传（此前漏挂白名单）: " + recastQueued);
 
+        // command：战斗假人参数域（超界 dummyHp / 超长名字入口即拒，不入队）。
+        Map<String, Object> badDummyHp = Map.of(
+                "sessionId", 7,
+                "action", "spawn_combat_dummy",
+                "params", Map.of("dummyHp", 100_000_001));
+        String badDummyRejected = remote.syncRemote("GmRemote", "command", badDummyHp, String.class);
+        assertFalse(JSON.parseObject(badDummyRejected).getBooleanValue("ok"),
+                "超界假人血量应被拒: " + badDummyRejected);
+        Map<String, Object> badDummyName = Map.of(
+                "sessionId", 7,
+                "action", "spawn_combat_dummy",
+                "params", Map.of("dummyName", "x".repeat(65)));
+        String badNameRejected = remote.syncRemote("GmRemote", "command", badDummyName, String.class);
+        assertFalse(JSON.parseObject(badNameRejected).getBooleanValue("ok"),
+                "超长假人名应被拒: " + badNameRejected);
+
+        // command：战斗假人生成/清除白名单透传 + 游戏侧回执回环。
+        Thread combatDummyConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 2; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "spawn_combat_dummy" -> {
+                        assertEquals("木人甲", command.params().getString("dummyName"));
+                        assertEquals(50000, command.params().getIntValue("dummyHp"));
+                        command.succeed("已生成战斗假人（对象=900000 木人甲 血量=50000）");
+                    }
+                    case "clear_combat_dummies" -> command.succeed("已清除 1 只战斗假人");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-combat-dummy-consumer");
+        combatDummyConsumer.start();
+        Map<String, Object> combatDummyData = Map.of(
+                "sessionId", 7,
+                "action", "spawn_combat_dummy",
+                "params", Map.of("dummyName", "木人甲", "dummyHp", 50000,
+                        "dummyDamage", 0, "dummySkills", "CS_jh_sfgp01"));
+        String combatDummyQueued = remote.syncRemote("GmRemote", "command", combatDummyData, String.class);
+        Map<String, Object> clearDummiesData = Map.of(
+                "sessionId", 7,
+                "action", "clear_combat_dummies",
+                "params", Map.of());
+        String clearDummiesQueued = remote.syncRemote("GmRemote", "command", clearDummiesData, String.class);
+        combatDummyConsumer.join(5000);
+        assertTrue(JSON.parseObject(combatDummyQueued).getBooleanValue("ok"),
+                "spawn_combat_dummy 应白名单透传: " + combatDummyQueued);
+        assertTrue(JSON.parseObject(clearDummiesQueued).getBooleanValue("ok"),
+                "clear_combat_dummies 应白名单透传: " + clearDummiesQueued);
+
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);
         assertFalse(JSON.parseObject(before).getBooleanValue("enabled"));

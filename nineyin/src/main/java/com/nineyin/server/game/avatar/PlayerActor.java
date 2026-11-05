@@ -63,6 +63,10 @@ public final class PlayerActor {
     record ActiveBuff(long staticData, Instant expiresUtc, String configId, int level) {
     }
 
+    /** 内功护盾（shield{amount,life_ms} 指令产物；FIFO 消耗，到期/耗尽即弃）。 */
+    record NeiGongShield(int amount, long expiresAtMs) {
+    }
+
     private final Actor actor;
     private final Clock clock;
     /** 碎银（CapitalType1）：volatile——addObject/vital 归档线程与 GM 设置并发读写。 */
@@ -73,6 +77,13 @@ public final class PlayerActor {
     private String faction;
     private final Motion motion = new Motion();
     private final java.util.Map<Integer, ActiveBuff> buffs = new java.util.HashMap<>();
+    /** 内功特效运行期 state（bookId → 脚本返回扁平表，Java 持有回喂；内存态随会话不落档）。 */
+    private final java.util.Map<String, java.util.Map<String, Object>> neigongState =
+            new java.util.HashMap<>();
+    /** 内功特效各书最近有效触发时刻（bookId → epoch ms，算 ctx.since_last_ms）。 */
+    private final java.util.Map<String, Long> neigongLastFireAt = new java.util.HashMap<>();
+    /** 内功护盾池（受击路径先扣盾再落血）。 */
+    private final java.util.List<NeiGongShield> neigongShields = new java.util.ArrayList<>();
     /** 右键格挡：54 按值幂等落态（0=按下/1=松开），状态变化才回帧（F 盘抓包 78 发→50 沿）。 */
     private volatile boolean parrying;
     final PlayerProgress progress;
@@ -555,11 +566,85 @@ public final class PlayerActor {
     }
 
     /**
-     * NPC 反击伤害落地（NpcCombatAi；参考服口径实伤 1）。返回 false=已死不结算。
+     * NPC 反击伤害落地（NpcCombatAi；参考服口径实伤 1）。内功护盾先行 FIFO 吸收
+     * （到期即弃），返回<b>实际落血值</b>：&gt;0=落血（调用方发伤害帧）、
+     * 0=全吸收（静默，对齐格挡形态）、-1=已死不结算（原 boolean false 语义）。
      * 血条推送由调用方走 0x2D 的 HPRatio（参考服 NPC 命中不发玩家 HP 面板）。
      */
-    public synchronized boolean applyNpcDamage(int amount) {
-        return actor.applyDamage(amount);
+    public synchronized int applyNpcDamage(int amount) {
+        if (amount <= 0) {
+            return 0;
+        }
+        if (actorState().hp() <= 0) {
+            return -1;
+        }
+        pruneNeiGongShields();
+        int remaining = amount;
+        java.util.ListIterator<NeiGongShield> it = neigongShields.listIterator();
+        while (remaining > 0 && it.hasNext()) {
+            NeiGongShield shield = it.next();
+            int absorbed = Math.min(shield.amount(), remaining);
+            remaining -= absorbed;
+            if (absorbed >= shield.amount()) {
+                it.remove();
+            } else {
+                it.set(new NeiGongShield(shield.amount() - absorbed, shield.expiresAtMs()));
+            }
+        }
+        if (remaining > 0) {
+            actor.applyDamage(remaining);
+        }
+        return remaining; // 剩余未吸收部分=实际落血（全吸收=0）
+    }
+
+    // ------------------------------------------------------------------ neigong effects
+
+    /** 内功特效 state 快照（bookId；无态返回空表，调用方免判空）。 */
+    public synchronized java.util.Map<String, Object> neigongStateOf(String bookId) {
+        java.util.Map<String, Object> state = neigongState.get(bookId);
+        return state == null ? java.util.Map.of() : new java.util.HashMap<>(state);
+    }
+
+    /** 内功特效 state 回写（脚本返回表；null/空 = 清态，窗口过期自然复位）。 */
+    public synchronized void storeNeigongState(String bookId, java.util.Map<String, Object> state) {
+        if (state == null || state.isEmpty()) {
+            neigongState.remove(bookId);
+        } else {
+            neigongState.put(bookId, new java.util.HashMap<>(state));
+        }
+    }
+
+    /** 内功特效各书最近有效触发时刻（epoch ms；从未触发返回 -1 → ctx.since_last_ms=-1）。 */
+    public synchronized long neigongLastFireAt(String bookId) {
+        return neigongLastFireAt.getOrDefault(bookId, -1L);
+    }
+
+    /** 记一次有效触发（仅非空指令返回时调；纯 nil 返回不推进节拍，周期门才成立）。 */
+    public synchronized void markNeigongFired(String bookId) {
+        neigongLastFireAt.put(bookId, clock.instant().toEpochMilli());
+    }
+
+    /** 内功护盾注入（shield{amount,life_ms}；非正值静默忽略）。 */
+    public synchronized void addNeiGongShield(int amount, long lifeMs) {
+        if (amount <= 0 || lifeMs <= 0) {
+            return;
+        }
+        neigongShields.add(new NeiGongShield(amount, clock.instant().toEpochMilli() + lifeMs));
+    }
+
+    /** 当前内功护盾总量（过期顺带清理；测试/调试口）。 */
+    public synchronized int neigongShieldTotal() {
+        pruneNeiGongShields();
+        int total = 0;
+        for (NeiGongShield shield : neigongShields) {
+            total += shield.amount();
+        }
+        return total;
+    }
+
+    private void pruneNeiGongShields() {
+        long now = clock.instant().toEpochMilli();
+        neigongShields.removeIf(shield -> shield.expiresAtMs() <= now || shield.amount() <= 0);
     }
 
     // ------------------------------------------------------------------ parry value

@@ -63,6 +63,9 @@ public final class FightState {
     private int selectedOwner;
     /** NPC 反击 AI（懒挂，玩家首次命中目标时创建；选角/切图随 FightState 重建）。 */
     private volatile NpcCombatAi npcAi;
+    /** 内功周期 ticker 拉起标记（拉起时 CAS 置位，脱战停跑复位）。 */
+    private final java.util.concurrent.atomic.AtomicBoolean neigongTickerStarted =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     /** 0x07/431 选中：须为 combat NPC 且存活（Go selectedCombatTarget 语义）。 */
     public synchronized boolean selectTarget(SceneLifecycle world, int objectId, int ownerId) {
@@ -208,6 +211,11 @@ public final class FightState {
     /** 挂反击 AI（playerEngaged 换会话时重建）。 */
     public void attachNpcAi(NpcCombatAi ai) {
         this.npcAi = ai;
+    }
+
+    /** 内功周期 ticker 拉起标记（NeiGongEffects.ensureTicker 防重复建任务；停跑自复位）。 */
+    public java.util.concurrent.atomic.AtomicBoolean neigongTickerStarted() {
+        return neigongTickerStarted;
     }
 
     /**

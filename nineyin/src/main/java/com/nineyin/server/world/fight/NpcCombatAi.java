@@ -118,19 +118,27 @@ final class NpcCombatAi {
             boolean parried = player.parrying();
             int rage = parried ? SkillCastHandler.RAGE_TAKEN_PARRIED
                     : SkillCastHandler.RAGE_TAKEN_UNPARRIED;
-            if (!parried && player.applyNpcDamage(DAMAGE_PER_HIT)) {
-                int hp = player.actorState().hp();
-                int maxHp = Math.max(1, player.actorState().maxHp());
-                context.connection().writeFrame(FightMessages.npcDamageFloat(
-                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, DAMAGE_PER_HIT,
-                        info.id(), info.ownerId(), info.modelOrFallback(),
-                        player.snapshotName(), npcDisplayName(info)));
-                context.connection().writeFrame(FightMessages.hitEffect(
-                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
-                        hp * 100 / maxHp));
-                // 被击技能锁（Go 500ms）：受击瞬间打断施法节奏的官方语义，接口已备。
-                player.lockSkillsUntil(Instant.ofEpochMilli(
-                        context.clock().instant().toEpochMilli() + 500));
+            // 内功 defender 钩子（格挡走 on_parry；受击走 on_victim：减免/护盾/回血/反弹）。
+            NeiGongEffects.VictimOutcome outcome = NeiGongEffects.onVictim(
+                    context, info, combat, DAMAGE_PER_HIT, parried);
+            if (!parried) {
+                int applied = player.applyNpcDamage(outcome.applied());
+                if (applied > 0) {
+                    int hp = player.actorState().hp();
+                    int maxHp = Math.max(1, player.actorState().maxHp());
+                    context.connection().writeFrame(FightMessages.npcDamageFloat(
+                            PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, applied,
+                            info.id(), info.ownerId(), info.modelOrFallback(),
+                            player.snapshotName(), npcDisplayName(info)));
+                    context.connection().writeFrame(FightMessages.hitEffect(
+                            PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                            hp * 100 / maxHp));
+                    // 被击技能锁（Go 500ms）：受击瞬间打断施法节奏的官方语义，接口已备。
+                    player.lockSkillsUntil(Instant.ofEpochMilli(
+                            context.clock().instant().toEpochMilli() + 500));
+                }
+                // 内功反弹：护盾/减免结算后反打 NPC（击杀走 onNpcKilled 常规链）。
+                NeiGongEffects.applyReflect(context, info, combat, outcome.reflect());
             }
             int spBefore = player.sp();
             PlayerActor.SPUpdate update = player.addSP(rage);

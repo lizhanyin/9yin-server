@@ -13,12 +13,12 @@
 |---|---|---|
 | `combat/formula.lua` | `M.calc(c) → {damage, miss, crit, parried, reduction_pct}` 伤害公式权威实现 | 战斗一期已接 |
 | `skill/<技能ID>.lua` | `M.compile(def) → overlay` 编译期增量覆盖 | 战斗一期已接（6 个） |
-| `neigong/buf_ng_*.lua` | `M.levels` / `M.on_hit(ctx)` / `M.on_be_hit(ctx)` 等内功 buff 特效 | 待接（战斗二期 hook）；155 本（138 手写 + 17 自 res1 生成，见下） |
+| `neigong/buf_ng_*.lua` | `M.on_attack/on_victim/on_parry/on_periodic|on_tick(ctx)` 内功 buff 特效运行期钩子 | 已接（战斗二期，2026-11-05，见下节） |
 | `item/*.lua` | useitem/box/yaopin 使用物效果 | 已接（msg31 使用链，2026-11-04） |
 
-### 内功脚本与 res1 数据对勘（2026-11-05）
+### 内功脚本与 resources 数据对勘（2026-11-05）
 
-数据源统一为 `E:/Workspace/project/game/res1`（盛大GM版客户端资源）：
+数据源统一为 `E:/Workspace/project/game/resources`（盛大GM版客户端资源）：
 
 - **134 本手写脚本数值与 res1 层级描述（`desc_buf_ng_<书>_<层>`）逐层对勘一致**，无需改动
   （`tools/skill-data/verify_neigong_scripts.py` 输出的差异均为单位换算/管线取舍的既有注释项）。
@@ -126,11 +126,49 @@ INI 回退（`ItemUseCatalog.resolve(configId, itemType)`，share/item 下三表
 
 ## 热重载
 
-GM 面板 `reload_scripts`（GmRemote 白名单 + applyGmCommand）：重建 Lua 状态并清 overlay/itemUse 缓存，
+GM 面板 `reload_scripts`（GmRemote 白名单 + applyGmCommand）：重建 Lua 状态并清 overlay/itemUse/neigong 缓存，
 下一次出招/使用即生效；重载失败自动回退 Java 管线并回执失败原因。
+
+## neigong/buf_ng_*.lua（内功特效运行期钩子，战斗二期 2026-11-05 接线）
+
+分发器 `world/fight/NeiGongEffects`（装备书 `progress.book(curNeiGong).buffId` → 脚本），
+经 `LuaScriptService.neigongHook(buffId, hook, ctx)` 每次事件调用（模块全局仅装载一次）。
+155 本（138 手写 + 17 生成桩）；28 本 jh 占位无脚本自然跳过。
+
+**钩子映射**（生成桩的 `on_hit`/`on_be_hit` 按 attacker/defender 侧别名兜底探测）：
+
+| 战斗事件 | 接线点 | 钩子 |
+|---|---|---|
+| 玩家实中目标（单段逐目标 / 多段逐拍逐目标；miss 不触发） | `SkillCastHandler.settleTargets` / `scheduleMultiHits` | `on_attack`（→`on_hit`） |
+| 玩家被 NPC 命中（未格挡） | `NpcCombatAi.tick` | `on_victim`（→`on_be_hit`） |
+| 玩家格挡下 NPC 攻击（当前管线格挡零伤，只落 state/heal/mp/shield） | `NpcCombatAi.tick` | `on_parry` |
+| 战斗期间周期（1s 节拍；脱战自停，flag 复位待下次 playerEngaged） | `NeiGongEffects.ensureTicker` | `on_periodic` / `on_tick` |
+
+**ctx**（只读，Java 预填；`rand.r_proc` Java 预掷同 formula.lua 约定，脚本不掷骰）：
+`book_level/book_max_level/story_stage/now/damage/incoming/parried/crit/since_last_ms` +
+`self{hp,max_hp,mp,max_mp,attack}` + `target{oid,hp,max_hp}` + `attacker{oid}` +
+`state`（上一次有效触发返回的扁平表，Java 侧 PlayerActor 持有）+ `rand{r_proc}`。
+档位门（`tier_of`：cap=3+story_stage-1）随 `story_stage` 开档——九阴志系统落地前取
+`-Dnineyin.neigong.storyStage`（默认 1）。
+
+**返回指令白名单**（非法条目 WARN 丢弃，不打断战斗链）：
+`extra_damage{amount,kind}`（并入当次落血值与飘字/真气；kind 现管线统一外功仅透传）、
+`reduce_pct`（0..1，折算 incoming）、`shield{amount,life_ms}`（PlayerActor 盾池 FIFO 吸收，
+到期即弃；**全吸收=格挡式静默零帧**，被击回怒照常）、`heal`/`mp_restore`（`restore`+0x10 vitalUpdate）、
+`reflect`（反打 NPC，击杀走 `onNpcKilled` 常规链）、`state{...}`（扁平表回写，互斥/周期窗口所在；
+会话内存态不落 FacultyStore 快照——窗口多为 6~20s，跨重启无意义）、
+`parry_reduce{internal,external}`（解析占位：管线格挡零伤无外功/内功之分）。
+
+**降级与隔离**：无书/无脚本/坏脚本/引擎不可用 → 静默零效果，出招与伤害链永不被阻断；
+**坏脚本只禁用该 buffId**（per-script 禁用集），绝不 markBroken 公式引擎；
+无钩子书不消费随机数（既有 RNG 序列零扰动）。`M.passive`（27 本静态属性，需并入
+`CombatFormulas.Input` 守方侧与资源上限计算）与护盾打破回内力（wd_001 层4）留待下一期。
+
+**测试**：`script/LuaNeigongHookTest`（Lua 契约：proc/state 互斥窗/周期门/档位门）、
+`world/fight/NeiGongEffectsFlowTest`（管线：盾吸收/附伤窗/ticker/reflect 击杀/被击帧回归；
+临时根 junction 拼 GO 仓 resources + 本仓 scripts，AfterAll 还原）。
 
 ## 运行期钩子（战斗二期预留）
 
 - `M.on_hit(ctx)`：`ctx.caster.stance_static_data`（架势相位）、`ctx.ratio`，返回 `{ratio=...}` 调整本波倍率
   （CS_wd_tjq04.lua 有注释示例，默认关闭）。
-- 内功 `M.on_hit/M.on_be_hit`：吸收/反伤/HoT（scripts/neigong 138 个，钩子接线在 NPC AI 期一并做）。

@@ -86,6 +86,10 @@ class GroundChargeAndRageTest {
             world.begin("ini\\scene\\scene01", "scene01");
             world.registerNpc(2, SkillCastHandlerFlowTest.combatNpc(
                     "monv030101", npcMaxHp, npcX, 20f, npcZ));
+            // 换装无 buff 钩子的书：本文件用「帧数推 SP」，而默认书 buf_ng_wd_001 的
+            // 受击护盾 proc 会静默吸收被击帧（吸收=格挡式零帧，但被击回怒照 +1）——
+            // 怒气/冲锋语义与内功 proc 解耦，proc 行为由 NeiGongEffectsFlowTest 专测。
+            player.equipNeiGong("ng_wd_002");
         }
 
         void cast(String skillId, float x, float y, float z) {

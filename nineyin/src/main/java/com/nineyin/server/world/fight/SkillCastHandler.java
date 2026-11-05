@@ -363,6 +363,8 @@ public final class SkillCastHandler {
         if (!targets.isEmpty()) {
             NpcCombatAi.playerEngaged(context, targets, x, y, z);
         }
+        // 内功周期钩子 ticker（on_periodic/on_tick）：战斗拉起时探测建任务，脱战自停。
+        NeiGongEffects.ensureTicker(context);
         if (skill.hitFrameMs().isEmpty()) {
             // 单段技能：原路径（即时结算，帧序对齐 62433 抓包）。
             List<Hit> hits = settleTargets(context, skill, targets, now);
@@ -736,7 +738,11 @@ public final class SkillCastHandler {
                                            List<FightState.HitTarget> targets, Instant now) {
         List<Hit> hits = new ArrayList<>(4);
         for (FightState.HitTarget target : targets) {
-            int damage = rollDamage(context, skill);
+            RollResult roll = rollDamage(context, skill);
+            // 内功 attacker 钩子只在实中时触发（miss 不掷 proc，附伤并入落血值）。
+            int damage = roll.damage() > 0
+                    ? roll.damage() + NeiGongEffects.onAttack(context, target, roll.damage(), roll.crit())
+                    : 0;
             if (damage > 0) {
                 FightState.DamageOutcome outcome =
                         context.fight().applyDamage(target.combat(), damage, now);
@@ -796,10 +802,12 @@ public final class SkillCastHandler {
     private static void scheduleMultiHits(CastContext context, CombatSkill skill,
                                           List<FightState.HitTarget> targets,
                                           List<Long> times, String playerName) {
-        int damage = rollDamage(context, skill);
+        RollResult roll = rollDamage(context, skill);
+        int damage = roll.damage();
         if (targets.isEmpty() || damage <= 0) {
             return; // 无目标/未掷中：零命中零帧
         }
+        final boolean crit = roll.crit();
         long[] landedTotal = {0};
         boolean[] firstTick = {true};
         long lastAt = times.get(times.size() - 1);
@@ -816,8 +824,11 @@ public final class SkillCastHandler {
                     if (state.hp() <= 0) {
                         continue; // 前段已击杀：后续段跳过（不发帧）
                     }
+                    // 内功 attacker 钩子逐段逐目标触发（wd_004 震伤：窗口内每次命中附阳伤）。
+                    int tickDamage = damage
+                            + NeiGongEffects.onAttack(context, target, damage, crit);
                     FightState.DamageOutcome outcome =
-                            context.fight().applyDamage(target.combat(), damage, now);
+                            context.fight().applyDamage(target.combat(), tickDamage, now);
                     if (!outcome.applied()) {
                         continue;
                     }
@@ -825,7 +836,7 @@ public final class SkillCastHandler {
                         killed = true;
                         onNpcKilled(context, target);
                     }
-                    hits.add(new Hit(target, damage));
+                    hits.add(new Hit(target, tickDamage));
                 }
                 if (hits.isEmpty()) {
                     return;
@@ -849,7 +860,7 @@ public final class SkillCastHandler {
                             "buf_fixed_red", playerName));
                 }
                 awardRagePerHit(context, hits); // 每段每目标各 +2（官方多段叠加速更快）
-                landedTotal[0] += (long) damage * hits.size();
+                landedTotal[0] += hits.stream().mapToLong(Hit::damage).sum();
                 if (lastTick) {
                     feedZhenQiAmount(context, (int) Math.min(landedTotal[0], Integer.MAX_VALUE));
                 }
@@ -857,12 +868,16 @@ public final class SkillCastHandler {
         }
     }
 
+    /** 掷值产物：damage=0 即未命中（crit 供内功钩子 ctx.crit 透传）。 */
+    record RollResult(int damage, boolean crit) {
+    }
+
     /**
      * formula.lua（Lua 权威/Java 兜底）：attack=基础+装备+内功掷值（面板同口径），
      * 守方侧当前取缺省。掷骰序：miss/crit 先掷、区间掷值后掷——前两者不依赖区间
      * 跨度，同种子下命中/暴击结论稳定（可测试）。
      */
-    private static int rollDamage(CastContext context, CombatSkill skill) {
+    private static RollResult rollDamage(CastContext context, CombatSkill skill) {
         double missRoll = context.random().nextDouble();
         double critRoll = context.random().nextDouble();
         int[] range = context.player().meleeDamageRange();
@@ -878,7 +893,9 @@ public final class SkillCastHandler {
                 skill.damageRatio(), false,
                 missRoll, critRoll);
         CombatFormulas.Result result = LuaScriptService.getInstance().calc(input);
-        return result.miss() ? 0 : (int) Math.min(result.damage(), Integer.MAX_VALUE);
+        return result.miss()
+                ? new RollResult(0, false)
+                : new RollResult((int) Math.min(result.damage(), Integer.MAX_VALUE), result.crit());
     }
 
     private static void emitPerTargetSequence(CastContext context, CombatSkill skill,
@@ -1074,7 +1091,7 @@ public final class SkillCastHandler {
      * 击杀分发：会话层击杀接管钩子（世界 BOSS）认领目标 → 跳过重生由其善后
      * （摘对象 + 面板回执）；未认领走默认 15s 满血重生。
      */
-    private static void onNpcKilled(CastContext context, FightState.HitTarget hit) {
+    static void onNpcKilled(CastContext context, FightState.HitTarget hit) {
         IntPredicate override = context.npcKillOverride();
         if (override != null && override.test(hit.info().id())) {
             return;

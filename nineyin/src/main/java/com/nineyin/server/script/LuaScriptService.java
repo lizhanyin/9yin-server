@@ -22,7 +22,9 @@ import com.nineyin.util.ServerPaths;
  * <p>契约见 docs/skill-script-framework.md：scripts/combat/formula.lua 的 M.calc(c)
  * 为伤害公式权威实现（Java 兜底 {@link CombatFormulas} 同常量同掷骰顺序）；
  * scripts/skill/&lt;技能ID&gt;.lua 的 M.compile(def) 返回编译期增量覆盖
- * （self_buff_lease_ms/self_buff_slot 等，缺省沿用 INI 编译效果）。
+ * （self_buff_lease_ms/self_buff_slot 等，缺省沿用 INI 编译效果）；
+ * scripts/neigong/&lt;buffId&gt;.lua 的 M.on_attack/on_victim/on_parry/on_periodic/on_tick(ctx)
+ * 为内功特效运行期钩子（每次事件调用，返回指令白名单解析，坏脚本按脚本隔离禁用）。
  *
  * <p>降级方言：natives 加载失败（LinkageError）/脚本文件缺失/执行异常 → 伤害公式回退
  * Java、技能覆盖返回 null，服务端不因脚本层不可用而拒绝出招。
@@ -80,12 +82,50 @@ public final class LuaScriptService {
         }
     }
 
+    /**
+     * 内功运行期钩子 M.on_attack/on_victim/on_parry/on_periodic/on_tick(ctx) 的 ctx 快照
+     * （scripts/neigong/&lt;buffId&gt;.lua；rand.r_proc Java 预掷同 formula.lua 约定）。
+     * self/target/attacker 为嵌套表：self={hp,max_hp,mp,max_mp,attack}、
+     * target/attacker={oid,hp,max_hp}（语料实际使用字段集）。
+     */
+    public record NeiGongCtx(int bookLevel, int bookMaxLevel, int storyStage, long nowMs,
+                             double rProc, Map<String, Object> state,
+                             int damage, int incoming, boolean parried, boolean crit,
+                             long sinceLastMs, int selfHp, int selfMaxHp, int selfMp, int selfMaxMp,
+                             int selfAttack, int targetOid, int targetHp, int targetMaxHp,
+                             int attackerOid) {
+    }
+
+    /**
+     * 内功钩子返回指令（白名单解析，非法条目 WARN 丢弃）：extra_damage{amount,kind}
+     * 附伤（kind 现管线统一外功，仅透传）、reduce_pct 比例减免（0..1）、
+     * shield{amount,life_ms} 护盾、heal/reflect/mp_restore 回血/反弹/回蓝、
+     * state 扁平表（跨调用由 Java 持久，内存态）、parry_reduce{internal,external}
+     * （当前管线格挡零伤，解析占位）。
+     */
+    public record NeiGongResult(int extraDamage, String extraDamageKind, double reducePct,
+                                int shieldAmount, long shieldLifeMs, int heal, int reflect,
+                                int mpRestore, Map<String, Object> state,
+                                int parryReduceInternal, int parryReduceExternal) {
+
+        /** 全空指令（nil 语义）——分发器据此不推进 since_last_ms 节拍。 */
+        public boolean isEmpty() {
+            return extraDamage <= 0 && reducePct <= 0 && shieldAmount <= 0 && heal <= 0
+                    && reflect <= 0 && mpRestore <= 0
+                    && (state == null || state.isEmpty());
+        }
+    }
+
     private final Object lock = new Object();
     private Lua lua;
     private boolean broken;
     private String brokenReason = "";
     private final Map<String, SkillOverlay> overlayCache = new ConcurrentHashMap<>();
     private final Map<String, ItemUse> itemUseCache = new ConcurrentHashMap<>();
+    /** 内功钩子存在性缓存（buffId@hook → 模块已装载且钩子为函数）。 */
+    private final Map<String, Boolean> neigongHookCache = new ConcurrentHashMap<>();
+    /** 坏脚本禁用集（运行期异常按脚本隔离，不 markBroken 整个引擎）。 */
+    private final java.util.Set<String> neigongBroken = ConcurrentHashMap.newKeySet();
 
     private LuaScriptService() {
         synchronized (lock) {
@@ -196,11 +236,70 @@ public final class LuaScriptService {
         }
     }
 
+    /**
+     * 内功钩子存在性（scripts/neigong/&lt;buffId&gt;.lua 装载成功且 hook 为函数）：
+     * 调度器据此决定是否消费随机数/拉起任务——无脚本玩家 RNG 序列零扰动。
+     * 结果按 buffId@hook 缓存，reload 后重算。
+     */
+    public boolean neigongHasHook(String buffId, String hook) {
+        if (buffId == null || buffId.isEmpty() || hook == null || hook.isEmpty()) {
+            return false;
+        }
+        String key = buffId + "@" + hook;
+        Boolean cached = neigongHookCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (lock) {
+            cached = neigongHookCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            boolean has = false;
+            if (lua != null && !broken && !neigongBroken.contains(buffId)) {
+                try {
+                    has = ensureNeigongModuleLocked(buffId) && hookIsFunctionLocked(buffId, hook);
+                } catch (RuntimeException e) {
+                    disableNeigongScript(buffId, "probe " + hook + ": " + e);
+                }
+            }
+            neigongHookCache.put(key, has);
+            return has;
+        }
+    }
+
+    /**
+     * 内功运行期钩子调用（每次事件 pCall，模块全局仅装载一次）：
+     * 无脚本/无钩子/坏脚本/引擎不可用 → null，调用方静默跳过（特效降级不阻断战斗）。
+     * 脚本异常只禁用该 buffId，绝不 markBroken 公式引擎。
+     */
+    public NeiGongResult neigongHook(String buffId, String hook, NeiGongCtx ctx) {
+        if (buffId == null || buffId.isEmpty() || hook == null || ctx == null) {
+            return null;
+        }
+        if (!neigongHasHook(buffId, hook)) {
+            return null;
+        }
+        synchronized (lock) {
+            if (lua == null || broken || neigongBroken.contains(buffId)) {
+                return null;
+            }
+            try {
+                return callNeigongHookLocked(buffId, hook, ctx);
+            } catch (RuntimeException e) {
+                disableNeigongScript(buffId, hook + ": " + e);
+                return null;
+            }
+        }
+    }
+
     /** GM reload_scripts：重建引擎并清覆盖缓存（失败会回退 Java 管线而非抛出）。 */
     public void reload() {
         synchronized (lock) {
             overlayCache.clear();
             itemUseCache.clear();
+            neigongHookCache.clear();
+            neigongBroken.clear();
             closeQuietly();
             initLocked();
             LOG.info("lua scripts reloaded: available=" + (lua != null && !broken));
@@ -461,6 +560,213 @@ public final class LuaScriptService {
         } finally {
             lua.pop(1);
         }
+    }
+
+    // ------------------------------------------------------------------ neigong internal
+
+    private static String neigongGlobal(String buffId) {
+        return "NeigongModule_" + buffId.replaceAll("[^A-Za-z0-9_]", "_");
+    }
+
+    /** 模块全局已在当前 Lua 状态则复用，否则装载脚本文件（无文件 → false）。 */
+    private boolean ensureNeigongModuleLocked(String buffId) throws RuntimeException {
+        String global = neigongGlobal(buffId);
+        lua.getGlobal(global);
+        boolean ready = lua.isTable(-1);
+        lua.pop(1);
+        if (ready) {
+            return true;
+        }
+        Path script = scriptPath("neigong", buffId + ".lua");
+        if (!Files.isRegularFile(script)) {
+            return false;
+        }
+        return runModuleLocked(script, global);
+    }
+
+    private boolean hookIsFunctionLocked(String buffId, String hook) throws RuntimeException {
+        lua.getGlobal(neigongGlobal(buffId));
+        lua.getField(-1, hook);
+        boolean isFunction = lua.isFunction(-1);
+        lua.pop(2);
+        return isFunction;
+    }
+
+    /** 按脚本隔离禁用（WARN 一次），不 markBroken——一本坏脚本不废掉公式引擎。 */
+    private void disableNeigongScript(String buffId, String reason) {
+        if (neigongBroken.add(buffId)) {
+            LOG.warning("neigong script " + buffId + " disabled (" + reason + ")");
+        }
+    }
+
+    /** 调 M.&lt;hook&gt;(ctx) 并解析返回指令表（无钩子/nil 返回 → null）。 */
+    private NeiGongResult callNeigongHookLocked(String buffId, String hook,
+                                                NeiGongCtx ctx) throws RuntimeException {
+        lua.getGlobal(neigongGlobal(buffId));
+        lua.getField(-1, hook);
+        if (!lua.isFunction(-1)) {
+            lua.pop(2);
+            return null;
+        }
+        buildNeigongCtxTable(ctx);
+        lua.pCall(1, 1);
+        if (!lua.isTable(-1)) {
+            lua.pop(2);
+            return null;
+        }
+        NeiGongResult result = parseNeigongLocked(buffId);
+        lua.pop(2);
+        return result;
+    }
+
+    /** ctx 建表（顶层 + self/target/attacker/rand/state 嵌套；调用前栈顶须为函数）。 */
+    private void buildNeigongCtxTable(NeiGongCtx ctx) {
+        lua.createTable(0, 16);
+        setNum("book_level", ctx.bookLevel());
+        setNum("book_max_level", ctx.bookMaxLevel());
+        setNum("story_stage", ctx.storyStage());
+        setNum("now", ctx.nowMs());
+        setNum("damage", ctx.damage());
+        setNum("incoming", ctx.incoming());
+        lua.push(ctx.parried());
+        lua.setField(-2, "parried");
+        lua.push(ctx.crit());
+        lua.setField(-2, "crit");
+        setNum("since_last_ms", ctx.sinceLastMs());
+        lua.createTable(0, 5);
+        setNum("hp", ctx.selfHp());
+        setNum("max_hp", ctx.selfMaxHp());
+        setNum("mp", ctx.selfMp());
+        setNum("max_mp", ctx.selfMaxMp());
+        setNum("attack", ctx.selfAttack());
+        lua.setField(-2, "self");
+        lua.createTable(0, 3);
+        setNum("oid", ctx.targetOid());
+        setNum("hp", ctx.targetHp());
+        setNum("max_hp", ctx.targetMaxHp());
+        lua.setField(-2, "target");
+        lua.createTable(0, 1);
+        setNum("oid", ctx.attackerOid());
+        lua.setField(-2, "attacker");
+        lua.createTable(0, 1);
+        setNum("r_proc", ctx.rProc());
+        lua.setField(-2, "rand");
+        Map<String, Object> state = ctx.state();
+        if (state != null && !state.isEmpty()) {
+            lua.createTable(0, Math.min(state.size(), 16));
+            for (Map.Entry<String, Object> entry : state.entrySet()) {
+                Object value = entry.getValue();
+                if (value instanceof Number number) {
+                    lua.push(number.doubleValue());
+                } else if (value instanceof Boolean bool) {
+                    lua.push(bool);
+                } else if (value instanceof String text) {
+                    lua.push(text);
+                } else {
+                    continue;
+                }
+                lua.setField(-2, entry.getKey());
+            }
+            lua.setField(-2, "state");
+        }
+    }
+
+    /** 解析栈顶钩子返回表（白名单；非法条目 WARN 丢弃，不打断战斗链）。 */
+    private NeiGongResult parseNeigongLocked(String buffId) {
+        int extraDamage = 0;
+        String extraKind = "";
+        lua.getField(-1, "extra_damage");
+        if (lua.isTable(-1)) {
+            extraDamage = (int) readIntFieldAtTop("amount");
+            lua.getField(-1, "kind");
+            extraKind = lua.isString(-1) ? lua.toString(-1).trim() : "";
+            lua.pop(1);
+        }
+        lua.pop(1);
+        double reducePct = readNum("reduce_pct");
+        if (reducePct < 0 || reducePct >= 1) {
+            if (reducePct != 0) {
+                LOG.warning("neigong script " + buffId + ": reduce_pct " + reducePct
+                        + " outside [0,1), clamped");
+            }
+            reducePct = Math.max(0, Math.min(0.99, reducePct));
+        }
+        int shieldAmount = 0;
+        long shieldLifeMs = 0;
+        lua.getField(-1, "shield");
+        if (lua.isTable(-1)) {
+            shieldAmount = (int) readIntFieldAtTop("amount");
+            shieldLifeMs = readIntFieldAtTop("life_ms");
+            if (shieldAmount <= 0 || shieldLifeMs <= 0) {
+                LOG.warning("neigong script " + buffId
+                        + ": shield needs amount>0 and life_ms>0, dropped");
+                shieldAmount = 0;
+                shieldLifeMs = 0;
+            }
+        }
+        lua.pop(1);
+        int heal = positiveField("heal");
+        int reflect = positiveField("reflect");
+        int mpRestore = positiveField("mp_restore");
+        int parryInternal = 0;
+        int parryExternal = 0;
+        lua.getField(-1, "parry_reduce");
+        if (lua.isTable(-1)) {
+            parryInternal = (int) readIntFieldAtTop("internal");
+            parryExternal = (int) readIntFieldAtTop("external");
+        }
+        lua.pop(1);
+        Map<String, Object> state = null;
+        lua.getField(-1, "state");
+        if (lua.isTable(-1)) {
+            state = readFlatTableAt(lua.getTop(), buffId);
+        }
+        lua.pop(1);
+        return new NeiGongResult(extraDamage, extraKind, reducePct, shieldAmount, shieldLifeMs,
+                heal, reflect, mpRestore, state, parryInternal, parryExternal);
+    }
+
+    /**
+     * 读栈顶 index 处扁平表（string 键 → number/string/boolean，最多 16 条；
+     * 整数数值归一为 Long）。嵌套表/越界条目 WARN 跳过。
+     */
+    private Map<String, Object> readFlatTableAt(int index, String buffId) {
+        Map<String, Object> out = new java.util.HashMap<>();
+        lua.pushNil();
+        int scanned = 0;
+        boolean capped = false;
+        while (lua.next(index) != 0) {
+            if (++scanned > 16) {
+                lua.pop(1); // 值弹出，键留给下一轮——容量截断时再补弹
+                capped = true;
+                break;
+            }
+            if (lua.isString(-2)) {
+                String key = lua.toString(-2);
+                Object value = null;
+                if (lua.isNumber(-1)) {
+                    double d = lua.toNumber(-1);
+                    value = d == Math.floor(d) && !Double.isInfinite(d)
+                            ? (Object) (long) d : (Object) d;
+                } else if (lua.isString(-1)) {
+                    value = lua.toString(-1);
+                } else if (lua.isBoolean(-1)) {
+                    value = lua.toBoolean(-1);
+                }
+                if (value == null) {
+                    LOG.warning("neigong script " + buffId + ": state[" + key
+                            + "] unsupported value type, dropped");
+                } else {
+                    out.put(key, value);
+                }
+            }
+            lua.pop(1); // 弹值留键，续遍历
+        }
+        if (capped) {
+            lua.pop(1); // 补弹残留键，栈平衡
+            LOG.warning("neigong script " + buffId + ": state entries capped at 16");
+        }
+        return out;
     }
 
     /** 栈顶 table 的正整数控件（负值/缺失 → 0，超 int 上限钳制）。 */

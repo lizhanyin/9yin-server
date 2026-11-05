@@ -27,7 +27,7 @@ import re
 import sys
 from collections import Counter, OrderedDict, defaultdict
 
-DEFAULT_SRC = r"E:/Workspace/九阴服务端/resources/modern/text/chineses"
+DEFAULT_SRC = r"resources/modern/text/chineses"
 DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "text-extract")
 
 # ---------------------------------------------------------------- idres 解析
@@ -380,6 +380,101 @@ def main(src_dir, out_dir):
         "cond_count": len(cond), "sysinfo_count": len(sysinfo),
         "talk_count": len(talk), "gather_codex_count": len(gather_rows),
     }
+    # ---- 9) 任务文本表 --------------------------------------------------
+    # stringtask_normal/ + stringtask_special/：按任务 ID 聚合（title/target/context/
+    # accept/submit/complete/DialogID/menu 等），special/question.idres 数字键为标题。
+    print("抽取任务文本 ...")
+    from glob import glob
+    TASK_FIELD_MAP = {  # key 前缀 -> 输出字段（统一小写）
+        "title": "title", "target": "target", "context": "context",
+        "accept": "accept", "submit": "submit", "complete": "complete",
+        "next": "next", "menu": "menu", "dialogid": "dialog",
+        "canacceptmenu": "can_accept_menu", "completemenu": "complete_menu",
+        "uncompletemenu": "uncomplete_menu", "okmenu": "ok_menu",
+        "interactinfo": "interact_info", "hunterinfo": "hunter_info",
+        "collectinfo": "collect_info", "storyinfo": "story_info",
+        "story_menu": "story_menu", "submitnpcex": "submit_npc",
+        "qiecuomenu": "qiecuo_menu", "qiecuotitle": "qiecuo_title",
+    }
+    quest = OrderedDict()
+    quest_files = defaultdict(set)
+    key_pat = re.compile(r"^(?P<pfx>[A-Za-z_]+?)_?(?P<tid>\d+)$")
+    special_names = OrderedDict()
+    for sub in ("stringtask_normal", "stringtask_special"):
+        sub_dir = os.path.join(src_dir, sub)
+        if not os.path.isdir(sub_dir):
+            continue
+        for fp in sorted(glob(os.path.join(sub_dir, "*.idres"))):
+            base = os.path.basename(fp)
+            for k, v in load_idres(fp).items():
+                m = key_pat.match(k)
+                if not m:
+                    if sub == "stringtask_special" and v:
+                        special_names[k] = v
+                    continue
+                pfx = m.group("pfx").lower()
+                field = TASK_FIELD_MAP.get(pfx)
+                if not field:
+                    continue
+                tid = int(m.group("tid"))
+                row = quest.setdefault(tid, {})
+                if v:
+                    row.setdefault(field, v)
+                quest_files[tid].add(sub + "/" + base)
+    # question.idres 里的数字键是 special 任务标题
+    qpath = os.path.join(src_dir, "stringtask_special", "question.idres")
+    if os.path.isfile(qpath):
+        for k, v in load_idres(qpath).items():
+            if k.isdigit() and v:
+                quest.setdefault(int(k), {}).setdefault("title", v)
+                quest_files[int(k)].add("stringtask_special/question.idres")
+            elif v and not k.isdigit():
+                special_names[k] = v
+    quest_rows = []
+    for tid in sorted(quest):
+        row = {"task_id": tid, **quest[tid]}
+        if len(quest_files[tid]) <= 3:
+            row["source"] = sorted(quest_files[tid])
+        quest_rows.append(row)
+    gz_jsonl("quests_text.jsonl.gz", quest_rows)
+
+    # ---- 10) 玩法帮助（form_helper_text）-------------------------------
+    print("抽取玩法帮助 ...")
+    hn = load_idres(os.path.join(src_dir, "form_helper_text", "helper_name.idres")) \
+        if os.path.isfile(os.path.join(src_dir, "form_helper_text", "helper_name.idres")) else {}
+    hd = load_idres(os.path.join(src_dir, "form_helper_text", "helper_desc.idres")) \
+        if os.path.isfile(os.path.join(src_dir, "form_helper_text", "helper_desc.idres")) else {}
+    helper_rows = []
+    for k, v in hn.items():
+        d = hd.get("desc_" + k) or hd.get(k, "")
+        r = {"id": k, "name": v}
+        if d:
+            r["desc"] = d
+        helper_rows.append(r)
+    gz_jsonl("ui_helper.jsonl.gz", helper_rows)
+
+    # ---- 11) 玩家姓名库（string_player_name）----------------------------
+    pn_dir = os.path.join(src_dir, "string_player_name")
+    if os.path.isdir(pn_dir):
+        player_names = {}
+        for fn, label in (("first_name.idres", "first"),
+                          ("second_name_boy.idres", "boy"),
+                          ("second_name_girl.idres", "girl")):
+            fp = os.path.join(pn_dir, fn)
+            if os.path.isfile(fp):
+                vals = [v for v in load_idres(fp).values() if v]
+                player_names[label] = vals
+        with open(os.path.join(data_dir, "player_names.json"), "w", encoding="utf-8") as fh:
+            json.dump(player_names, fh, ensure_ascii=False, indent=0)
+        stats["player_names.json"] = sum(len(v) for v in player_names.values())
+        print(f"  player_names.json: {stats['player_names.json']} 条")
+
+    summary.update({
+        "quest_text_count": len(quest_rows),
+        "quest_with_title": sum(1 for r in quest_rows if r.get("title")),
+        "ui_helper_count": len(helper_rows),
+        "special_task_names": len(special_names),
+    })
     with open(os.path.join(data_dir, "_context_stats.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, ensure_ascii=False, indent=1)
     print("完成。输出目录:", os.path.abspath(out_dir))

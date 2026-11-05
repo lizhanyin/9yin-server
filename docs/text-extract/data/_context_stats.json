@@ -1,20 +1,23 @@
 {
  "counts": {
-  "items.jsonl.gz": 129801,
-  "npcs.jsonl.gz": 87559,
-  "buffs.jsonl.gz": 28819,
-  "skills.jsonl.gz": 77405,
+  "items.jsonl.gz": 130172,
+  "npcs.jsonl.gz": 87918,
+  "buffs.jsonl.gz": 29176,
+  "skills.jsonl.gz": 77823,
   "gather_codex.jsonl.gz": 179,
-  "talks.jsonl.gz": 35533
+  "talks.jsonl.gz": 35583,
+  "quests_text.jsonl.gz": 27486,
+  "ui_helper.jsonl.gz": 538,
+  "player_names.json": 1521
  },
  "item_categories": [
   [
    "秘籍/武学书",
-   24726
+   24845
   ],
   [
    "其他",
-   19526
+   19558
   ],
   [
    "宝物/古董",
@@ -22,19 +25,19 @@
   ],
   [
    "礼包/宝箱",
-   10791
+   10841
   ],
   [
    "内功",
-   7667
+   7742
   ],
   [
    "装备(衣帽裤鞋腕/绑腿/首饰)",
-   7112
+   7122
   ],
   [
    "装备图纸(时装)",
-   6621
+   6623
   ],
   [
    "描述文本(name文件冗余)",
@@ -46,7 +49,7 @@
   ],
   [
    "普通道具",
-   4826
+   4850
   ],
   [
    "武器(单剑/双剑/刀/刺/棍)",
@@ -54,11 +57,11 @@
   ],
   [
    "任务道具",
-   3843
+   3844
   ],
   [
    "卡片",
-   2328
+   2346
   ],
   [
    "雇佣商店",
@@ -98,7 +101,7 @@
   ],
   [
    "场景配置名",
-   731
+   771
   ],
   [
    "阵法书",
@@ -144,7 +147,7 @@
  "npc_kinds": [
   [
    "其他",
-   25789
+   25946
   ],
   [
    "世界NPC",
@@ -152,15 +155,15 @@
   ],
   [
    "城市/剧情功能NPC",
-   10892
+   11028
   ],
   [
    "场景怪物",
-   5902
+   5927
   ],
   [
    "Boss/掉落宝箱",
-   4937
+   4972
   ],
   [
    "副本克隆NPC",
@@ -176,11 +179,11 @@
   ],
   [
    "采集点/采集物",
-   2505
+   2506
   ],
   [
    "事件触发点",
-   1620
+   1625
   ],
   [
    "帮会建筑/帮会NPC",
@@ -243,13 +246,17 @@
    20
   ]
  ],
- "item_with_desc": 60575,
- "npc_with_talk": 19677,
+ "item_with_desc": 60838,
+ "npc_with_talk": 19699,
  "npc_with_clientinfo": 34,
- "buff_with_desc": 28746,
- "skill_with_desc": 59959,
- "cond_count": 7105,
- "sysinfo_count": 29043,
- "talk_count": 35533,
- "gather_codex_count": 179
+ "buff_with_desc": 29103,
+ "skill_with_desc": 60275,
+ "cond_count": 7150,
+ "sysinfo_count": 29306,
+ "talk_count": 35583,
+ "gather_codex_count": 179,
+ "quest_text_count": 27486,
+ "quest_with_title": 17426,
+ "ui_helper_count": 538,
+ "special_task_names": 24359
 }

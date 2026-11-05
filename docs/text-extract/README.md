@@ -58,6 +58,9 @@
 | `rules_numeric.json` | Buff/技能/道具数值分布统计 | — |
 | `system_rules.json` | systemhelp/九阴志/error/触发事件/场景 原文 | — |
 | `res1_inventory.json` | res1 全资源清单：25,778 张 INI 表（段数/字段/示例）+ 2,297 个 lua + map/path 统计 | — |
+| `skill_catalog.jsonl.gz` | 技能编译数据（res1 share/skill 全链，对齐 CombatSkillCatalog 语义）：CD/消耗/伤害/形状/精确buff/动作帧/武技标记 | 59,891 行（17,566 技能×等级） |
+| `wuji_catalog.json` | 武技目录：wuji_learn 322 门/品质/65 激活动作/挂接技能 258/连击怒招 | — |
+| `neigong_effect_index.json` | 内功书索引：179 本名称/门派/层级描述/脚本覆盖 | — |
 
 `params` 为从描述文本正则解析出的数值参数：`duration_sec`（持续秒）、`interval_sec`（间隔秒）、`layers`（层数）、`cooldown_sec`（冷却）、`hp_recover`（回血）、`damage_pct`（伤害%）、`prob_pct`（概率%）、`meter`（米）、`times`（次数）。
 

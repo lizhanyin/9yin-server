@@ -13,8 +13,38 @@
 |---|---|---|
 | `combat/formula.lua` | `M.calc(c) → {damage, miss, crit, parried, reduction_pct}` 伤害公式权威实现 | 战斗一期已接 |
 | `skill/<技能ID>.lua` | `M.compile(def) → overlay` 编译期增量覆盖 | 战斗一期已接（6 个） |
-| `neigong/buf_ng_*.lua` | `M.levels` / `M.on_hit(ctx)` / `M.on_be_hit(ctx)` 内功 buff 特效 | 待接（战斗二期 hook） |
+| `neigong/buf_ng_*.lua` | `M.levels` / `M.on_hit(ctx)` / `M.on_be_hit(ctx)` 等内功 buff 特效 | 待接（战斗二期 hook）；155 本（138 手写 + 17 自 res1 生成，见下） |
 | `item/*.lua` | useitem/box/yaopin 使用物效果 | 已接（msg31 使用链，2026-11-04） |
+
+### 内功脚本与 res1 数据对勘（2026-11-05）
+
+数据源统一为 `E:/Workspace/project/game/res1`（盛大GM版客户端资源）：
+
+- **134 本手写脚本数值与 res1 层级描述（`desc_buf_ng_<书>_<层>`）逐层对勘一致**，无需改动
+  （`tools/skill-data/verify_neigong_scripts.py` 输出的差异均为单位换算/管线取舍的既有注释项）。
+- **新生成 17 本**（`tools/skill-data/gen_neigong_scripts.py`，幂等可重跑，文件头带生成器标记）：
+  八卦 `bg_001/002`、江湖 `jh_216~219/402`、极乐 `jy_101`、君子 `jz_101`、南海 `nh_001`、
+  清风观 `qfg_001`、五仙教 `wxp_001~006`。`M.levels` 携带描述原文 + 常见参数解析
+  （absorb/reduce_pct/duration_sec/layers 等），机制钩子返回 nil 留 TODO 待二期逐本细化。
+- **28 本江湖系列（`jh_101~509`）为 res1 占位条目**（自引用 key、无文本），不生成。
+- 4 本手写脚本（`jh_cygj/wwsg/wxxf/zxg`）在 res1 无名字 key，保留原值。
+
+### 技能数据计算（tools/skill-data/）
+
+`compute_skill_catalog.py` 从 res1 全链编译（语义逐条对齐 Java `CombatSkillCatalog`）：
+
+- `docs/text-extract/data/skill_catalog.jsonl.gz`：**17,566 技能 × 等级 = 59,891 行**——
+  CD（个人/公共）/消耗（HP/MP/SP/QGP）/编译伤害与倍率/目标模式与形状/冲锋/锁定族判定/
+  精确 buff（`buf_<技能ID>` 租约 buff_new→varprop→24h 兜底）/武器门控/动作时间线与多段判定帧/
+  武技族标记（`wuji_relevance`/`wuji_combo`）。CD 抽检与抓包实证全对齐
+  （tjq05=15000 / tjq07=40000 / jysg01=2000）；`wuji_combo` 全表仅 `CS_jh_myjf08`，
+  与 Java 判据（LevelupRelevance=wuji_* ∧ PackCategory=2）一致。
+- `docs/text-extract/data/wuji_catalog.json`：武技目录——322 门（wuji_learn）、品质
+  （wuji_quality，28 门有显式品质）、65 条激活动作（wuji_action，含多变体 StaticData）、
+  槽位类型与重置费用、挂接技能 258（LevelupRelevance=wuji_*）、连击怒招清单。
+- `docs/text-extract/data/neigong_effect_index.json`：179 本内功书索引
+  （名称/门派/StaticData/层级描述原文/脚本覆盖状态）。
+- res1 无 `skill_init.ini`：修炼进度族字段（fill/total/pause_time）不计算，行内为 null。
 
 ## formula.lua（伤害公式）
 

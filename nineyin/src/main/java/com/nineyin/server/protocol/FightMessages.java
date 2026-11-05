@@ -297,6 +297,33 @@ public final class FightMessages {
         return SceneMessages.objectProperties(viewId, row, 1, List.of(property));
     }
 
+    /**
+     * View40 技能行等级帧（GM learn_all_taolu）：Level/MaxLevel/CurFillValue/
+     * TotalFillValue 同一 0x10 行帧（isView=1，JingMaiMessages.levelUpFrame 同型；
+     * Level/MaxLevel 为 int32——dbSkillViewAdd 行口径）。varPropNo 非空时随帧
+     * 更新（按级 varprop 行号），null=保持现值。
+     */
+    public static byte[] skillRowLevelUp(int viewId, int row, int level, int maxLevel,
+                                         int curFill, int totalFill, Integer varPropNo) {
+        java.util.List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(5);
+        properties.add(PropertyValues.Indexed.of(PropertyTable.playerIdx("Level"), "Level",
+                PropertyValues.Value.ofInt32(level)));
+        properties.add(PropertyValues.Indexed.of(PropertyTable.playerIdx("MaxLevel"), "MaxLevel",
+                PropertyValues.Value.ofInt32(maxLevel)));
+        properties.add(PropertyValues.Indexed.of(
+                PropertyTable.playerIdx("CurFillValue"), "CurFillValue",
+                PropertyValues.Value.ofInt32(curFill)));
+        properties.add(PropertyValues.Indexed.of(
+                PropertyTable.playerIdx("TotalFillValue"), "TotalFillValue",
+                PropertyValues.Value.ofInt32(totalFill)));
+        if (varPropNo != null) {
+            properties.add(PropertyValues.Indexed.of(
+                    PropertyTable.playerIdx("VarPropNo"), "VarPropNo",
+                    PropertyValues.Value.ofInt32(varPropNo)));
+        }
+        return SceneMessages.objectProperties(viewId, row, 1, properties);
+    }
+
     private FightMessages() {
     }
 }

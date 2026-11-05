@@ -259,15 +259,16 @@
     function popupGMPanel() {
       command({ action: "popup_gm_panel" });
     }
-    // 伙伴：botCommand 走与 command() 相同的会话通道，只是动作名为 bot_*；
-    // refreshBots 刷新 /api/bots 的伙伴状态面板。
-    async function refreshBots() {
-      try {
-        let b = await (await fetch("/api/bots")).json();
-        let el = document.querySelector("#bot-state");
-        if (el) el.textContent = JSON.stringify(b, null, 2);
-      } catch (e) { }
+    // 伙伴：botCommand 走与 command() 相同的会话通道（bot_* 动作可带参数）；
+    // refreshBots 渲染 /api/sessions 的实时伙伴状态（sessions[0].bot，无伙伴显示占位）。
+    function refreshBots() {
+      let el = document.querySelector("#bot-state");
+      if (!el) return;
+      let bot = sessions[0] && sessions[0].bot;
+      el.textContent = bot
+        ? JSON.stringify(bot, null, 2)
+        : "无伙伴（点击「创建 / 校验青禾」生成）";
     }
-    function botCommand(action) {
-      command({ action }).then(refreshBots);
+    function botCommand(action, params) {
+      command(Object.assign({ action: action }, params || {})).then(refresh);
     }

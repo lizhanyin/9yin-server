@@ -342,6 +342,55 @@ public final class SceneLifecycle {
     }
 
     /**
+     * 伙伴跟随移动拍（companionTick 专用，官方 0x21 口径）：服务端权威坐标替换为
+     * at（按速度×周期步进后的落点），并向客户端广播目的地 dest（speed>0 且
+     * moving=true 时客户端播跑步动画；moving=false 为停步+面向 destOrient）。
+     * 与 patrolBroadcastTick 同款：只改生命周期实体、不动场景 revision——视口
+     * 对账不因跟随产生 0x1F（0x21 目的地即客户端权威动画源）。实体不在返回 false。
+     */
+    public synchronized boolean companionStep(int id, WorldScene.Transform at,
+                                              WorldScene.Transform dest, float speed, boolean moving) {
+        SceneEntity meta = entities.get(id);
+        if (meta == null) {
+            return false;
+        }
+        entities.put(id, new SceneEntity(meta.id, meta.description, meta.ownerId, at,
+                meta.properties, meta.payload, meta.configId, meta.scriptClass,
+                meta.combat, meta.schedule));
+        connection.writeFrame(NpcMessages.serverAllDest(java.util.List.of(
+                new NpcMessages.AllDestEntry(meta.id, meta.ownerId,
+                        dest.x(), dest.y(), dest.z(), dest.orient(), speed, moving ? 1 : 0))));
+        return true;
+    }
+
+    /**
+     * 伙伴落位（bot_pull_here 瞬移/到点校准）：双写世界实体（Posi* + revision，
+     * 视口对账同代更新走 0x1F）+ 生命周期实体，并立即直发 0x1F 权威坐标。
+     */
+    public synchronized boolean companionPlace(int id, WorldScene.Transform at) {
+        SceneEntity meta = entities.get(id);
+        if (meta == null) {
+            return false;
+        }
+        WorldScene.Entity current = scene.get(id);
+        if (current != null) {
+            WorldScene.Entity moved = new WorldScene.Entity(current.id, current.ownerId,
+                    current.kind, at, current.properties, current.revision);
+            moved.properties.put("PosiX", Value.ofFloat32(at.x()));
+            moved.properties.put("PosiY", Value.ofFloat32(at.y()));
+            moved.properties.put("PosiZ", Value.ofFloat32(at.z()));
+            moved.properties.put("Orient", Value.ofFloat32(at.orient()));
+            scene.replace(moved);
+        }
+        entities.put(id, new SceneEntity(meta.id, meta.description, meta.ownerId, at,
+                meta.properties, meta.payload, meta.configId, meta.scriptClass,
+                meta.combat, meta.schedule));
+        connection.writeFrame(NpcMessages.serverLocation(meta.id, meta.ownerId,
+                at.x(), at.y(), at.z(), at.orient()));
+        return true;
+    }
+
+    /**
      * 启动路线巡逻：登记全部已注册、带巡逻时间表、非战斗的实体，并启动
      * 1s 周期的 0x21 ServerAllDest 广播 ticker（首拍 5s 后，避开 0x1F 重放窗口
      * 250..5000ms，防重放帧把走动 NPC 拽回出生点）。步进按时间表绝对时刻
@@ -455,7 +504,9 @@ public final class SceneLifecycle {
 
     private void stopTimersLocked() {
         for (ScheduledFuture<?> timer : timers) {
-            timer.cancel(false);
+            if (timer != null) {
+                timer.cancel(false);
+            }
         }
         timers.clear();
     }

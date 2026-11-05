@@ -417,6 +417,19 @@ public final class RoleInventoryStore implements AutoCloseable {
         }
     }
 
+    /** GM forget_all_taolu：清角色全部已学武学行（neigong/qinggong 行不动；五件套由登录补齐）。 */
+    public void deleteSkills(long roleId, String skillType) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM role_skills WHERE role_id = ? AND skill_type = ?")) {
+            statement.setLong(1, roleId);
+            statement.setString(2, skillType);
+            statement.executeUpdate();
+        } catch (Exception e) {
+            throw new IllegalStateException("deleteSkills failed: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * GM 发放穿戴（grant_item wearNow）：同槽先删后插（seq 追加）。
      * affixes 列在 F 版参考服还原库可能缺失，写入按读路径同款降级（无词缀列）。

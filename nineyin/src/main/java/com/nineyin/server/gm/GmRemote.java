@@ -71,6 +71,15 @@ public class GmRemote {
                 if (s.gold != null) {
                     o.put("gold", s.gold);
                 }
+                if (s.botName != null && !s.botName.isEmpty()) {
+                    JSONObject bot = new JSONObject();
+                    bot.put("name", s.botName);
+                    bot.put("hp", s.botHp);
+                    bot.put("maxHp", s.botMaxHp);
+                    bot.put("following", s.botFollowing);
+                    bot.put("support", s.botSupport == null ? "" : s.botSupport);
+                    o.put("bot", bot);
+                }
                 o.put("lastAction", s.lastAction);
                 arr.add(o);
             }
@@ -169,6 +178,23 @@ public class GmRemote {
                 }
                 String key = params.getString("faction");
                 yield GmFactionPresets.preset(key) != null ? null : "unknown faction preset: " + key;
+            }
+            // 场景天气切换：闭名单（GmWeatherPresets 面板键 = 客户端 sceneparastore
+            // 天气渲染包目录名，49 键），不接受任意字符串；fadeSec 过渡秒可选 0..600
+            // （缺省游戏侧取 10）。帧下发在游戏侧 applyWeather（on_weather_sky sub 4）。
+            case "set_weather" -> {
+                String keyBad = nonEmpty(params, "weather");
+                if (keyBad != null) {
+                    yield keyBad;
+                }
+                String weather = params.getString("weather");
+                String unknown = GmWeatherPresets.preset(weather) != null
+                        ? null : "unknown weather preset: " + weather;
+                if (unknown != null) {
+                    yield unknown;
+                }
+                Integer fadeSec = params != null ? params.getInteger("fadeSec") : null;
+                yield fadeSec == null ? null : intRange(params, "fadeSec", 0, 600);
             }
             case "wear_title" -> intRange(params, "titleId", 1, Integer.MAX_VALUE);
             // V2 装备外观挂载：物品发放（wearNow 可选 0/1；不可穿戴由游戏侧降级入背包）。
@@ -302,8 +328,55 @@ public class GmRemote {
             // 世界 BOSS（worldboss_*）：官方刷新表驱动，无参——当前场景门派固定点每点
             // 1 只 + 场景池命中的江湖 BOSS 随机点；击杀后消失不重生；clear/list 按会话记账。
             case "worldboss_spawn", "worldboss_clear", "worldboss_list" -> null;
+            // 门派声望（repute_apply）：阵营闭名单在游戏侧按 repute_level.ini 校验
+            //（外部表，worldboss 同款两段范式）；此处只验通用域——name 非空限长、
+            // mode ∈ set/add（缺省 set）、value 与面板 max 一致。
+            case "repute_apply" -> {
+                String nameBad = nonEmpty(params, "reputeName");
+                if (nameBad != null) {
+                    yield nameBad;
+                }
+                String nameLen = lengthLimit(params, "reputeName", 64);
+                if (nameLen != null) {
+                    yield nameLen;
+                }
+                String mode = params != null ? params.getString("reputeMode") : null;
+                if (mode != null && !mode.isBlank() && !"set".equals(mode) && !"add".equals(mode)) {
+                    yield "reputeMode must be set or add";
+                }
+                yield intRange(params, "reputeValue", 0, 9_999_999);
+            }
+            // 伙伴系统（bot_*）：预设闭名单驱动——ensure 可选 bot 键（GmBotPresets），
+            // 拉人/跟随开关/复活无参；辅助配置 enabled/intervalSec/heal 均可选（缺省用预设值）。
+            case "bot_ensure" -> {
+                String bot = params != null ? params.getString("bot") : null;
+                yield bot == null ? null
+                        : GmBotPresets.preset(bot) == null
+                        ? "bot must be one of " + GmBotPresets.keys() : null;
+            }
+            case "bot_pull_here", "bot_follow_start", "bot_follow_stop", "bot_revive" -> null;
+            case "bot_support_configure" -> {
+                Integer enabled = params != null ? params.getInteger("enabled") : null;
+                if (enabled != null) {
+                    String enabledBad = intRange(params, "enabled", 0, 1);
+                    if (enabledBad != null) {
+                        yield enabledBad;
+                    }
+                }
+                Integer intervalSec = params != null ? params.getInteger("intervalSec") : null;
+                if (intervalSec != null) {
+                    String intervalBad = intRange(params, "intervalSec", 1, 60);
+                    if (intervalBad != null) {
+                        yield intervalBad;
+                    }
+                }
+                Integer heal = params != null ? params.getInteger("heal") : null;
+                yield heal == null ? null : intRange(params, "heal", 0, 100_000);
+            }
             // 坐骑管理：按道具 config 骑乘/再点同骑下马（pack 解析与记录帧由游戏侧）。
             case "mount_ride" -> nonEmpty(params, "mountConfig");
+            // 武学套路两动作：无参——满级档值与遗忘基线全部由游戏侧（LoginFlow）处理。
+            case "learn_all_taolu", "forget_all_taolu" -> null;
             // 待机站姿（持久化）：b_action_index.ini 节名；空串 = 恢复默认站姿。
             case "idle_stance_set" -> {
                 String stance = params != null ? params.getString("stanceAction") : null;
@@ -311,6 +384,10 @@ public class GmRemote {
                         ? "stanceAction must be a string of at most 64 chars"
                         : null;
             }
+            // 御风神水（大轻功）：无参——挂 buf_ride_yufeng 10 分钟租约（重复点续期）/摘除。
+            case "yufeng_add", "yufeng_remove" -> null;
+            // 身份系统：无参——origin.ini 全量激活（领奖走 C2S 702，玩家手动点）。
+            case "origin_activate_all" -> null;
             default -> "unsupported action: " + action;
         };
     }

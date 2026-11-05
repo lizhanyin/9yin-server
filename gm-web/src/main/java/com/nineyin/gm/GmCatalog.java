@@ -27,8 +27,9 @@ import java.util.TreeMap;
  * 后优先读 MySQL（GmCatalogDb），查询失败或未注入回退 data/ 文件；
  * ini/idres 来源仍从部署目录（share 根）读取。所有加载器对缺失/损坏均优雅降级。
  *
- * <p>数据源（编码已核实）：equipment.ini / tool_item.ini / cloneinfo.ini / weathereffect.ini /
- * repute_level.ini / school_taolu.ini / scenes.ini 为 GBK；stringname.idres / interface.idres 为 UTF-8+BOM；
+ * <p>数据源（编码已核实）：equipment.ini / tool_item.ini / cloneinfo.ini /
+ * repute_level.ini / school_taolu.ini / scenes.ini 为 GBK；天气下拉为 sceneparastore/
+ * 目录列举（非 ini）；stringname.idres / interface.idres 为 UTF-8+BOM；
  * b_action_index.ini、senior_*.ini、data/*.json 为 UTF-8。idres 与部分 ini 位于 share 根的
  * 同级目录（resources/modern/ini、resources/modern/text/chineses）。
  */
@@ -869,23 +870,38 @@ public final class GmCatalog {
     }
 
     // ------------------------------------------------------------------
-    // /api/weather —— share/rule/weather/weathereffect.ini（GBK）
+    // /api/weather —— share/rule/weather/sceneparastore/ 目录（GM set_weather 值域）
     // ------------------------------------------------------------------
 
+    /**
+     * 天气下拉：客户端 SceneParaStore 天气渲染包目录列举（set_weather 闭名单同源，
+     * 双端镜像 nineyin GmWeatherPresets 口径）。Key=目录名（即 GM 动作 weather 键），
+     * Label=按命名模式派生中文（_001=昼/_501=夜，官方 tianqi_* 文案族），目录缺失
+     * 优雅降级为空表（面板显示空下拉，动作入口仍会被游戏侧闭名单拒绝）。
+     */
     public JSONArray weather() {
         JSONArray w = weather;
         if (w == null) {
             synchronized (this) {
                 if (weather == null) {
                     JSONArray out = new JSONArray();
-                    IniFile ini = IniFile.load(shareRoot == null ? null
-                            : shareRoot.resolve("rule").resolve("weather").resolve("weathereffect.ini"), GBK);
-                    for (Map.Entry<String, Map<String, List<String>>> e : ini.sections().entrySet()) {
-                        JSONObject o = new JSONObject();
-                        o.put("Key", e.getKey());
-                        o.put("Label", e.getKey());
-                        o.put("TXID", orEmpty(first(e.getValue(), "configid")));
-                        out.add(o);
+                    if (shareRoot != null) {
+                        Path store = shareRoot.resolve("rule").resolve("weather").resolve("sceneparastore");
+                        if (Files.isDirectory(store)) {
+                            try (var dirs = Files.list(store)) {
+                                dirs.filter(Files::isDirectory)
+                                        .map(p -> p.getFileName().toString())
+                                        .sorted()
+                                        .forEach(name -> {
+                                            JSONObject o = new JSONObject();
+                                            o.put("Key", name);
+                                            o.put("Label", weatherLabel(name));
+                                            out.add(o);
+                                        });
+                            } catch (IOException e) {
+                                log.warn("读取 sceneparastore 目录失败：{}", e.getMessage());
+                            }
+                        }
                     }
                     weather = out;
                 }
@@ -893,6 +909,56 @@ public final class GmCatalog {
             }
         }
         return w;
+    }
+
+    /** 天气目录名 → 面板中文标签（与 nineyin GmWeatherPresets 标签同口径派生）。 */
+    static String weatherLabel(String key) {
+        boolean night = key.endsWith("_501");
+        String dayNight = night ? "（夜）" : key.endsWith("_001") ? "（昼）" : "";
+        String base = key.endsWith("_001") || key.endsWith("_501")
+                ? key.substring(0, key.length() - 4) : key;
+        return switch (base) {
+            case "light_rain" -> "小雨" + dayNight;
+            case "middling_rain" -> "中雨" + dayNight;
+            case "heavy_rain" -> "大雨" + dayNight;
+            case "light_snow" -> "小雪" + dayNight;
+            case "middling_snow" -> "中雪" + dayNight;
+            case "heavy_snow" -> "暴雪" + dayNight;
+            case "light_fog" -> "小雾" + dayNight;
+            case "middling_fog" -> "中雾" + dayNight;
+            case "heavy_fog" -> "大雾" + dayNight;
+            case "light_sandstorm" -> "风沙" + dayNight;
+            case "middling_sandstorm" -> "沙暴" + dayNight;
+            case "heavy_sandstorm" -> "强沙暴" + dayNight;
+            case "lunar_eclipse" -> "月食（天狗吃月）";
+            case "solar_eclipse" -> "日食（天狗食日）";
+            case "heavy_ocean_rain" -> "海上暴雨";
+            case "heavy_snow_huodong01" -> "暴雪·活动";
+            case "moon_night_time4" -> "月夜";
+            case "heavy_night_time4" -> "深夜";
+            default -> scenePeriodLabel(base);
+        };
+    }
+
+    /** 场景时段族目录名 → 标签（出生/副本/群战等基础时段渲染包）。 */
+    private static String scenePeriodLabel(String base) {
+        if (base.matches("born04_time[1-6]")) {
+            return "出生场景·时段" + base.substring(base.length() - 1);
+        }
+        if (base.matches("clone003_time[1-4]")) {
+            return "副本003·时段" + base.substring(base.length() - 1);
+        }
+        if (base.matches("groupscene008_time[1-4]")) {
+            return "群战008·时段" + base.substring(base.length() - 1);
+        }
+        return switch (base) {
+            case "groupscene023" -> "群战023·时段";
+            case "groupscene023_02" -> "群战023·时段二";
+            case "groupscene039" -> "群战039·时段";
+            case "scene10" -> "场景10·时段";
+            case "xianglong_show" -> "降龙演出";
+            default -> base;
+        };
     }
 
     // ------------------------------------------------------------------

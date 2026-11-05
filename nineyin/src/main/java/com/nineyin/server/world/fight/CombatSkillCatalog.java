@@ -224,6 +224,36 @@ public final class CombatSkillCatalog {
                 hitShapeType <= 0 ? 0 : hitShape.f32("HitShapePara2"));
     }
 
+    /**
+     * 技能满级（GM learn_all_taolu 用）：skill_static {@code [Min,Max]VarPropNo}
+     * 区间内 varprop {@code Level} 的最大值（findVarProp 同表口径全扫）。
+     * 未索引/无区间/空表 → 1。
+     */
+    public int maxLevelOf(String id) {
+        if (id == null) {
+            return 1;
+        }
+        Section newFields = tables.skillNew.get(id);
+        if (newFields == null) {
+            return 1;
+        }
+        Section staticFields = tables.skillStatic.get(Integer.toString(newFields.int32("StaticData")));
+        if (staticFields == null) {
+            return 1;
+        }
+        Map<String, Section> varTable = "skilllock".equalsIgnoreCase(newFields.last("script"))
+                ? tables.lockVar : tables.normalVar;
+        int best = 1;
+        for (int varId = Math.max(staticFields.int32("MinVarPropNo"), 1);
+                varId <= staticFields.int32("MaxVarPropNo"); varId++) {
+            Section fields = varTable.get(Integer.toString(varId));
+            if (fields != null && fields.int32("Level") > best) {
+                best = fields.int32("Level");
+            }
+        }
+        return best;
+    }
+
     /** View40 行补集（skillRowData 产物）：varPropNo=匹配 varprop 行号（客户端 varpkg 同值）。 */
     public record SkillRowData(
             int varPropNo, int useLimit,

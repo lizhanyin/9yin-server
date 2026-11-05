@@ -32,6 +32,13 @@ public final class GmHub {
         public Integer gold;
         /** 修炼点余额（Faculty@798，GM set_faculty 后随快照带出；null=未采集）。 */
         public Integer faculty;
+        /** 伙伴摘要（bot_* 域，refreshBotSnapshot 维护；botName 空=无伙伴）。 */
+        public String botName = "";
+        public int botHp;
+        public int botMaxHp;
+        public boolean botFollowing;
+        /** 辅助摘要文案（"开 500/5s" / "关"）。 */
+        public String botSupport = "";
         public long updatedAtMs;
     }
 

@@ -68,7 +68,8 @@ final class NpcCombatAi {
         }
         ai.updatePlayerPos(x, y, z);
         for (FightState.HitTarget target : targets) {
-            if (!target.combat().actor.isDead()) {
+            // GM 伙伴（bot_* 域）只掉血不还手——主人误伤不触发反击循环。
+            if (!target.combat().actor.isDead() && !fight.isCompanion(target.info().id())) {
                 ai.ensureLoop(target.info().id());
             }
         }
@@ -95,6 +96,7 @@ final class NpcCombatAi {
             PlayerActor player = context.player();
             boolean valid = info != null && info.combat()
                     && combat != null && !combat.actor.isDead()
+                    && !context.fight().isCompanion(npcId) // 伙伴永不反击（防御位：playerEngaged 已跳过）
                     && context.connection().channel().isActive()
                     && player.actorState().hp() > 0
                     && player.fighting(); // 战斗结束即收手（闲时退出不被攻击帧拖住）

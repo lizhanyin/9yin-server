@@ -6,6 +6,7 @@ import java.util.Set;
 
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.game.avatar.RoleVisual;
+import com.nineyin.server.gm.GmBotPresets;
 import com.nineyin.server.world.npc.NpcSpawn;
 import com.nineyin.server.world.scene.SceneLifecycle;
 import com.nineyin.server.db.role.Roles;
@@ -107,6 +108,24 @@ public final class LoginSession {
     boolean lettersGranted;
 
     /**
+     * 声望域（Repute_Record 44 行服务端镜像）：行序=下发序（LinkedHashMap，
+     * GM repute_apply 按 repute_level.ini [Repute] 表序写入）；reputesGranted 为
+     * 场景代重放门（0x0C 清玩家挂接行，切图收尾复位整表重放，letters 同口径；
+     * 空表零帧）。
+     */
+    java.util.LinkedHashMap<String, Long> reputes = new java.util.LinkedHashMap<>();
+    boolean reputesGranted;
+
+    /**
+     * 身份域（Origin_Active 45 / Origin_Prized 48 记录行服务端镜像）：
+     * originId → 1 已激活 / 2 已领奖（行序=origin.ini 数字升序）；
+     * originsGranted 为场景代重放门（0x0C 清玩家挂接行，切图收尾复位整表重放，
+     * letters/reputes 同口径；空表零帧）。
+     */
+    java.util.LinkedHashMap<String, Integer> origins = new java.util.LinkedHashMap<>();
+    boolean originsGranted;
+
+    /**
      * GM 运行时摆放（训练木桩/世界宝箱/礼包商人/战斗假人）：对象号 900000 起递增
      * （目录 NPC 是下标+2 的小号段，永不冲突）；切图随 world.begin 整体清空。
      */
@@ -121,6 +140,8 @@ public final class LoginSession {
         final boolean combatDummy;
         /** true=世界 BOSS（bossnpc 模板，击杀后消失不重生，worldboss_clear/list 按此口径）。 */
         final boolean worldBoss;
+        /** true=GM 伙伴（bot_* 动作口径；切图后由 companionTick 在新场景重生成）。 */
+        final boolean bot;
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest) {
             this(objectId, npc, chest, false);
@@ -136,14 +157,43 @@ public final class LoginSession {
 
         GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant,
                 boolean combatDummy, boolean worldBoss) {
+            this(objectId, npc, chest, merchant, combatDummy, worldBoss, false);
+        }
+
+        GmSpawn(int objectId, NpcSpawn npc, boolean chest, boolean merchant,
+                boolean combatDummy, boolean worldBoss, boolean bot) {
             this.objectId = objectId;
             this.npc = npc;
             this.chest = chest;
             this.merchant = merchant;
             this.combatDummy = combatDummy;
             this.worldBoss = worldBoss;
+            this.bot = bot;
         }
     }
+
+    /**
+     * GM 伙伴会话态（bot_* 域）：objectId 随场景世代失效（gmSpawns 随 world.begin
+     * 清空），companionTick 检测到不在场即按预设重生成并刷新 objectId。存活/血量
+     * 不在此冗余——权威口径是 FightState（未物化=满血）。仅 GM 命令泵与 1s
+     * ticker（同线程）读写，无需并发保护。
+     */
+    static final class BotState {
+        GmBotPresets.Bot preset;
+        int objectId;
+        /** 跟随开关（bot_follow_start/stop；默认开）。 */
+        boolean following = true;
+        /** 辅助配置（bot_support_configure；默认关）。 */
+        boolean supportEnabled;
+        int supportHeal;
+        int supportIntervalSec;
+        long lastHealAtMs;
+        /** 上一拍是否在走（到点后发一次 moving=0 停步+面向主人）。 */
+        boolean moving;
+    }
+
+    /** GM 伙伴（bot_* 域会话态；null=未创建）。 */
+    BotState bot;
 
     java.util.Map<Integer, GmSpawn> gmSpawns = new java.util.LinkedHashMap<>();
     int nextGmObjectId = 900_000;

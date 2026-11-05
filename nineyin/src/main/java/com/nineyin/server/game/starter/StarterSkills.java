@@ -126,6 +126,31 @@ public final class StarterSkills {
         return ids;
     }
 
+    /** 五件套基础武学（forget_all_taolu 的 DB 模式基线集；与登录 withDefaultBasics 补齐语义同源）。 */
+    public static java.util.List<RoleInventoryStore.Skill> defaultBasicSkills() {
+        java.util.List<RoleInventoryStore.Skill> basics =
+                new java.util.ArrayList<>(DEFAULT_BASIC_SKILLS.size());
+        for (LearnedSkill basic : DEFAULT_BASIC_SKILLS) {
+            basics.add(new RoleInventoryStore.Skill(
+                    basic.configId(), "wuxue", basic.staticData(), basic.itemType()));
+        }
+        return basics;
+    }
+
+    /** 修炼总量显示值（View40 行 TotalFillValue）：skill_init 目录优先，starter 集回退内联 total；其余 0。 */
+    public static int totalFillDisplay(String configId) {
+        SkillInitTable.Row row = SkillInitTable.load().row(configId);
+        if (row != null && row.totalFill() > 0) {
+            return row.totalFill();
+        }
+        for (LearnedSkill skill : STARTER_SKILL_VIEWS) {
+            if (skill.configId().equals(configId)) {
+                return skill.total();
+            }
+        }
+        return 0;
+    }
+
     /** Go starterSkillViewFrames：View 40 容器 + 每技能一行（四期：skill_init 目录叠加 + 零值特效族）。 */
     public static List<byte[]> starterSkillViewFrames() {
         List<byte[]> frames = new ArrayList<>(STARTER_SKILL_VIEWS.size() + 1);

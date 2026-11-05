@@ -58,6 +58,7 @@ public final class FightState {
     }
 
     private final Map<Integer, NpcCombat> npcs = new HashMap<>();
+    private final java.util.Set<Integer> companions = java.util.HashSet.newHashSet(4);
     private int selectedObjectId;
     private int selectedOwner;
     /** NPC 反击 AI（懒挂，玩家首次命中目标时创建；选角/切图随 FightState 重建）。 */
@@ -207,5 +208,41 @@ public final class FightState {
     /** 挂反击 AI（playerEngaged 换会话时重建）。 */
     public void attachNpcAi(NpcCombatAi ai) {
         this.npcAi = ai;
+    }
+
+    /**
+     * GM 伙伴标记（bot_* 域，生成/重生成时写）：反击 AI 跳过（永不还手主人）；
+     * 死亡由会话层 killOverride 接管冻结（不吃 15s 重生），bot_revive 手动复活。
+     */
+    public synchronized void markCompanion(int id) {
+        companions.add(id);
+    }
+
+    public synchronized boolean isCompanion(int id) {
+        return companions.contains(id);
+    }
+
+    /** NPC 存活口径（GM 伙伴用）：未物化战斗态=满血存活。 */
+    public synchronized boolean npcAlive(int id) {
+        NpcCombat combat = npcs.get(id);
+        return combat == null || !combat.actor.isDead();
+    }
+
+    /**
+     * 伙伴手动复活（bot_revive）：回满血 + 清威胁/重生与控制租约。未物化过
+     * 战斗态（从未被打）返回 false——无需复活，调用方按满血回执。
+     */
+    public synchronized boolean reviveCompanion(int id) {
+        companions.add(id);
+        NpcCombat combat = npcs.get(id);
+        if (combat == null) {
+            return false;
+        }
+        combat.actor.respawnFull();
+        combat.threat = 0;
+        combat.respawnAt = null;
+        combat.respawnScheduled = false;
+        combat.controlledUntil = null;
+        return true;
     }
 }

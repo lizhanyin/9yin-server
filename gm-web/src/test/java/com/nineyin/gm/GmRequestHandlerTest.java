@@ -71,12 +71,14 @@ class GmRequestHandlerTest {
         rpc = new StubRpc();
         Path share = Files.createDirectories(tmp.resolve("resources").resolve("modern").resolve("share"));
         Path data = Files.createDirectories(tmp.resolve("data"));
-        // GBK INI：克隆目录 + 天气
+        // GBK INI：克隆目录 + 天气（sceneparastore 渲染包目录 = set_weather 值域）
         Files.write(Files.createDirectories(share.resolve("clone")).resolve("cloneinfo.ini"), (
                 "[ini\\scene\\clone001]\nDesc=孔雀山庄\nEasyPowerLevel=50\n"
                         + "[ini\\scene\\clone002]\nDesc=龙门客栈\n").getBytes(GBK));
-        Files.write(Files.createDirectories(share.resolve("rule").resolve("weather"))
-                .resolve("weathereffect.ini"), "[light_rain]\nConfigID=rain01\n".getBytes(GBK));
+        Path weatherStore = Files.createDirectories(share.resolve("rule").resolve("weather")
+                .resolve("sceneparastore"));
+        Files.createDirectories(weatherStore.resolve("heavy_rain_501"));
+        Files.createDirectories(weatherStore.resolve("light_rain_001"));
         // GBK INI：场景目录（切图下拉）+ 中文名 idres
         Files.write(share.resolve("rule").resolve("scenes.ini"),
                 "[11]\nConfig=ini\\scene\\city04_LuoYang\n".getBytes(GBK));
@@ -234,7 +236,11 @@ class GmRequestHandlerTest {
         assertEquals("孔雀山庄", clones.getJSONObject(0).getString("description"));
 
         JSONArray weather = JSON.parseArray(content(request("GET", "/api/weather", null)));
-        assertEquals("rain01", weather.getJSONObject(0).getString("TXID"));
+        assertEquals(2, weather.size(), "sceneparastore 两目录");
+        assertEquals("heavy_rain_501", weather.getJSONObject(0).getString("Key"), "按键排序");
+        assertEquals("大雨（夜）", weather.getJSONObject(0).getString("Label"), "标签按命名模式派生");
+        assertEquals("light_rain_001", weather.getJSONObject(1).getString("Key"));
+        assertEquals("小雨（昼）", weather.getJSONObject(1).getString("Label"));
 
         JSONArray scenes = JSON.parseArray(content(request("GET", "/api/scenes", null)));
         assertEquals(1, scenes.size());

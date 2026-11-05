@@ -37,15 +37,25 @@
         <h2>伙伴系统</h2>
         <p class="muted">
           伙伴操作直接作用于当前在线角色；拉伙伴不要求重新邀请，且会使用当前场景。
+          伙伴默认跟随（走远自动追上，切图后在新场景身边重生）；辅助按周期给玩家回血。
         </p>
         <button onclick="botCommand('bot_ensure')">创建 / 校验青禾</button><button
           onclick="botCommand('bot_pull_here')">拉伙伴到我身边</button><button
           onclick="botCommand('bot_follow_start')">开始跟随</button><button
           onclick="botCommand('bot_follow_stop')">停止跟随</button><button
-          onclick="botCommand('bot_revive')">复活回满血</button><button
-          onclick="botCommand('bot_support_configure')">
-          配置辅助技能
-        </button>
+          onclick="botCommand('bot_revive')">复活回满血</button><br />
+        <label>辅助
+          <select id="bot-support-enabled">
+            <option value="1">开</option>
+            <option value="0" selected>关</option>
+          </select></label>
+        <label>间隔(秒)
+          <input id="bot-support-interval" type="number" value="5" min="1" max="60"
+            style="min-width: 70px; width: 70px" /></label>
+        <label>治疗量
+          <input id="bot-support-heal" type="number" value="500" min="0" max="100000"
+            style="min-width: 90px; width: 90px" /></label>
+        <button onclick="botSupportConfigure()">配置辅助技能</button>
         <pre id="bot-state">读取伙伴状态中……</pre>
       </section>
       <section>
@@ -521,7 +531,10 @@
         <h2>武学套路</h2>
         <p class="muted">
           把玩家已学会的全部武学套路（View=40
-          技能目录）一次性升到满级并填满修为，立即重推技能视图并刷新面板。
+          技能目录）按 skill_static varprop 满级一次性升满并填满修为，行帧刷
+          Level/MaxLevel/修为并重建可用性心跳；满级经 data/武学等级.json
+          落档重登保持。遗忘则回登录基线（DB 模式=基础五件套，starter
+          模式=初始套路集），清档、删 role_skills 武学行并摘除失效快捷栏。
         </p>
         <button onclick="
               if (confirm('确定把全部武学套路升到满级？'))
@@ -777,14 +790,13 @@
       <section>
         <h2>身份系统（一键激活全部）</h2>
         <p class="muted">
-          数据来源 <code>data/origin/origins.json</code>（1197 条）+
-          <code>conditions.json</code>（2004 条），导出自
-          <code>身份领取条件全表.xlsx</code>。C2S 协议：700 激活 / 701 展示 /
-          702 领奖（真发奖：按 prize_item/prize_title
-          把物品放进背包并授予称号）/ 705 真正领取 / 706
-          请求刷新。点击下方按钮：把全部身份一次性加入【已激活】集合，【未领取】状态保持不变，玩家手动点
-          702 才会标记"已领奖"并实际拿到奖励（去重依据
-          prizeGranted，历史只标记未发放的身份会在下次点击时补发）。
+          数据源 <code>share/task/origin/origin.ini</code>（1197 条；奖励表
+          prize_item/prize_title/prize_prop 同目录）。C2S 协议已接：
+          <b>700</b> 激活单身份 / <b>702</b> 领奖（真发奖：物品入包 +
+          称号授 role_titles 所有权 + repute_* 阵营叠加并即时刷新声望行）/
+          <b>706</b> 请求行刷新；701 展示 / 705 领取查询留待。点击下方按钮：把全部身份一次性加入【已激活】集合（Origin_Active
+          记录行 + role_origins 落库，重登/切图保持），【未领取】状态不变；玩家在身份界面点
+          702 才标记"已领奖"并实际拿到奖励（物品未入包——如满包——则不标记，下次点击补发）。
         </p>
         <button onclick="originActivateAll()">一键激活全部身份</button><span id="origin-state"
           class="muted">状态读取中……</span>
@@ -810,12 +822,14 @@
       <section>
         <h2>场景天气</h2>
         <p class="muted">
-          通过场景对象 WeatherRec 驱动新版原生
-          WeatherTimeManager。雨粒子还要求客户端画面设置中开启天气，并使用高或极高画质。
+          下发 on_weather_sky（sub 4）实时切换客户端 SceneParaStore
+          天气渲染包（目录名带 _001 为昼、_501 为夜）。雨/雪粒子需客户端画面设置开启天气并使用高或极高画质，天色与雾不受限。切图重进即恢复场景默认天气。
         </p>
         <select id="weather">
           <option value="clear">读取天气列表中……</option>
-        </select><button onclick="setWeather()">切换天气</button>
+        </select><label>过渡秒
+          <input id="weather-fade" type="number" value="10" min="0" max="600"
+            style="width: 70px" /></label><button onclick="setWeather()">切换天气</button>
       </section>
       <section>
         <h2>礼包与物品</h2>

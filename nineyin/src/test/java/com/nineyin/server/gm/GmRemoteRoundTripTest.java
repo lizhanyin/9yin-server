@@ -323,6 +323,153 @@ class GmRemoteRoundTripTest {
         assertTrue(JSON.parseObject(clearDummiesQueued).getBooleanValue("ok"),
                 "clear_combat_dummies 应白名单透传: " + clearDummiesQueued);
 
+        // command：伙伴 bot_* 参数域（非法预设键 / 越界 intervalSec / 越界 heal 入口即拒，不入队）。
+        Map<String, Object> badBotKey = Map.of(
+                "sessionId", 7,
+                "action", "bot_ensure",
+                "params", Map.of("bot", "no_such_bot"));
+        String badBotRejected = remote.syncRemote("GmRemote", "command", badBotKey, String.class);
+        assertFalse(JSON.parseObject(badBotRejected).getBooleanValue("ok"),
+                "非法伙伴预设键应被拒: " + badBotRejected);
+        Map<String, Object> badBotInterval = Map.of(
+                "sessionId", 7,
+                "action", "bot_support_configure",
+                "params", Map.of("enabled", 1, "intervalSec", 61));
+        String badIntervalRejected = remote.syncRemote("GmRemote", "command", badBotInterval, String.class);
+        assertFalse(JSON.parseObject(badIntervalRejected).getBooleanValue("ok"),
+                "越界辅助间隔应被拒: " + badIntervalRejected);
+        Map<String, Object> badBotHeal = Map.of(
+                "sessionId", 7,
+                "action", "bot_support_configure",
+                "params", Map.of("heal", 100_001));
+        String badHealRejected = remote.syncRemote("GmRemote", "command", badBotHeal, String.class);
+        assertFalse(JSON.parseObject(badHealRejected).getBooleanValue("ok"),
+                "越界治疗量应被拒: " + badHealRejected);
+
+        // command：伙伴六动作白名单透传 + 游戏侧回执回环（ensure 带预设键/辅助带参数域内值）。
+        Thread botConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 6; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "bot_ensure" -> {
+                        assertEquals("qinghe", command.params().getString("bot"));
+                        command.succeed("已生成伙伴（青禾 对象 900005 血 5000/5000 跟随中 辅助关）");
+                    }
+                    case "bot_pull_here" -> command.succeed("伙伴 青禾 已拉到身前（对象 900005）");
+                    case "bot_follow_start" -> command.succeed("伙伴 青禾 开始跟随");
+                    case "bot_follow_stop" -> command.succeed("伙伴 青禾 已停止跟随（原地驻足）");
+                    case "bot_revive" -> command.succeed("伙伴 青禾 已复活回满血（5000/5000）");
+                    case "bot_support_configure" -> {
+                        assertEquals(1, command.params().getIntValue("enabled"));
+                        assertEquals(5, command.params().getIntValue("intervalSec"));
+                        assertEquals(500, command.params().getIntValue("heal"));
+                        command.succeed("伙伴辅助已配置：开，每 5s 治疗玩家 500 点");
+                    }
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-bot-consumer");
+        botConsumer.start();
+        Map<String, Object> botEnsureData = Map.of(
+                "sessionId", 7, "action", "bot_ensure", "params", Map.of("bot", "qinghe"));
+        Map<String, Object> botPullData = Map.of(
+                "sessionId", 7, "action", "bot_pull_here", "params", Map.of());
+        Map<String, Object> botFollowStartData = Map.of(
+                "sessionId", 7, "action", "bot_follow_start", "params", Map.of());
+        Map<String, Object> botFollowStopData = Map.of(
+                "sessionId", 7, "action", "bot_follow_stop", "params", Map.of());
+        Map<String, Object> botReviveData = Map.of(
+                "sessionId", 7, "action", "bot_revive", "params", Map.of());
+        Map<String, Object> botSupportData = Map.of(
+                "sessionId", 7, "action", "bot_support_configure",
+                "params", Map.of("enabled", 1, "intervalSec", 5, "heal", 500));
+        String botEnsureQueued = remote.syncRemote("GmRemote", "command", botEnsureData, String.class);
+        String botPullQueued = remote.syncRemote("GmRemote", "command", botPullData, String.class);
+        String botFollowStartQueued = remote.syncRemote("GmRemote", "command", botFollowStartData, String.class);
+        String botFollowStopQueued = remote.syncRemote("GmRemote", "command", botFollowStopData, String.class);
+        String botReviveQueued = remote.syncRemote("GmRemote", "command", botReviveData, String.class);
+        String botSupportQueued = remote.syncRemote("GmRemote", "command", botSupportData, String.class);
+        botConsumer.join(5000);
+        assertTrue(JSON.parseObject(botEnsureQueued).getBooleanValue("ok"),
+                "bot_ensure 应白名单透传: " + botEnsureQueued);
+        assertTrue(JSON.parseObject(botPullQueued).getBooleanValue("ok"),
+                "bot_pull_here 应白名单透传: " + botPullQueued);
+        assertTrue(JSON.parseObject(botFollowStartQueued).getBooleanValue("ok"),
+                "bot_follow_start 应白名单透传: " + botFollowStartQueued);
+        assertTrue(JSON.parseObject(botFollowStopQueued).getBooleanValue("ok"),
+                "bot_follow_stop 应白名单透传: " + botFollowStopQueued);
+        assertTrue(JSON.parseObject(botReviveQueued).getBooleanValue("ok"),
+                "bot_revive 应白名单透传: " + botReviveQueued);
+        assertTrue(JSON.parseObject(botSupportQueued).getBooleanValue("ok"),
+                "bot_support_configure 应白名单透传: " + botSupportQueued);
+
+        // command：门派声望参数域（坏 mode / 越界 value / 缺 name 入口即拒，不入队）。
+        Map<String, Object> badReputeMode = Map.of(
+                "sessionId", 7,
+                "action", "repute_apply",
+                "params", Map.of("reputeName", "repute_wudang",
+                        "reputeMode", "mul", "reputeValue", 100));
+        String badModeRejected = remote.syncRemote("GmRemote", "command", badReputeMode, String.class);
+        assertFalse(JSON.parseObject(badModeRejected).getBooleanValue("ok"),
+                "非法 reputeMode 应被拒: " + badModeRejected);
+        Map<String, Object> badReputeValue = Map.of(
+                "sessionId", 7,
+                "action", "repute_apply",
+                "params", Map.of("reputeName", "repute_wudang", "reputeValue", 10_000_000));
+        String badValueRejected = remote.syncRemote("GmRemote", "command", badReputeValue, String.class);
+        assertFalse(JSON.parseObject(badValueRejected).getBooleanValue("ok"),
+                "越界 reputeValue 应被拒: " + badValueRejected);
+        Map<String, Object> missingReputeName = Map.of(
+                "sessionId", 7,
+                "action", "repute_apply",
+                "params", Map.of("reputeValue", 100));
+        String missingNameRejected = remote.syncRemote("GmRemote", "command", missingReputeName, String.class);
+        assertFalse(JSON.parseObject(missingNameRejected).getBooleanValue("ok"),
+                "缺 reputeName 应被拒: " + missingNameRejected);
+
+        // command：门派声望白名单透传 + 游戏侧回执回环（阵营闭名单在游戏侧按表校验）。
+        Thread reputeConsumer = new Thread(() -> {
+            for (int i = 0; i < 400; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                if ("repute_apply".equals(command.action())) {
+                    assertEquals("repute_wudang", command.params().getString("reputeName"));
+                    assertEquals("set", command.params().getString("reputeMode"));
+                    assertEquals(5000, command.params().getIntValue("reputeValue"));
+                    command.succeed("声望 repute_wudang 已设置至 5000（等级 2），总量 5000");
+                    return;
+                }
+                command.fail("unexpected action " + command.action());
+            }
+        }, "gm-repute-consumer");
+        reputeConsumer.start();
+        Map<String, Object> reputeData = Map.of(
+                "sessionId", 7,
+                "action", "repute_apply",
+                "params", Map.of("reputeName", "repute_wudang",
+                        "reputeMode", "set", "reputeValue", 5000));
+        String reputeQueued = remote.syncRemote("GmRemote", "command", reputeData, String.class);
+        reputeConsumer.join(5000);
+        assertTrue(JSON.parseObject(reputeQueued).getBooleanValue("ok"),
+                "repute_apply 应白名单透传: " + reputeQueued);
+
         // command：世界 BOSS 三动作（无参）白名单透传 + 游戏侧回执回环。
         Thread worldBossConsumer = new Thread(() -> {
             int served = 0;
@@ -421,6 +568,147 @@ class GmRemoteRoundTripTest {
                 "reenter_clone 应白名单透传: " + reenterCloneQueued);
         assertTrue(JSON.parseObject(destroyCloneQueued).getBooleanValue("ok"),
                 "destroy_clone 应白名单透传: " + destroyCloneQueued);
+
+        // command：武学套路两动作（无参）白名单透传 + 游戏侧回执回环。
+        Thread taoluConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 2; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "learn_all_taolu" -> command.succeed("已把 27 门武学升至满级（其中 20 门升档）");
+                    case "forget_all_taolu" -> command.succeed("已删除全部武学，重置为初始套路集（剩余 27 项）");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-taolu-consumer");
+        taoluConsumer.start();
+        Map<String, Object> learnTaoluData = Map.of(
+                "sessionId", 7, "action", "learn_all_taolu", "params", Map.of());
+        Map<String, Object> forgetTaoluData = Map.of(
+                "sessionId", 7, "action", "forget_all_taolu", "params", Map.of());
+        String learnTaoluQueued = remote.syncRemote("GmRemote", "command", learnTaoluData, String.class);
+        String forgetTaoluQueued = remote.syncRemote("GmRemote", "command", forgetTaoluData, String.class);
+        taoluConsumer.join(5000);
+        assertTrue(JSON.parseObject(learnTaoluQueued).getBooleanValue("ok"),
+                "learn_all_taolu 应白名单透传: " + learnTaoluQueued);
+        assertTrue(JSON.parseObject(forgetTaoluQueued).getBooleanValue("ok"),
+                "forget_all_taolu 应白名单透传: " + forgetTaoluQueued);
+
+        // command：御风神水两动作（无参）白名单透传 + 游戏侧回执回环。
+        Thread yufengConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 2; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "yufeng_add" -> command.succeed("御风状态已添加（槽 12，10 分钟内可施展大轻功）");
+                    case "yufeng_remove" -> command.succeed("御风状态已取消（槽 12）");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-yufeng-consumer");
+        yufengConsumer.start();
+        Map<String, Object> yufengAddData = Map.of(
+                "sessionId", 7, "action", "yufeng_add", "params", Map.of());
+        Map<String, Object> yufengRemoveData = Map.of(
+                "sessionId", 7, "action", "yufeng_remove", "params", Map.of());
+        String yufengAddQueued = remote.syncRemote("GmRemote", "command", yufengAddData, String.class);
+        String yufengRemoveQueued = remote.syncRemote("GmRemote", "command", yufengRemoveData, String.class);
+        yufengConsumer.join(5000);
+        assertTrue(JSON.parseObject(yufengAddQueued).getBooleanValue("ok"),
+                "yufeng_add 应白名单透传: " + yufengAddQueued);
+        assertTrue(JSON.parseObject(yufengRemoveQueued).getBooleanValue("ok"),
+                "yufeng_remove 应白名单透传: " + yufengRemoveQueued);
+
+        // command：身份系统一键激活（无参）白名单透传 + 游戏侧回执回环。
+        Thread originConsumer = new Thread(() -> {
+            for (int i = 0; i < 400; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                if ("origin_activate_all".equals(command.action())) {
+                    command.succeed("已激活 1197 个身份（共 1197 个）；奖励在身份界面点领取（702）发放");
+                    return;
+                }
+                command.fail("unexpected action " + command.action());
+            }
+        }, "gm-origin-consumer");
+        originConsumer.start();
+        Map<String, Object> originData = Map.of(
+                "sessionId", 7, "action", "origin_activate_all", "params", Map.of());
+        String originQueued = remote.syncRemote("GmRemote", "command", originData, String.class);
+        originConsumer.join(5000);
+        assertTrue(JSON.parseObject(originQueued).getBooleanValue("ok"),
+                "origin_activate_all 应白名单透传: " + originQueued);
+
+        // command：场景天气参数域（非法天气键 / 越界 fadeSec 入口即拒，不入队）。
+        Map<String, Object> badWeatherKey = Map.of(
+                "sessionId", 7,
+                "action", "set_weather",
+                "params", Map.of("weather", "rule/weather/evil"));
+        String badWeatherRejected = remote.syncRemote("GmRemote", "command", badWeatherKey, String.class);
+        assertFalse(JSON.parseObject(badWeatherRejected).getBooleanValue("ok"),
+                "非法天气键应被拒: " + badWeatherRejected);
+        Map<String, Object> badFade = Map.of(
+                "sessionId", 7,
+                "action", "set_weather",
+                "params", Map.of("weather", "heavy_rain_501", "fadeSec", 601));
+        String badFadeRejected = remote.syncRemote("GmRemote", "command", badFade, String.class);
+        assertFalse(JSON.parseObject(badFadeRejected).getBooleanValue("ok"),
+                "越界过渡秒应被拒: " + badFadeRejected);
+
+        // command：场景天气 set_weather 白名单透传 + 游戏侧回执回环（合法键 + 过渡秒）。
+        Thread weatherConsumer = new Thread(() -> {
+            int served = 0;
+            for (int i = 0; i < 400 && served < 1; i++) {
+                GmCommand command = HUB.tryPop(7);
+                if (command == null) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    continue;
+                }
+                switch (command.action()) {
+                    case "set_weather" -> command.succeed("已下发天气切换帧（大雨（夜），30 秒渐变）");
+                    default -> command.fail("unexpected action " + command.action());
+                }
+                served++;
+            }
+        }, "gm-weather-consumer");
+        weatherConsumer.start();
+        Map<String, Object> weatherData = Map.of(
+                "sessionId", 7,
+                "action", "set_weather",
+                "params", Map.of("weather", "heavy_rain_501", "fadeSec", 30));
+        String weatherQueued = remote.syncRemote("GmRemote", "command", weatherData, String.class);
+        weatherConsumer.join(5000);
+        assertTrue(JSON.parseObject(weatherQueued).getBooleanValue("ok"),
+                "set_weather 应白名单透传: " + weatherQueued);
 
         // minimalLogin：GET/切换。
         String before = remote.syncRemote("GmRemote", "minimalLogin", new JSONObject(), String.class);

@@ -41,6 +41,18 @@ public final class PlayerActor {
     /** buff_varprop[23001] L1 CCQGP=-10：缓降每秒消耗轻功值 10。 */
     public static final int GLIDE_POINT_COST_PER_SECOND = 10;
 
+    /**
+     * 御风神水状态（buf_ride_yufeng）：大轻功（百鸟凌云系列）一/二/三段冲刺的
+     * 客户端条件包要求 BuffStore 持有御风。buff_new[buf_ride_yufeng] StaticData=10293、
+     * buff_static[10293] Category=0（与缓降 218→2048 同口径表实证）；官方语义每 10s
+     * 耗 1% 内力上限且进战斗即摘（buff_static EndFightClear=0，摘除在客户端 lua
+     * buf\ride\buf_ride_yufeng.lua）——GM 版不模拟消耗，固定 10 分钟租约可续。
+     */
+    public static final String YUFENG_BUFF_CONFIG = "buf_ride_yufeng";
+    public static final long YUFENG_BUFF_STATIC_DATA = 10_293L;
+    public static final int YUFENG_BUFF_CATEGORY = 0;
+    public static final long YUFENG_BUFF_LIFETIME_MS = 600_000L;
+
     static class Motion {
         // 默认移动/奔跑速度 5（2026-11-02 由 25 下调；25 过快，GM 面板可改）
         float moveSpeed = 5;
@@ -1089,6 +1101,21 @@ public final class PlayerActor {
             }
         }
         return -1;
+    }
+
+    /** 同 ConfigID 活跃租约的槽位与到期（独立 buff 摘除回帧/msg169 到期值用）；无则 null。 */
+    public record ActiveBuffLease(int slot, Instant expiresUtc) {
+    }
+
+    public synchronized ActiveBuffLease activeBuffLease(String configId, Instant now) {
+        for (java.util.Map.Entry<Integer, ActiveBuff> entry : buffs.entrySet()) {
+            ActiveBuff buff = entry.getValue();
+            if (configId != null && configId.equals(buff.configId())
+                    && buff.expiresUtc().isAfter(now)) {
+                return new ActiveBuffLease(entry.getKey(), buff.expiresUtc());
+            }
+        }
+        return null;
     }
 
     /** 活跃 buff 的 槽位→StaticData 快照（架招 ReplaceCategory 互斥逐出用）。 */

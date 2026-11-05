@@ -343,6 +343,14 @@
       if (confirm("确定清除当前场景的全部战斗假人？"))
         command({ action: "clear_combat_dummies" });
     }
+    // 伙伴辅助配置：开关 + 间隔秒 + 单次治疗量（bot_support_configure）。
+    function botSupportConfigure() {
+      botCommand("bot_support_configure", {
+        enabled: +document.querySelector("#bot-support-enabled").value,
+        intervalSec: +document.querySelector("#bot-support-interval").value || 5,
+        heal: +document.querySelector("#bot-support-heal").value || 0,
+      });
+    }
     function setPKMode(mode) {
       command({ action: "set_pk_mode", pkMode: mode });
     }
@@ -350,6 +358,7 @@
       command({
         action: "set_weather",
         weather: document.querySelector("#weather").value,
+        fadeSec: +document.querySelector("#weather-fade").value || 10,
       });
     }
     function scene(destination) {

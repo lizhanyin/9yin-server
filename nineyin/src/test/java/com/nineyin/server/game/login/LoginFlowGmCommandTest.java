@@ -18,6 +18,7 @@ import com.alibaba.fastjson2.JSONObject;
 import com.nineyin.server.game.avatar.PlayerActor;
 import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmHub;
+import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.transport.Connection;
 
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -36,12 +37,16 @@ class LoginFlowGmCommandTest {
         final LoginFlow flow;
 
         Env() {
+            this(null);
+        }
+
+        Env(java.util.concurrent.ScheduledExecutorService scheduler) {
             session.player = PlayerActor.create("李逍遥", 99999, Clock.systemUTC());
             GmHub.PlayerSnapshot snapshot = new GmHub.PlayerSnapshot();
             snapshot.sessionId = session.machine.id();
             snapshot.name = "李逍遥";
             hub.attach(snapshot.sessionId, snapshot);
-            flow = new LoginFlow(null, null, hub, Clock.systemUTC(), null, null);
+            flow = new LoginFlow(null, null, hub, Clock.systemUTC(), null, scheduler);
         }
 
         GmCommand enqueue(String action, Map<String, Object> params) {
@@ -463,6 +468,66 @@ class LoginFlowGmCommandTest {
         assertNull(env.channel.readOutbound(), "仅一帧");
     }
 
+    /**
+     * set_weather：单帧 0x27 命令名寻址 on_weather_sky（sub_type=4 + SceneParaStore
+     * 目录 + 过渡秒 + 空特效串），客户端原生 ChangeWeatherEffect 消费口径
+     * （lua 取证 custom_handler.lua on_weather_sky / weather_set.lua start_weather）。
+     * 未知键零帧失败；fadeSec 缺省 10。
+     */
+    @Test
+    void weatherSwitchSendsOnWeatherSkyFrame() {
+        Env env = new Env();
+        GmCommand command = env.enqueue("set_weather",
+                Map.of("weather", "heavy_rain_501", "fadeSec", 30));
+
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(command).ok(), "天气切换应成功");
+        byte[] frame = env.channel.readOutbound();
+        assertTrue(frame != null, "应写出一帧");
+        assertEquals(0x27, frame[0] & 0xFF, "现代 custom 壳 0x27");
+        assertEquals(5, (frame[1] & 0xFF) | (frame[2] & 0xFF) << 8, "五值：命令名 + sub_type + 目录 + 过渡秒 + 特效串");
+        assertEquals(6, frame[3] & 0xFF, "首值线型 tag6 窄字符串（命令名寻址）");
+        int nameLen = readU32(frame, 4);
+        assertEquals(15, nameLen, "u32 = 字节数 14 + NUL");
+        assertEquals("on_weather_sky", new String(frame, 8, 14, java.nio.charset.StandardCharsets.US_ASCII));
+        assertEquals(0, frame[22], "命令名 NUL 结尾");
+        assertEquals(2, frame[23] & 0xFF, "次值线型 tag2 int32（sub_type）");
+        assertEquals(4, readU32(frame, 24), "sub_type=4 → ChangeWeatherEffect 切换分支");
+        assertEquals(6, frame[28] & 0xFF, "第三值线型 tag6（天气渲染包目录）");
+        int folderLen = readU32(frame, 29);
+        assertEquals(15, folderLen, "heavy_rain_501 字节数 14 + NUL");
+        assertEquals("heavy_rain_501", new String(frame, 33, 14, java.nio.charset.StandardCharsets.US_ASCII));
+        assertEquals(0, frame[47], "目录 NUL 结尾");
+        assertEquals(2, frame[48] & 0xFF, "第四值线型 tag2（过渡秒）");
+        assertEquals(30, readU32(frame, 49), "fadeSec=30 原样下发");
+        assertEquals(6, frame[53] & 0xFF, "第五值线型 tag6（TXID 特效串）");
+        assertEquals(1, readU32(frame, 54), "空串 u32=1（仅 NUL）");
+        assertEquals(0, frame[58], "空特效串 NUL");
+        assertNull(env.channel.readOutbound(), "仅一帧");
+        assertTrue(env.hub.get(env.session.machine.id()).lastAction.contains("大雨"),
+                "lastAction 回显天气标签");
+
+        // fadeSec 缺省 10（同长度键复用首帧偏移：tag2@48 + u32@49）。
+        GmCommand def = env.enqueue("set_weather", Map.of("weather", "light_rain_001"));
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertTrue(reply(def).ok());
+        byte[] defFrame = env.channel.readOutbound();
+        assertEquals(2, defFrame[48] & 0xFF);
+        assertEquals(10, readU32(defFrame, 49), "缺省过渡秒 10");
+
+        // 未知键（入口漏拦/直入队列）：零帧失败，不注入任意路径。
+        GmCommand unknown = env.enqueue("set_weather", Map.of("weather", "rule/weather/../../evil"));
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertFalse(reply(unknown).ok(), "未知天气键应失败");
+        assertNull(env.channel.readOutbound(), "失败零帧");
+    }
+
+    private static int readU32(byte[] frame, int offset) {
+        return (frame[offset] & 0xFF) | (frame[offset + 1] & 0xFF) << 8
+                | (frame[offset + 2] & 0xFF) << 16 | (frame[offset + 3] & 0xFF) << 24;
+    }
+
     /** 洗练六动作：无 inventory DB 时明确失败且不写帧（不半途改词条）。 */
     @Test
     void recastActionsFailWithoutInventoryStore() {
@@ -610,6 +675,279 @@ class LoginFlowGmCommandTest {
         } finally {
             com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
         }
+    }
+
+    /**
+     * 伙伴系统全链（真实 attacknpc 表进临时根，combatDummySpawnAndClearRoundTrip
+     * 同款 overrideServerRoot + finally 还原）：bot_ensure 幂等生成（bot 摆放标志 +
+     * FightState 伙伴标记 + 预设名字/血量）→ 非法预设键拒绝 → follow 开关 →
+     * companionTick 跟随（pendingLocation 远处 0x21 追击 moving=1、回到停距内
+     * moving=0 停步）→ 切图世代失效自动重生（新对象号 + 重标记）→ bot_pull_here
+     * 0x1F 瞬移 → 辅助配置 + 周期治疗（玩家掉血回满 + 间隔闸）→ bot_revive 回满。
+     */
+    @Test
+    void botEnsureFollowSupportReviveRoundTrip(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "share", "npc",
+                        "npcconfig", "worldnpc", "attacknpc.txt")),
+                "参考服 attacknpc 表不可用，跳过伙伴编排断言");
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            env.session.world = new com.nineyin.server.world.scene.SceneLifecycle(
+                    new Connection(env.channel), new NpcDialogFlowTest.NoopScheduler());
+            env.session.world.begin("school09", "school09");
+            env.session.fight = new com.nineyin.server.world.fight.FightState();
+            Connection connection = new Connection(env.channel);
+
+            // 生成：bot 摆放 + FightState 标记 + 预设名字/血量（青禾 5000）。
+            GmCommand ensure = env.enqueue("bot_ensure", Map.of());
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(ensure).ok(), "生成伙伴应成功: " + reply(ensure).message());
+            assertTrue(reply(ensure).message().contains("青禾"), "回执含伙伴名");
+            assertTrue(env.session.bot != null && env.session.bot.following, "默认跟随");
+            int objectId = env.session.bot.objectId;
+            LoginSession.GmSpawn spawn = env.session.gmSpawns.get(objectId);
+            assertTrue(spawn != null && spawn.bot, "gmSpawns 打 bot 标志");
+            var info = env.session.world.combatNpcInfo(objectId);
+            assertTrue(info != null, "伙伴入战斗快照");
+            assertEquals("青禾", info.name(), "预设名字覆盖");
+            assertEquals(5_000, info.maxHp(), "预设血量覆盖");
+            assertTrue(env.session.fight.isCompanion(objectId), "FightState 伙伴标记");
+            assertEquals("青禾", env.hub.get(env.session.machine.id()).botName, "面板快照带伙伴");
+
+            // 幂等：同预设再次 ensure → 在场回执不新增；非法预设键失败零帧。
+            GmCommand again = env.enqueue("bot_ensure", Map.of());
+            GmCommand bad = env.enqueue("bot_ensure", Map.of("bot", "no_such_bot"));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(again).ok() && reply(again).message().contains("在场"));
+            assertEquals(objectId, env.session.bot.objectId, "在场不重生成");
+            assertEquals(1, env.session.gmSpawns.size());
+            assertFalse(reply(bad).ok(), "非法预设键应失败");
+            drainOutbound(env.channel);
+
+            // 跟随：玩家远走 20m → 0x21 追击（moving=1）；回到停距内 → moving=0 停步。
+            env.session.pendingLocation = locationAt(20, 0, 0);
+            env.flow.companionTick(connection, env.session);
+            byte[] chase = env.channel.readOutbound();
+            assertTrue(chase != null && chase.length == 47 && (chase[0] & 0xFF) == 0x21,
+                    "追击应发单条目 0x21");
+            assertEquals(1, chase[43], "追击 moving=1（条目尾 u32）");
+            drainOutbound(env.channel);
+            // 拉伙伴：0x1F 权威坐标瞬移到玩家身前（朝向前方 2.5m）。
+            GmCommand pull = env.enqueue("bot_pull_here", Map.of());
+            env.session.pendingLocation = locationAt(100, 0, 0); // pull 用实时位
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(pull).ok(), "拉伙伴应成功: " + reply(pull).message());
+            byte[] placed = lastFrame(env.channel, 0x1F);
+            assertTrue(placed != null, "拉伙伴发 0x1F 权威坐标");
+            // 拉后停距内（伙伴 102.5 / 玩家 100）：不追击；moving 置位模拟行进中到点 → 停步帧。
+            env.flow.companionTick(connection, env.session);
+            drainOutbound(env.channel);
+            env.session.pendingLocation = locationAt(102.5f, 0, 0);
+            env.session.bot.moving = true;
+            env.flow.companionTick(connection, env.session);
+            byte[] stop = env.channel.readOutbound();
+            assertTrue(stop != null && (stop[0] & 0xFF) == 0x21, "停步发 0x21");
+            assertEquals(0, stop[43], "停步 moving=0");
+            assertFalse(env.session.bot.moving, "停步后 moving 复位");
+            drainOutbound(env.channel);
+
+            // 跟随开关。
+            GmCommand stopFollow = env.enqueue("bot_follow_stop", Map.of());
+            GmCommand startFollow = env.enqueue("bot_follow_start", Map.of());
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(stopFollow).ok() && reply(startFollow).ok());
+            assertTrue(env.session.bot.following);
+
+            // 辅助：开 300/1s → 玩家掉血 → companionTick 施法帧 + 回血 + 间隔闸。
+            GmCommand support = env.enqueue("bot_support_configure",
+                    Map.of("enabled", 1, "intervalSec", 1, "heal", 300));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(support).ok(), "辅助配置应成功: " + reply(support).message());
+            assertTrue(env.session.bot.supportEnabled && env.session.bot.supportHeal == 300);
+            drainOutbound(env.channel);
+            int maxHp = env.session.player.actorState().maxHp();
+            env.session.player.applyNpcDamage(Math.min(200, maxHp - 1));
+            int hurt = env.session.player.actorState().hp();
+            assertTrue(hurt < maxHp, "玩家应已掉血");
+            env.session.pendingLocation = locationAt(100, 0, 0); // 伙伴在玩家旁（12m 内）
+            env.flow.companionTick(connection, env.session);
+            assertEquals(maxHp, env.session.player.actorState().hp(), "辅助应把玩家回满");
+            byte[] vital = lastFrame(env.channel, 0x10);
+            assertTrue(vital != null, "治疗随 0x10 vital 面板帧");
+            long healedAt = env.session.bot.lastHealAtMs;
+            env.session.player.applyNpcDamage(10);
+            env.flow.companionTick(connection, env.session); // 间隔未到：零帧不重复治疗
+            assertTrue(env.channel.readOutbound() == null, "间隔闸内不再施法");
+            assertEquals(healedAt, env.session.bot.lastHealAtMs);
+
+            // 切图世代失效（begin 清 gmSpawns + FightState 重建）→ 下一拍自动重生。
+            env.session.world.begin("school09", "school09");
+            env.session.gmSpawns.clear();
+            env.session.fight = new com.nineyin.server.world.fight.FightState();
+            env.flow.companionTick(connection, env.session);
+            assertTrue(env.session.bot.objectId != objectId, "重生换新对象号");
+            assertTrue(env.session.fight.isCompanion(env.session.bot.objectId), "新世代重标记");
+            assertEquals(1, env.session.gmSpawns.size(), "重生恰一只伙伴");
+            drainOutbound(env.channel);
+
+            // 复活：打残打死（FightState 直伤）→ bot_revive 回满 + 状态帧。
+            int botId = env.session.bot.objectId;
+            assertTrue(env.session.fight.selectTarget(env.session.world, botId, 1), "伙伴可选中");
+            var combat = env.session.fight.npc(botId);
+            env.session.fight.applyDamage(combat, 5_000, java.time.Instant.now());
+            assertFalse(env.session.fight.npcAlive(botId), "伙伴应阵亡");
+            GmCommand revive = env.enqueue("bot_revive", Map.of());
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(revive).ok(), "复活应成功: " + reply(revive).message());
+            assertTrue(env.session.fight.npcAlive(botId), "复活后存活");
+            assertEquals(5_000, env.session.fight.npc(botId).state().hp(), "复活回满血");
+            assertTrue(lastFrame(env.channel, 0x10) != null, "复活随 0x10 战斗帧");
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /**
+     * 门派声望全链（真实 repute_level.ini 进临时根，combatDummy 同款
+     * overrideServerRoot + finally 还原）：set 单阵营 → 1 条 0x11（Repute_Record=44，
+     * 名/值/等级三列）+ 0x10 PrestigeExp；add 叠加 → 0x12 倒序删旧 + 0x11 整刷；
+     * all 全量按 [Repute] 表序；未知阵营失败零帧；set 0 摘行（整刷少一行）。
+     */
+    @Test
+    void reputeApplySetAddAllRoundTrip(@TempDir Path tempRoot) throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                copyResource(tempRoot, Path.of("resources", "modern", "share", "rule",
+                        "repute_level.ini")),
+                "参考服 repute_level.ini 不可用，跳过声望编排断言");
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            Connection connection = new Connection(env.channel);
+            int campCount = com.nineyin.server.game.avatar.panel.ReputeLevelTable.load()
+                    .camps().size();
+
+            // set 单阵营：1×0x11（idx44、名+值+等级）+ 1×0x10 PrestigeExp=5000。
+            GmCommand set = env.enqueue("repute_apply", Map.of(
+                    "reputeName", "repute_wudang", "reputeMode", "set", "reputeValue", 5000));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(set).ok(), "设置声望应成功: " + reply(set).message());
+            assertTrue(reply(set).message().contains("repute_wudang"), "回执含阵营名");
+            assertEquals(Map.of("repute_wudang", 5000L), env.session.reputes, "内存镜像");
+            byte[] row = env.channel.readOutbound();
+            assertTrue(row != null && (row[0] & 0xFF) == 0x11, "声望行走 0x11");
+            assertEquals(44, (row[10] & 0xFF) | (row[11] & 0xFF) << 8, "记录表=Repute_Record(44)");
+            assertTrue(containsBytes(row, "repute_wudang".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                    "行含声望名");
+            assertTrue(containsBytes(row, new byte[]{(byte) 0x88, 0x13, 0, 0}), "行含值 5000(LE)");
+            byte[] vital = env.channel.readOutbound();
+            assertTrue(containsInt32(vital, "PrestigeExp", 5000), "0x10 汇总帧 PrestigeExp=5000");
+            assertEquals(5000, env.session.player.panel().prestigeExp);
+            assertNull(env.channel.readOutbound(), "无多余帧");
+
+            // add 叠加：0x12 删旧行 + 0x11 新行 12000 + 0x10 PrestigeExp=12000。
+            GmCommand add = env.enqueue("repute_apply", Map.of(
+                    "reputeName", "repute_wudang", "reputeMode", "add", "reputeValue", 7000));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(add).ok());
+            assertEquals(12_000L, env.session.reputes.get("repute_wudang"), "add 叠加");
+            byte[] del = env.channel.readOutbound();
+            assertTrue(del != null && (del[0] & 0xFF) == 0x12, "整刷先 0x12 删旧");
+            assertEquals(44, (del[10] & 0xFF) | (del[11] & 0xFF) << 8);
+            byte[] newRow = env.channel.readOutbound();
+            assertTrue(newRow != null && (newRow[0] & 0xFF) == 0x11);
+            assertTrue(containsBytes(newRow, new byte[]{(byte) 0xE0, 0x2E, 0, 0}), "新行值 12000(LE)");
+            assertTrue(containsInt32(env.channel.readOutbound(), "PrestigeExp", 12_000));
+            assertNull(env.channel.readOutbound());
+
+            // all 全量：0x12×1 + 0x11×表数 + 0x10×1；总量 = 表数×100。
+            GmCommand all = env.enqueue("repute_apply", Map.of(
+                    "reputeName", "all", "reputeMode", "set", "reputeValue", 100));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(all).ok(), "all 应成功: " + reply(all).message());
+            assertEquals(campCount, env.session.reputes.size(), "全阵营按 [Repute] 表序");
+            int[] counts = countOutbound(env.channel);
+            assertEquals(1, counts[0x12], "删 1 旧行");
+            assertEquals(campCount, counts[0x11], "全阵营逐行");
+            assertEquals(1, counts[0x10], "汇总帧一帧");
+            assertEquals(campCount * 100, env.session.player.panel().prestigeExp, "面板总量");
+
+            // 未知阵营失败零帧。
+            GmCommand bad = env.enqueue("repute_apply", Map.of(
+                    "reputeName", "repute_nosuch", "reputeValue", 1));
+            env.flow.drainGmCommands(connection, env.session);
+            assertFalse(reply(bad).ok(), "未知阵营应失败");
+            assertNull(env.channel.readOutbound(), "失败不写帧");
+
+            // set 0 摘行：整刷后少一行（0x12×表数 + 0x11×(表数-1) + 0x10×1）。
+            GmCommand clear = env.enqueue("repute_apply", Map.of(
+                    "reputeName", "repute_wudang", "reputeMode", "set", "reputeValue", 0));
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(clear).ok());
+            assertEquals(campCount - 1, env.session.reputes.size(), "武当行被摘除");
+            int[] recount = countOutbound(env.channel);
+            assertEquals(campCount, recount[0x12]);
+            assertEquals(campCount - 1, recount[0x11]);
+            assertEquals(1, recount[0x10]);
+            assertEquals((campCount - 1) * 100, env.session.player.panel().prestigeExp);
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
+    }
+
+    /** 出站帧按 opcode 计数（{0x11: n, 0x12: n}；消费完出站流）。 */
+    private static int[] countOutbound(EmbeddedChannel channel) {
+        int[] counts = new int[256];
+        byte[] frame;
+        while ((frame = channel.readOutbound()) != null) {
+            counts[frame[0] & 0xFF]++;
+        }
+        return counts;
+    }
+
+    /** 帧内包含指定字节序列（行帧名/LE 值断言用）。 */
+    private static boolean containsBytes(byte[] frame, byte[] needle) {
+        outer:
+        for (int i = 0; i + needle.length <= frame.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (frame[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** 伙伴/场景测试用坐标 Location（orient=0，version=1）。 */
+    private static com.nineyin.server.db.role.Roles.Location locationAt(float x, float y, float z) {
+        return new com.nineyin.server.db.role.Roles.Location(
+                new com.nineyin.server.db.role.Roles.Scene("school09", "school09"),
+                new com.nineyin.server.db.role.Roles.Position(x, y, z, 0), 1);
+    }
+
+    /** 清空 EmbeddedChannel 出站帧（步骤间隔离用）。 */
+    private static void drainOutbound(EmbeddedChannel channel) {
+        while (channel.readOutbound() != null) {
+            // 丢弃
+        }
+    }
+
+    /** 从出站流里找指定 opcode 的最后一帧（跨步骤断言 0x1F/0x10）。 */
+    private static byte[] lastFrame(EmbeddedChannel channel, int opcode) {
+        byte[] found = null;
+        byte[] frame;
+        while ((frame = channel.readOutbound()) != null) {
+            if ((frame[0] & 0xFF) == opcode) {
+                found = frame;
+            }
+        }
+        return found;
     }
 
     /**
@@ -957,5 +1295,214 @@ class LoginFlowGmCommandTest {
         byte[] frame = channel.readOutbound();
         assertTrue(frame != null && (frame[0] & 0xFF) == 0x10, "应写出 faction 单帧 0x10");
         assertNull(channel.readOutbound(), "未知预设不应写帧");
+    }
+
+    /**
+     * 御风神水两动作全链：挂 = msg169（0x1E 壳九值 v0=0）+ 0x10 BufferInfo12 槽串
+     * （StaticData 首字段 2835=10293 的十六进制）双帧；重复 add 同槽续期；摘 =
+     * msg169(v0=1) + 空槽帧；scheduler 到期任务补发摘除双帧且续期后旧任务空转。
+     */
+    @Test
+    void yufengAddRemoveRoundTrip() {
+        java.time.Instant now = java.time.Instant.now();
+        // 极简流（scheduler=null）不 NPE：挂/摘双帧照发，仅无到期补发。
+        Env plain = new Env();
+        GmCommand plainAdd = plain.enqueue("yufeng_add", Map.of());
+        plain.flow.drainGmCommands(new Connection(plain.channel), plain.session);
+        assertTrue(reply(plainAdd).ok(), "无调度器流添加御风应成功: " + reply(plainAdd).message());
+        byte[] plainMsg = plain.channel.readOutbound();
+        byte[] plainSlot = plain.channel.readOutbound();
+        assertEquals(0x1E, plainMsg[0] & 0xFF, "msg169 壳");
+        assertEquals(0x10, plainSlot[0] & 0xFF, "BufferInfo 槽帧");
+
+        LoginFlowTest.ManualScheduler scheduler = new LoginFlowTest.ManualScheduler();
+        Env env = new Env(scheduler);
+        GmCommand add = env.enqueue("yufeng_add", Map.of());
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+
+        assertTrue(reply(add).ok(), "添加御风应成功: " + reply(add).message());
+        assertTrue(reply(add).message().contains("槽 12"), "首个空闲槽 12: " + reply(add).message());
+        byte[] msgAdd = env.channel.readOutbound();
+        byte[] slotAdd = env.channel.readOutbound();
+        assertNull(env.channel.readOutbound(), "挂 = 恰好两帧");
+        // msg169：0x1E + U16 九值 + tag2 int32 169 + tag2 v0=0 + tag6 窄串 buf_ride_yufeng。
+        assertEquals(0x1E, msgAdd[0] & 0xFF);
+        assertEquals(9, (msgAdd[1] & 0xFF) | (msgAdd[2] & 0xFF) << 8, "九值形态");
+        assertEquals(2, msgAdd[3] & 0xFF, "首值 tag2 int32");
+        assertEquals(169, (msgAdd[4] & 0xFF) | (msgAdd[5] & 0xFF) << 8
+                | (msgAdd[6] & 0xFF) << 16 | (msgAdd[7] & 0xFF) << 24, "messageId 169");
+        assertEquals(2, msgAdd[8] & 0xFF, "v0 tag2");
+        assertEquals(0, (msgAdd[9] & 0xFF) | (msgAdd[10] & 0xFF) << 8
+                | (msgAdd[11] & 0xFF) << 16 | (msgAdd[12] & 0xFF) << 24, "v0=0 挂");
+        String addText = new String(msgAdd, java.nio.charset.StandardCharsets.ISO_8859_1);
+        assertTrue(addText.contains("buf_ride_yufeng"), "窄串 buff id");
+        // 槽串：StaticData 10293 = 0x2835，OwnerID/Serial=1、Level=1、Count=1（十六进制）。
+        assertEquals(0x10, slotAdd[0] & 0xFF);
+        String slotText = new String(slotAdd, java.nio.charset.StandardCharsets.ISO_8859_1);
+        assertTrue(slotText.contains("2835,1,1,1,"), "BufferInfo 槽串首字段 2835: " + slotText);
+        PlayerActor.ActiveBuffLease lease =
+                env.session.player.activeBuffLease(PlayerActor.YUFENG_BUFF_CONFIG, now);
+        assertTrue(lease != null && lease.slot() == 12, "租约落槽 12");
+
+        // 重复 add：同槽续期（回执注明），仍恰好两帧，到期任务累积（旧任务将被空转）。
+        GmCommand renew = env.enqueue("yufeng_add", Map.of());
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertTrue(reply(renew).ok(), "续期应成功");
+        assertTrue(reply(renew).message().contains("续期"), "回执注明续期");
+        byte[] renewMsg = env.channel.readOutbound();
+        byte[] renewSlot = env.channel.readOutbound();
+        assertEquals(0x1E, renewMsg[0] & 0xFF);
+        assertEquals(0x10, renewSlot[0] & 0xFF);
+        assertNull(env.channel.readOutbound());
+        PlayerActor.ActiveBuffLease renewed =
+                env.session.player.activeBuffLease(PlayerActor.YUFENG_BUFF_CONFIG,
+                        java.time.Instant.now());
+        assertTrue(renewed != null && renewed.slot() == 12, "续期不换槽");
+        assertTrue(!renewed.expiresUtc().isBefore(lease.expiresUtc()), "到期时间不早于原租约");
+
+        // 摘：msg169(v0=1) + 空槽帧，租约清空。
+        GmCommand remove = env.enqueue("yufeng_remove", Map.of());
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertTrue(reply(remove).ok(), "取消御风应成功: " + reply(remove).message());
+        assertTrue(reply(remove).message().contains("槽 12"));
+        byte[] msgRemove = env.channel.readOutbound();
+        byte[] slotRemove = env.channel.readOutbound();
+        assertNull(env.channel.readOutbound(), "摘 = 恰好两帧");
+        assertEquals(0x1E, msgRemove[0] & 0xFF);
+        assertEquals(1, (msgRemove[9] & 0xFF) | (msgRemove[10] & 0xFF) << 8
+                | (msgRemove[11] & 0xFF) << 16 | (msgRemove[12] & 0xFF) << 24, "v0=1 摘");
+        assertEquals(0x10, slotRemove[0] & 0xFF);
+        assertFalse(new String(slotRemove, java.nio.charset.StandardCharsets.ISO_8859_1)
+                .contains("2835"), "空槽帧无 StaticData");
+        assertNull(env.session.player.activeBuffLease(
+                PlayerActor.YUFENG_BUFF_CONFIG, java.time.Instant.now()), "租约已清");
+
+        // 未持有时摘除：不失败，仍补发 msg169 重同步帧（无槽帧）。
+        GmCommand removeEmpty = env.enqueue("yufeng_remove", Map.of());
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertTrue(reply(removeEmpty).ok(), "未持有摘除应回执不失败");
+        byte[] emptyMsg = env.channel.readOutbound();
+        assertEquals(0x1E, emptyMsg[0] & 0xFF);
+        assertNull(env.channel.readOutbound(), "无租约无槽帧");
+
+        // 到期补发：再挂一次 → 跑全部到期任务（此前两次 add 的旧任务应空转）→
+        // 最新任务摘除双帧；旧任务因租约到期已前移不再匹配，零多余帧。
+        GmCommand addAgain = env.enqueue("yufeng_add", Map.of());
+        env.flow.drainGmCommands(new Connection(env.channel), env.session);
+        assertTrue(reply(addAgain).ok());
+        env.channel.readOutbound();
+        env.channel.readOutbound();
+        for (Runnable task : List.copyOf(scheduler.tasks)) {
+            task.run();
+        }
+        byte[] expiredMsg = env.channel.readOutbound();
+        byte[] expiredSlot = env.channel.readOutbound();
+        assertNull(env.channel.readOutbound(), "到期恰好补发两帧（旧任务空转）");
+        assertEquals(0x1E, expiredMsg[0] & 0xFF);
+        assertEquals(1, (expiredMsg[9] & 0xFF) | (expiredMsg[10] & 0xFF) << 8
+                | (expiredMsg[11] & 0xFF) << 16 | (expiredMsg[12] & 0xFF) << 24, "v0=1 到期摘");
+        assertEquals(0x10, expiredSlot[0] & 0xFF);
+        assertFalse(new String(expiredSlot, java.nio.charset.StandardCharsets.ISO_8859_1)
+                .contains("2835"), "到期空槽帧");
+        assertNull(env.session.player.activeBuffLease(
+                PlayerActor.YUFENG_BUFF_CONFIG, java.time.Instant.now()), "到期后租约清空");
+    }
+
+    /**
+     * 身份系统全链（手写最小 origin/prize/repute 表进临时根，combatDummy 同款
+     * overrideServerRoot + finally 还原）：origin_activate_all 全量激活（Origin_Active
+     * 单窄串行 0x11 × N，未领取状态不动）→ 702 领奖（未知物品跳过不阻断 + repute_*
+     * 阵营叠加整刷 Repute 行 + PrestigeExp 单帧 + Origin_Prized 行 + 重复幂等零帧）→
+     * 706 按内存镜像重推（激活 N + 领奖 M）→ 700 单激活（int/str 两口径；目录外拒绝零帧）。
+     */
+    @Test
+    void originActivateAllAndPrizeRoundTrip(@TempDir Path tempRoot) throws Exception {
+        Path originDir = tempRoot.resolve(Path.of("resources", "modern", "share", "task", "origin"));
+        java.nio.file.Files.createDirectories(originDir);
+        java.nio.file.Files.writeString(originDir.resolve("origin.ini"),
+                "[1]\nType1=1\n\n[2]\nType1=1\n\n[3]\nType1=2\n");
+        java.nio.file.Files.writeString(originDir.resolve("prize_item.ini"),
+                "[2]\nr=unknown_item_x,1\nr=unknown_item_y,3\n");
+        java.nio.file.Files.writeString(originDir.resolve("prize_title.ini"),
+                "[2]\nr=5\n");
+        java.nio.file.Files.writeString(originDir.resolve("prize_prop.ini"),
+                "[2]\nr=repute_shaolin,50\nr=repute_other,7\n");
+        Path ruleDir = tempRoot.resolve(Path.of("resources", "modern", "share", "rule"));
+        java.nio.file.Files.createDirectories(ruleDir);
+        java.nio.file.Files.writeString(ruleDir.resolve("repute_level.ini"),
+                "[Repute]\nr=repute_shaolin,repute_jianghu\n\n[Level]\n1=0\n2=100\n3=1000\n");
+
+        Path previousRoot = com.nineyin.util.ServerPaths.serverRoot();
+        com.nineyin.util.ServerPaths.overrideServerRoot(tempRoot);
+        try {
+            Env env = new Env();
+            env.session.selected = testRoleSnapshot();
+            Connection connection = new Connection(env.channel);
+
+            // 一键激活：3 行 Origin_Active（0x11），未领取状态不动。
+            GmCommand all = env.enqueue("origin_activate_all", Map.of());
+            env.flow.drainGmCommands(connection, env.session);
+            assertTrue(reply(all).ok(), "一键激活应成功: " + reply(all).message());
+            assertTrue(reply(all).message().contains("3 个身份"), "回执含计数");
+            int activeRows = 0;
+            byte[] frame;
+            while ((frame = env.channel.readOutbound()) != null) {
+                assertEquals(0x11, frame[0] & 0xFF, "Origin_Active 行帧");
+                activeRows++;
+            }
+            assertEquals(3, activeRows, "恰三行激活");
+            assertEquals(3, env.session.origins.size());
+            assertEquals(1, env.session.origins.get("2"), "未领取状态不动");
+
+            // 702 领奖（身份 2，窄串口径）：未知物品跳过不阻断；repute_shaolin +50
+            //（repute_other 非阵营跳过）→ Repute 行 0x11 + PrestigeExp 0x10 + Origin_Prized 0x11。
+            env.flow.handleOriginCustom(connection, env.session, CustomC2S.Message.of(List.of(
+                    CustomC2S.Value.ofInt(702), CustomC2S.Value.ofText("2"))));
+            byte[] reputeRow = env.channel.readOutbound();
+            byte[] prestige = env.channel.readOutbound();
+            byte[] prizedRow = env.channel.readOutbound();
+            assertNull(env.channel.readOutbound(), "领奖恰三帧（无物品入包帧）");
+            assertEquals(0x11, reputeRow[0] & 0xFF, "Repute_Record 行");
+            assertEquals(0x10, prestige[0] & 0xFF, "PrestigeExp 单帧");
+            assertEquals(0x11, prizedRow[0] & 0xFF, "Origin_Prized 行");
+            assertEquals(2, env.session.origins.get("2"), "status=2 已领奖");
+            assertEquals(50L, env.session.reputes.get("repute_shaolin"), "阵营叠加");
+            assertFalse(env.session.reputes.containsKey("repute_other"), "非阵营属性跳过");
+            assertEquals(50, env.session.player.panel().prestigeExp, "声望总量随帧");
+
+            // 重复 702：幂等零帧。
+            env.flow.handleOriginCustom(connection, env.session, CustomC2S.Message.of(List.of(
+                    CustomC2S.Value.ofInt(702), CustomC2S.Value.ofText("2"))));
+            assertNull(env.channel.readOutbound(), "重复领奖零帧");
+
+            // 706：按内存镜像重推 3 激活 + 1 领奖 = 4 行。
+            env.flow.handleOriginCustom(connection, env.session,
+                    CustomC2S.Message.of(List.of(CustomC2S.Value.ofInt(706))));
+            int replayed = 0;
+            while ((frame = env.channel.readOutbound()) != null) {
+                assertEquals(0x11, frame[0] & 0xFF);
+                replayed++;
+            }
+            assertEquals(4, replayed, "重推 3 激活 + 1 领奖");
+
+            // 700 单激活（新会话未做全量激活，int32 口径）：目录内入集一行。
+            Env fresh = new Env();
+            fresh.session.selected = testRoleSnapshot();
+            Connection freshConnection = new Connection(fresh.channel);
+            fresh.flow.handleOriginCustom(freshConnection, fresh.session, CustomC2S.Message.of(
+                    List.of(CustomC2S.Value.ofInt(700), CustomC2S.Value.ofInt(3))));
+            byte[] activated = fresh.channel.readOutbound();
+            assertTrue(activated != null && (activated[0] & 0xFF) == 0x11, "700 激活一行");
+            assertEquals(1, fresh.session.origins.size());
+            assertEquals(1, fresh.session.origins.get("3"));
+
+            // 目录外身份：拒绝零帧。
+            fresh.flow.handleOriginCustom(freshConnection, fresh.session, CustomC2S.Message.of(
+                    List.of(CustomC2S.Value.ofInt(700), CustomC2S.Value.ofText("999"))));
+            assertNull(fresh.channel.readOutbound(), "目录外身份零帧");
+            assertEquals(1, fresh.session.origins.size());
+        } finally {
+            com.nineyin.util.ServerPaths.overrideServerRoot(previousRoot);
+        }
     }
 }

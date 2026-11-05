@@ -106,6 +106,17 @@ public final class StarterGrants {
     public static void grantStarterProgress(Connection connection, PlayerActor player,
                                             java.util.List<RoleInventoryStore.Skill> dbSkills,
                                             boolean starterShortcuts) {
+        grantStarterProgress(connection, player, dbSkills, starterShortcuts, java.util.Map.of());
+    }
+
+    /**
+     * 带等级版：DB 行 Level 取 levels 档值（learn_all_taolu 满级落档
+     * data/武学等级.json 后重登保持；starter 回退集行维持内联 level=1）。
+     */
+    public static void grantStarterProgress(Connection connection, PlayerActor player,
+                                            java.util.List<RoleInventoryStore.Skill> dbSkills,
+                                            boolean starterShortcuts,
+                                            java.util.Map<String, Integer> levels) {
         for (byte[] frame : player.progress().viewFrames()) {
             connection.writeFrame(frame);
         }
@@ -113,7 +124,9 @@ public final class StarterGrants {
             connection.writeFrame(SceneMessages.createView(
                     new SceneMessages.ViewSpec(StarterSkills.VIEWPORT_SKILL, dbSkills.size())));
             for (int index = 0; index < dbSkills.size(); index++) {
-                connection.writeFrame(dbSkillViewAdd(dbSkills.get(index), index + 1));
+                String skillId = dbSkills.get(index).skillId();
+                connection.writeFrame(dbSkillViewAdd(dbSkills.get(index), index + 1,
+                        Math.max(1, levels.getOrDefault(skillId, 1))));
             }
         } else {
             for (byte[] frame : StarterSkills.starterSkillViewFrames()) {
@@ -128,6 +141,23 @@ public final class StarterGrants {
     }
 
     /**
+     * GM forget_all_taolu 的 View40 重开下半段（0x16 整视图删除由调用方先发）：
+     * 0x15 容器 + 逐行 0x18（等级取 levels 档值）。starter 回退集由调用方走
+     * {@link StarterSkills#starterSkillViewFrames()}。
+     */
+    public static void grantWuxueSkillView(Connection connection,
+                                           java.util.List<RoleInventoryStore.Skill> dbSkills,
+                                           java.util.Map<String, Integer> levels) {
+        connection.writeFrame(SceneMessages.createView(
+                new SceneMessages.ViewSpec(StarterSkills.VIEWPORT_SKILL, dbSkills.size())));
+        for (int index = 0; index < dbSkills.size(); index++) {
+            String skillId = dbSkills.get(index).skillId();
+            connection.writeFrame(dbSkillViewAdd(dbSkills.get(index), index + 1,
+                    Math.max(1, levels.getOrDefault(skillId, 1))));
+        }
+    }
+
+    /**
      * DB 技能行（官方抓包对齐 2026-11-05，参考服 207 行 View40 对拍：TargetShapePara2
      * 154 次真实射程 3~25m、HitShapePara2 80 次、HitShapePara1 24 次、TargetShapePara1
      * 从不发、VarPropNo/CanUse 每行必发、AConsume 族与 UseLimit 仅 &gt;0 稀疏发）。
@@ -135,23 +165,34 @@ public final class StarterGrants {
      * 「技能最大射程全是 50」根因，已删；UseLimit 恒 9（xhmdl01 官方=1）同批纠正。
      */
     static byte[] dbSkillViewAdd(RoleInventoryStore.Skill skill, int slot) {
+        return dbSkillViewAdd(skill, slot, 1);
+    }
+
+    /**
+     * 带等级 DB 技能行（learn_all_taolu 满级/登录档值合并）：Level=档级，
+     * MaxLevel 与等级对齐（满级 N/N 自洽显示；level=1 时保持 1/1——官方对拍
+     * 字节不变），修为显示 CurFill=TotalFill=totalFill（仅升级行发，
+     * StarterSkills.totalFillDisplay 口径）；VarPropNo/消耗族按级取 varprop。
+     */
+    static byte[] dbSkillViewAdd(RoleInventoryStore.Skill skill, int slot, int level) {
+        int effectiveLevel = Math.max(1, level);
+        int totalFill = effectiveLevel > 1 ? StarterSkills.totalFillDisplay(skill.skillId()) : 0;
         List<SceneMessages.ViewProperty> props = new ArrayList<>(28);
         Props.addView(props, "ConfigID", PropertyValues.Value.ofString(skill.skillId()));
         Props.addView(props, "StaticData", PropertyValues.Value.ofInt32(skill.staticData()));
         Props.addView(props, "ItemType",
                 PropertyValues.Value.ofInt32(skill.itemType() == 0 ? 1000 : skill.itemType()));
-        Props.addView(props, "Level", PropertyValues.Value.ofInt32(1));
-        Props.addView(props, "MaxLevel", PropertyValues.Value.ofInt32(1));
-        Props.addView(props, "CurFillValue", PropertyValues.Value.ofInt32(0));
-        Props.addView(props, "TotalFillValue", PropertyValues.Value.ofInt32(0));
-        SkillInitTable.Row row = SkillInitTable.load().row(skill.skillId());
+        Props.addView(props, "Level", PropertyValues.Value.ofInt32(effectiveLevel));
+        Props.addView(props, "MaxLevel", PropertyValues.Value.ofInt32(effectiveLevel));
+        Props.addView(props, "CurFillValue", PropertyValues.Value.ofInt32(totalFill));
+        Props.addView(props, "TotalFillValue", PropertyValues.Value.ofInt32(totalFill));
         // 官方行补集（CombatSkillCatalog.skillRowData，与 StarterSkills 同源）：
         // VarPropNo 每行必发（客户端 varpkg 同值）；AConsume*/TargetShapePara2/
         // HitShapePara1/2/UseLimit 仅 >0 才发（官方稀疏风格——TargetShapePara2 即
         // 技能最大射程，客户端 tooltip/施法限距都读它；查不到链路整组缺省不发）。
         com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
                 com.nineyin.server.world.fight.CombatSkillCatalog.load()
-                        .skillRowData(skill.skillId(), 1);
+                        .skillRowData(skill.skillId(), effectiveLevel);
         Props.addView(props, "VarPropNo", PropertyValues.Value.ofInt32(
                 rowData != null ? rowData.varPropNo() : 0));
         if (rowData != null && rowData.useLimit() > 0) {
@@ -189,11 +230,11 @@ public final class StarterGrants {
         Props.addView(props, "WuXing", PropertyValues.Value.ofInt32(
                 wuXing != 0 ? wuXing : com.nineyin.server.game.avatar.neigong.NeiGongCatalog.WUXING_TAIJI));
         // CoolDownTime 显示值：skill_init.ini cooldown 显式 >0 时作覆盖，否则取
-        // varprop 按级 CoolDownTime（官方 View40 行同源；官方 skill_init cooldown 全 0；
-        // dbSkillViewAdd 等级恒 1）。
-        long cdMs = row != null && row.coolDownMs() > 0 ? row.coolDownMs()
+        // varprop 按级 CoolDownTime（官方 View40 行同源；官方 skill_init cooldown 全 0）。
+        SkillInitTable.Row initRow = SkillInitTable.load().row(skill.skillId());
+        long cdMs = initRow != null && initRow.coolDownMs() > 0 ? initRow.coolDownMs()
                 : com.nineyin.server.world.fight.CombatSkillCatalog.load()
-                        .personalCdMs(skill.skillId(), 1);
+                        .personalCdMs(skill.skillId(), effectiveLevel);
         Props.addView(props, "CoolDownTime", PropertyValues.Value.ofInt32((int) cdMs));
         Props.addView(props, "HPHealMul", PropertyValues.Value.ofFloat32(1.0f));
         Props.addView(props, "MPHealMul", PropertyValues.Value.ofFloat32(1.0f));

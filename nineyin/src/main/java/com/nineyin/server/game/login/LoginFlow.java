@@ -14,6 +14,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.IntPredicate;
 
 import com.nineyin.server.game.avatar.appearance.AppearanceSync;
+import com.nineyin.server.game.avatar.origin.OriginCatalog;
 import com.nineyin.server.game.avatar.skin.SkinMessages;
 import com.nineyin.server.game.avatar.equipment.EquipmentResolver;
 import com.nineyin.server.game.avatar.equipment.ToolItemCatalog;
@@ -49,9 +50,11 @@ import com.nineyin.server.game.starter.StarterSkills;
 import com.nineyin.server.world.db.RoleInventoryStore;
 import com.nineyin.server.world.db.PanelDataStore;
 import com.nineyin.server.game.starter.StarterQingGong;
+import com.nineyin.server.gm.GmBotPresets;
 import com.nineyin.server.gm.GmCommand;
 import com.nineyin.server.gm.GmFactionPresets;
 import com.nineyin.server.gm.GmHub;
+import com.nineyin.server.gm.GmWeatherPresets;
 import com.nineyin.server.protocol.CustomC2S;
 import com.nineyin.server.protocol.CustomMessages;
 import com.nineyin.server.protocol.FightMessages;
@@ -150,6 +153,10 @@ public final class LoginFlow {
     private final com.nineyin.server.game.avatar.stance.IdleStanceStore idleStanceStore =
             com.nineyin.server.game.avatar.stance.IdleStanceStore.open(
                     com.nineyin.util.ServerPaths.projectPath("data", "待机站姿.json"));
+    /** 武学等级存档（data/武学等级.json 主档，learn_all_taolu 落档/forget_all_taolu 清档；role_skills 无 level 列不动 DB）。 */
+    private final com.nineyin.server.game.avatar.wuxue.SkillLevelStore skillLevelStore =
+            com.nineyin.server.game.avatar.wuxue.SkillLevelStore.open(
+                    com.nineyin.util.ServerPaths.projectPath("data", "武学等级.json"));
     private final GmHub gmHub;
     private final Clock clock;
     private final SceneNpcRegistry npcRegistry;
@@ -725,9 +732,22 @@ public final class LoginFlow {
             log.warn("session={} load binglu: {}", session.machine.id(), e.getMessage());
         }
         try {
-            panel.prestigeExp = (int) Math.min(Integer.MAX_VALUE, panelStore.reputeTotal(roleId));
+            // 声望行镜像（Repute_Record 服务端行序）+ 汇总（与 reputeTotal 同源，
+            // 一次装载两用；GM repute_apply 后内存即权威）。
+            session.reputes = panelStore.reputeRows(roleId);
+            long total = 0;
+            for (long value : session.reputes.values()) {
+                total += value;
+            }
+            panel.prestigeExp = (int) Math.min(Integer.MAX_VALUE, total);
         } catch (RuntimeException e) {
             log.warn("session={} load repute: {}", session.machine.id(), e.getMessage());
+        }
+        try {
+            // 身份集合镜像（Origin_Active/Origin_Prized 行序；1=激活 2=已领奖）。
+            session.origins = panelStore.originRows(roleId);
+        } catch (RuntimeException e) {
+            log.warn("session={} load origins: {}", session.machine.id(), e.getMessage());
         }
         try {
             panel.mount = panelStore.mount(roleId);
@@ -782,6 +802,8 @@ public final class LoginFlow {
                 // 待机站姿保持（每 4s 一拍）：受击/挖矿/技能结束会打断引擎动作，
                 // 闲时（LogicState=0 且不在马上/打坐）重推 PlayActionName 回站。
                 idleStanceTick(connection, session);
+                // 伙伴拍（bot_* 域）：世代失效重生（跨场景跟随）+ 0x21 跟随 + 周期辅助。
+                companionTick(connection, session);
             } catch (RuntimeException e) {
                 log.warn("faculty tick: {}", e.getMessage());
             }
@@ -846,6 +868,13 @@ public final class LoginFlow {
             case "set_power_level" -> applyPowerLevel(connection, session, command);
             case "set_alignment" -> applyAlignment(connection, session, command);
             case "set_vitals" -> applyVitals(connection, session, command);
+            // 门派声望（面板「门派声望（自定义）」区块）：闭名单 = repute_level.ini
+            // [Repute]；set/add + all/单阵营 → Repute_Record 行整刷 + PrestigeExp 单帧
+            // + role_repute upsert；重登/切图按内存镜像整表重放。
+            case "repute_apply" -> applyReputeApply(connection, session, command);
+            // 身份系统（面板「身份系统（一键激活全部）」区块）：origin.ini 全量 →
+            // Origin_Active 记录行 + role_origins 落库；领奖走 C2S 702（玩家手动点）。
+            case "origin_activate_all" -> applyOriginActivateAll(connection, session, command);
             // 基础五维覆盖式（0/缺省跳过该维）：0x10 全量随帧 + faculty 快照落库。
             case "set_five_attributes" -> applyFiveAttributes(connection, session, command);
             case "wear_title" -> applyWearTitle(connection, session, command, true);
@@ -893,8 +922,15 @@ public final class LoginFlow {
             case "enter_clone" -> applyEnterClone(connection, session, command);
             case "reenter_clone" -> applyReenterClone(connection, session, command);
             case "destroy_clone" -> applyDestroyClone(connection, session, command);
+            // 武学套路两动作（面板「武学套路」区块）：已学全部升满级（档值落
+            // data/武学等级.json 重登保持、行帧刷等级/修为、CanUse 批按新级重建）；
+            // 全遗忘回登录基线集（DB 模式=五件套，starter 模式=starter 集）。
+            case "learn_all_taolu" -> applyLearnAllTaolu(connection, session, command);
+            case "forget_all_taolu" -> applyForgetAllTaolu(connection, session, command);
             // 弹出游戏 GM 面板（GMCC）：客户端 lua close_gmcc_form msg_id=2 → open_gmcc_chat。
             case "popup_gm_panel" -> applyPopupGmPanel(connection, session, command);
+            // 场景天气切换（on_weather_sky sub 4）：闭名单=sceneparastore 天气渲染包目录。
+            case "set_weather" -> applyWeather(connection, session, command);
             // 洗练六动作（四池 senior_*，词条=proppack 包号）：随机/定向/抛光/招式开光/加词条/清空。
             case "recast_slot_prop", "recast_slot_dire", "recast_slot_polish", "recast_slot_skill" ->
                     applyRecastSlot(connection, session, command);
@@ -919,6 +955,18 @@ public final class LoginFlow {
             case "mount_ride" -> applyMountRide(connection, session, command);
             // 待机站姿（持久化）：空参=重推当前档；写档 + PlayActionName 属性下发。
             case "idle_stance_set" -> applyIdleStanceSet(connection, session, command);
+            // 伙伴系统（bot_*，预设闭名单 GmBotPresets）：幂等创建/校验、拉到身边、
+            // 跟随开关、复活回满、辅助配置；跟随/辅助由 1s ticker 的 companionTick 驱动。
+            case "bot_ensure" -> applyBotEnsure(connection, session, command);
+            case "bot_pull_here" -> applyBotPullHere(connection, session, command);
+            case "bot_follow_start" -> applyBotFollow(connection, session, command, true);
+            case "bot_follow_stop" -> applyBotFollow(connection, session, command, false);
+            case "bot_revive" -> applyBotRevive(connection, session, command);
+            case "bot_support_configure" -> applyBotSupportConfigure(connection, session, command);
+            // 御风神水（大轻功）：挂 buf_ride_yufeng 10 分钟租约（msg169+BufferInfo 槽帧
+            // 双通道，QingGongHandler 缓降同款）/摘除；到期自动摘由 scheduler 补发。
+            case "yufeng_add" -> applyYufengAdd(connection, session, command);
+            case "yufeng_remove" -> applyYufengRemove(connection, session, command);
             default -> {
                 log.info("session={} unimplemented GM action {} (backlog)", session.machine.id(), command.action());
                 command.fail("动作未实现: " + command.action());
@@ -1060,6 +1108,131 @@ public final class LoginFlow {
                 new Roles.Location(back.scene(), back.position(),
                         session.selected.location().version()),
                 "原场景 " + back.scene().resource() + "（副本「" + run.desc + "」已销毁）");
+    }
+
+    /**
+     * GM 一键学满武学套路（learn_all_taolu）：已学会的全部技能升到 varprop 满级
+     * （{@link com.nineyin.server.world.fight.CombatSkillCatalog#maxLevelOf}），档值
+     * 落 data/武学等级.json（重登保持）；逐行 0x10 刷 Level/MaxLevel/CurFill=
+     * TotalFill/VarPropNo（按级 varprop 行号随级变）；CanUse 心跳批按新等级重建。
+     * 出招链 definition(id, level) 即时按高级编译——伤害/消耗/CD 全生效。
+     */
+    private void applyLearnAllTaolu(Connection connection, LoginSession session, GmCommand command) {
+        if (session.learnedSkills.isEmpty()) {
+            command.fail("尚未学会任何武学");
+            return;
+        }
+        long roleId = session.selected != null ? session.selected.id() : 0L;
+        com.nineyin.server.world.fight.CombatSkillCatalog catalog =
+                com.nineyin.server.world.fight.CombatSkillCatalog.load();
+        java.util.Map<String, Integer> levels = new java.util.LinkedHashMap<>();
+        int raised = 0;
+        for (java.util.Map.Entry<String, Integer> entry : session.learnedSkills.entrySet()) {
+            int max = catalog.maxLevelOf(entry.getKey());
+            levels.put(entry.getKey(), max);
+            if (max > entry.getValue()) {
+                raised++;
+            }
+        }
+        session.learnedSkills.putAll(levels);
+        try {
+            skillLevelStore.apply(roleId, levels);
+        } catch (RuntimeException e) {
+            log.warn("session={} persist wuxue levels: {}", session.machine.id(), e.getMessage());
+        }
+        for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+            Integer level = levels.get(row.getKey());
+            if (level == null || level <= 1) {
+                continue;
+            }
+            com.nineyin.server.world.fight.CombatSkillCatalog.SkillRowData rowData =
+                    catalog.skillRowData(row.getKey(), level);
+            int totalFill = StarterSkills.totalFillDisplay(row.getKey());
+            connection.writeFrame(FightMessages.skillRowLevelUp(
+                    SkillCastHandler.SKILL_VIEW_ID, row.getValue(), level, level,
+                    totalFill, totalFill,
+                    rowData != null ? rowData.varPropNo() : null));
+        }
+        startSkillCanUseTicker(connection, session);
+        String message = "已把 " + levels.size() + " 门武学升至满级（其中 " + raised + " 门升档）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM learn all taolu skills={} raised={}",
+                session.machine.id(), levels.size(), raised);
+    }
+
+    /**
+     * GM 删除全部武学（forget_all_taolu）：回登录基线集——DB 模式=五件套基础武学
+     * （{@link StarterSkills#defaultBasicSkills}，等价 role_skills 清空后重登），
+     * starter 模式=starter 集。View40 整视图重开（0x16→0x15→0x18→CanUse 批），
+     * 等级档清空，指向已遗忘技能的快捷栏槽同步摘除；role_skills 删行 best-effort。
+     */
+    private void applyForgetAllTaolu(Connection connection, LoginSession session, GmCommand command) {
+        long roleId = session.selected != null ? session.selected.id() : 0L;
+        boolean dbMode = loadDbSkills(session) != null;
+        java.util.List<RoleInventoryStore.Skill> reset = dbMode
+                ? StarterSkills.defaultBasicSkills() : null;
+        if (dbMode && inventoryStore != null) {
+            try {
+                inventoryStore.deleteSkills(roleId, "wuxue");
+            } catch (RuntimeException e) {
+                log.warn("session={} delete role_skills wuxue rows: {}",
+                        session.machine.id(), e.getMessage());
+            }
+        }
+        try {
+            skillLevelStore.clear(roleId);
+        } catch (RuntimeException e) {
+            log.warn("session={} clear wuxue level store: {}", session.machine.id(), e.getMessage());
+        }
+        session.learnedSkills = learnedSkillLevels(roleId, reset);
+        session.skillRows = skillRows(reset);
+        connection.writeFrame(SceneMessages.deleteView(SkillCastHandler.SKILL_VIEW_ID));
+        if (reset != null && !reset.isEmpty()) {
+            StarterGrants.grantWuxueSkillView(connection, reset, session.learnedSkills);
+        } else {
+            for (byte[] frame : StarterSkills.starterSkillViewFrames()) {
+                connection.writeFrame(frame);
+            }
+        }
+        for (java.util.Map.Entry<String, Integer> row : session.skillRows.entrySet()) {
+            connection.writeFrame(FightMessages.skillRowCanUse(
+                    SkillCastHandler.SKILL_VIEW_ID, row.getValue(), true));
+        }
+        startSkillCanUseTicker(connection, session);
+        removeForgottenSkillShortcuts(connection, session);
+        String message = "已删除全部武学，重置为" + (dbMode ? "基础五件套" : "初始套路集")
+                + "（剩余 " + session.learnedSkills.size() + " 项）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM forget all taolu -> {} skills (dbMode={})",
+                session.machine.id(), session.learnedSkills.size(), dbMode);
+    }
+
+    /** 摘除指向已遗忘技能的快捷栏槽（msg201 同款：内存删 + 整表重推 + DB 删行）。 */
+    private void removeForgottenSkillShortcuts(Connection connection, LoginSession session) {
+        List<PlayerActor.PlayerShortcut> snapshot = session.player.shortcutSnapshot();
+        int removed = 0;
+        for (PlayerActor.PlayerShortcut shortcut : snapshot) {
+            if (!"skill".equals(shortcut.kind())
+                    || session.learnedSkills.containsKey(shortcut.id())) {
+                continue;
+            }
+            if (session.player.removeShortcutIndex(shortcut.index()) != null) {
+                removed++;
+                if (inventoryStore != null && session.selected != null) {
+                    try {
+                        inventoryStore.deleteShortcut(session.selected.id(), shortcut.index());
+                    } catch (RuntimeException e) {
+                        log.warn("session={} delete forgotten shortcut {}: {}",
+                                session.machine.id(), shortcut.index(), e.getMessage());
+                    }
+                }
+            }
+        }
+        if (removed > 0) {
+            rebuildShortcutRecord(connection, session.player, snapshot.size());
+        }
     }
 
     /** 副本 config（cloneinfo.ini 节名）→ Scene：resource 取 config 基名（GmScenePresets 行口径）。 */
@@ -1336,6 +1509,33 @@ public final class LoginFlow {
                 "close_gmcc_form", CustomMessages.Value.ofInt32(2)));
         gmHub.update(session.machine.id(), s -> s.lastAction = "已弹出游戏GM面板");
         command.succeed("已发送 GMCC 面板打开帧（close_gmcc_form msg_id=2）");
+    }
+
+    /**
+     * GM 场景天气切换（set_weather）：S2C 0x27 命令名寻址 {@code on_weather_sky}
+     * sub_type=4 → 客户端原生 {@code weather_manager:ChangeWeatherEffect(目录, 过渡秒,
+     * 特效串, 4)}（weatherconfig.ini IsLua=0；Lua 模式 weather_set.lua 同参数收敛）。
+     * arg1=SceneParaStore 天气渲染包目录（GmWeatherPresets 闭名单 49 键）、arg2=过渡
+     * 秒（缺省 10）、arg3=TXID 特殊特效串（空=无）。雨粒子需客户端开天气+高/极高画质；
+     * 恢复默认=切图重进（载图重初始化天气），服务端无干净恢复通道。
+     * 取证：custom_handler.lua on_weather_sky / weather_set.lua start_weather。
+     */
+    private void applyWeather(Connection connection, LoginSession session, GmCommand command) {
+        String key = command.strParam("weather");
+        GmWeatherPresets.Weather weather = GmWeatherPresets.preset(key);
+        if (weather == null) {
+            command.fail("未知天气预设: " + key + "（仅 sceneparastore 渲染包目录名）");
+            return;
+        }
+        Integer fadeSec = command.intParam("fadeSec");
+        int fade = fadeSec != null ? fadeSec : 10;
+        connection.writeFrame(CustomMessages.modernCustomCommandMessage("on_weather_sky",
+                CustomMessages.Value.ofInt32(4),
+                CustomMessages.Value.ofString(weather.key()),
+                CustomMessages.Value.ofInt32(fade),
+                CustomMessages.Value.ofString("")));
+        gmHub.update(session.machine.id(), s -> s.lastAction = "天气已切换为 " + weather.label());
+        command.succeed("已下发天气切换帧（" + weather.label() + "，" + fade + " 秒渐变）");
     }
 
     // ------------------------------------------------------------ 洗练六动作
@@ -1873,7 +2073,8 @@ public final class LoginFlow {
     /**
      * 击杀接管（msg211 击杀分支钩子）：世界 BOSS 认领 worldBoss 摆放 → 跳过 15s
      * 重生，延迟 {@link #WORLD_BOSS_REMOVE_DELAY_MS} 摘除（击杀帧先发）+ 面板回执；
-     * 副本目录 NPC 由 {@link #claimCloneKill} 认领 → 死后不复活并尝试波次推进。
+     * 伙伴（bot 摆放）阵亡 → 冻结不重生（bot_revive 手动复活）；副本目录 NPC 由
+     * {@link #claimCloneKill} 认领 → 死后不复活并尝试波次推进。
      */
     private IntPredicate killOverride(LoginSession session) {
         return objectId -> {
@@ -1891,6 +2092,18 @@ public final class LoginFlow {
                     log.info("session={} world boss {} ({}) killed and removed",
                             session.machine.id(), objectId, name);
                 }, WORLD_BOSS_REMOVE_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                return true;
+            }
+            // 伙伴阵亡：认领击杀 → 冻结不重生（不吃 15s 满血复活），bot_revive 手动复活。
+            if (spawn != null && spawn.bot) {
+                String name = gmSpawnName(spawn);
+                final String message = "伙伴 " + name + " 已阵亡（bot_revive 复活回满血）";
+                gmHub.update(session.machine.id(), s -> {
+                    s.lastAction = message;
+                    s.botHp = 0;
+                });
+                log.info("session={} bot {} ({}) killed; frozen until revive",
+                        session.machine.id(), objectId, name);
                 return true;
             }
             return claimCloneKill(session, objectId);
@@ -1913,10 +2126,16 @@ public final class LoginFlow {
 
     private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest,
                                 boolean merchant, boolean combatDummy, boolean worldBoss) {
+        return registerGmSpawn(session, npc, chest, merchant, combatDummy, worldBoss, false);
+    }
+
+    private int registerGmSpawn(LoginSession session, NpcSpawn npc, boolean chest,
+                                boolean merchant, boolean combatDummy, boolean worldBoss,
+                                boolean bot) {
         int objectId = session.nextGmObjectId++;
         session.world.registerNpc(objectId, npc);
         session.gmSpawns.put(objectId,
-                new LoginSession.GmSpawn(objectId, npc, chest, merchant, combatDummy, worldBoss));
+                new LoginSession.GmSpawn(objectId, npc, chest, merchant, combatDummy, worldBoss, bot));
         return objectId;
     }
 
@@ -2517,6 +2736,341 @@ public final class LoginFlow {
         log.info("session={} GM wear_title={}", session.machine.id(), titleId);
     }
 
+    /**
+     * 门派声望（repute_apply）：阵营闭名单 = repute_level.ini [Repute]（36 项：
+     * 八大门派/江湖/朝廷/隐世势力族；reputeName="all" 全量按表序）。set 覆盖 /
+     * add 叠加，clamp 到阵营上限（[repute_max_value] 特例否则 [Level] 最大）；
+     * 值 ≤0 摘行。客户端两通道即时刷新：Repute_Record(44) 行 0x12 倒序删旧 +
+     * 0x11 整刷（名/值/等级）+ PrestigeExp@848 汇总单帧（panel.prestigeExp）。
+     * 落库 role_repute 逐阵营 upsert（best-effort，失败 warn 不回滚内存——与
+     * set_faculty 同口径）；重登/切图由 reputes 镜像整表重放。
+     */
+    private void applyReputeApply(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.player == null) {
+            command.fail("设置声望失败：角色尚未进入场景");
+            return;
+        }
+        var table = com.nineyin.server.game.avatar.panel.ReputeLevelTable.load();
+        if (!table.present()) {
+            command.fail("设置声望失败：repute_level.ini 缺失（share/rule/ 数据根未配置）");
+            return;
+        }
+        String name = command.strParam("reputeName").trim();
+        String mode = command.strParam("reputeMode").trim().toLowerCase(java.util.Locale.ROOT);
+        if (mode.isEmpty()) {
+            mode = "set";
+        }
+        int value = command.intParam("reputeValue", -1);
+        if (value < 0) {
+            command.fail("reputeValue 必须为 0..9999999");
+            return;
+        }
+        List<String> targets;
+        if ("all".equals(name)) {
+            targets = table.camps();
+        } else if (table.isCamp(name)) {
+            targets = List.of(name);
+        } else {
+            command.fail("未知声望阵营: " + name + "（可用 all 或 " + table.camps().size()
+                    + " 项 repute_* 阵营，见 repute_level.ini [Repute]）");
+            return;
+        }
+        // 逐阵营求新值（add 叠加旧值；clamp 上限；≤0 摘行），保持 [Repute] 表序。
+        int oldRows = session.reputes.size();
+        for (String camp : targets) {
+            long current = session.reputes.getOrDefault(camp, 0L);
+            long updated = "add".equals(mode) ? current + value : value;
+            updated = Math.max(0, Math.min(updated, table.maxValue(camp)));
+            if (updated <= 0) {
+                session.reputes.remove(camp);
+            } else {
+                session.reputes.put(camp, updated);
+            }
+        }
+        // 行整刷（0x12 倒序删旧 + 0x11 逐行）+ PrestigeExp 汇总单帧 + 落库。
+        refreshReputeRows(connection, session, oldRows);
+        PanelState panel = session.player.panel();
+        String action;
+        if (targets.size() == 1) {
+            String camp = targets.get(0);
+            long applied = session.reputes.getOrDefault(camp, 0L);
+            action = "声望 " + camp + " 已" + ("add".equals(mode) ? "叠加" : "设置") + "至 "
+                    + applied + "（等级 " + table.levelOf(camp, applied) + "），总量 "
+                    + panel.prestigeExp;
+        } else {
+            action = "已按 " + mode + " " + value + " 更新全部 " + targets.size()
+                    + " 个声望阵营（在场 " + session.reputes.size() + " 行），总量 "
+                    + panel.prestigeExp;
+        }
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM repute_apply name={} mode={} value={} rows={} total={}",
+                session.machine.id(), name, mode, value, session.reputes.size(), panel.prestigeExp);
+    }
+
+    /**
+     * Repute_Record 行整刷（0x12 倒序删 oldRows 旧行 + 0x11 逐行重推）+
+     * PrestigeExp 汇总单帧 + role_repute 落库 best-effort。
+     * repute_apply 与身份领奖（702 prize_prop）共用。
+     */
+    private void refreshReputeRows(Connection connection, LoginSession session, int oldRows) {
+        var table = com.nineyin.server.game.avatar.panel.ReputeLevelTable.load();
+        for (byte[] frame : com.nineyin.server.game.avatar.panel.ReputeMessages.clearFrames(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID, oldRows)) {
+            connection.writeFrame(frame);
+        }
+        for (byte[] frame : com.nineyin.server.game.avatar.panel.ReputeMessages.rowsFrames(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                session.reputes, table)) {
+            connection.writeFrame(frame);
+        }
+        long total = 0;
+        for (long rowValue : session.reputes.values()) {
+            total += rowValue;
+        }
+        PanelState panel = session.player.panel();
+        panel.prestigeExp = (int) Math.min(Integer.MAX_VALUE, total);
+        List<PropertyValues.Indexed> properties = new ArrayList<>(1);
+        Props.add(properties, "PrestigeExp", PropertyValues.Value.ofInt32(panel.prestigeExp));
+        pushPanelProperties(connection, properties);
+        // 落库 best-effort（失败 warn，内存与帧已生效；重登以 DB 为准会回落）。
+        if (panelStore != null) {
+            try {
+                panelStore.upsertRepute(session.selected.id(), session.reputes);
+            } catch (RuntimeException e) {
+                log.warn("session={} persist repute: {}", session.machine.id(), e.getMessage());
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- 身份域（origin）
+
+    /**
+     * GM 身份系统（origin_activate_all）：origin.ini 全量身份（1197 个）一次性加入
+     * 【已激活】集合——Origin_Active（官方 447 表 idx 45，单窄串列）每身份一行，
+     * 行键 = 身份 id 数字串；【未领取】状态保持不变（Origin_Prized 行不动），玩家在
+     * 身份界面点领取（C2S 702）才实际拿到物品/称号/声望奖励。落库 role_origins
+     * INSERT IGNORE（best-effort 失败 warn 不回滚内存——与 repute_apply 同口径）；
+     * 重登/切图按内存镜像整表重放（originsGranted 门，letters/reputes 同口径）。
+     */
+    private void applyOriginActivateAll(Connection connection, LoginSession session,
+                                        GmCommand command) {
+        if (session.selected == null || session.player == null) {
+            command.fail("激活身份失败：角色尚未进入场景");
+            return;
+        }
+        OriginCatalog catalog = OriginCatalog.load();
+        if (!catalog.present()) {
+            command.fail("激活身份失败：origin.ini 缺失（share/task/origin/ 数据根未配置）");
+            return;
+        }
+        int activeRecord = RecordSchemas.indexByName("Origin_Active");
+        List<Integer> addedIds = new ArrayList<>();
+        for (int originId : catalog.originIds()) {
+            String key = String.valueOf(originId);
+            if (session.origins.containsKey(key)) {
+                continue; // 已激活/已领奖保持不动（未领取状态不变）
+            }
+            session.origins.put(key, 1);
+            connection.writeFrame(RecordMessages.recordAddString(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                    activeRecord, key));
+            addedIds.add(originId);
+        }
+        if (panelStore != null && !addedIds.isEmpty()) {
+            try {
+                panelStore.insertOrigins(session.selected.id(), addedIds);
+            } catch (RuntimeException e) {
+                log.warn("session={} persist origins: {}", session.machine.id(), e.getMessage());
+            }
+        }
+        String action = addedIds.isEmpty()
+                ? "全部 " + catalog.originIds().size() + " 个身份已在激活集合（未领取状态不变）"
+                : "已激活 " + addedIds.size() + " 个身份（共 " + catalog.originIds().size()
+                        + " 个）；奖励在身份界面点领取（702）发放";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM origin_activate_all added={} total={}",
+                session.machine.id(), addedIds.size(), catalog.originIds().size());
+    }
+
+    /**
+     * 身份系统 C2S（bak SceneFlow 700-706 stub 交棒；官方 exe 反汇编归属：
+     * 700=Active / 702=GetPrize / 706=RequireNotify；701 展示 / 705 领取查询
+     * 留待——S2C lua 回调无抓包证据）。
+     * <ul>
+     *   <li>700 [700, 身份 id] —— 激活单身份（测试服跳过 ActiveConditions 条件门）：
+     *       入激活集 + Origin_Active 行 + role_origins INSERT IGNORE。</li>
+     *   <li>702 [702, 身份 id] —— 领取身份奖励：prize_item 物品入包（全部成功才标记，
+     *       满包/失败不标记、下次点击补发）+ prize_title 称号所有权（role_titles
+     *       INSERT IGNORE）+ prize_prop repute_* 阵营叠加（Repute_Record 整刷 +
+     *       PrestigeExp 单帧，repute_apply 同口径）→ Origin_Prized 行 + status=2。</li>
+     *   <li>706 —— 请求刷新：按内存镜像重推 Origin_Active/Origin_Prized 全部行。</li>
+     * </ul>
+     */
+    void handleOriginCustom(Connection connection, LoginSession session, CustomC2S.Message custom) {
+        if (session.player == null || session.selected == null) {
+            return;
+        }
+        int messageId = custom.messageId();
+        if (messageId == 706) {
+            pushOriginRows(connection, session);
+            session.originsGranted = true;
+            log.debug("session={} origin refresh: {} rows", session.machine.id(), session.origins.size());
+            return;
+        }
+        String originId = originIdArg(custom);
+        if (originId == null) {
+            log.info("session={} origin msg {} without origin id", session.machine.id(), messageId);
+            return;
+        }
+        Integer id = parseOriginId(originId);
+        OriginCatalog catalog = OriginCatalog.load();
+        if (id == null || !catalog.contains(id)) {
+            log.info("session={} origin {} not in catalog (msg {})",
+                    session.machine.id(), originId, messageId);
+            return;
+        }
+        if (messageId == 700) {
+            if (!session.origins.containsKey(originId)) {
+                session.origins.put(originId, 1);
+                connection.writeFrame(RecordMessages.recordAddString(
+                        SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                        RecordSchemas.indexByName("Origin_Active"), originId));
+                if (panelStore != null) {
+                    try {
+                        panelStore.insertOrigins(session.selected.id(), List.of(id));
+                    } catch (RuntimeException e) {
+                        log.warn("session={} persist origin {}: {}",
+                                session.machine.id(), originId, e.getMessage());
+                    }
+                }
+                log.info("session={} origin {} activated (custom 700)",
+                        session.machine.id(), originId);
+            }
+            return;
+        }
+        // 702 领奖：只处理已激活且未领奖的身份（重复点击幂等）。
+        if (session.origins.getOrDefault(originId, 0) == 0) {
+            log.info("session={} origin {} not active, prize rejected (custom 702)",
+                    session.machine.id(), originId);
+            return;
+        }
+        if (session.origins.get(originId) >= 2) {
+            log.debug("session={} origin {} already prized", session.machine.id(), originId);
+            return;
+        }
+        claimOriginPrize(connection, session, catalog, originId, id);
+    }
+
+    /** 702 领奖核心（见 {@link #handleOriginCustom}；物品全部入包成功才置已领奖，否则保留未领取待补发）。 */
+    private void claimOriginPrize(Connection connection, LoginSession session,
+                                  OriginCatalog catalog, String originId, int id) {
+        int itemOk = 0;
+        for (OriginCatalog.ItemPrize prize : catalog.itemPrizes(id)) {
+            ToolItemCatalog.ItemInfo info = ToolItemCatalog.loadDefault().lookup(prize.configId());
+            if (info == null) {
+                // 物品配置缺失（如身份装 config 不在 equipment/tool_item 表）：跳过计数，不阻断领奖标记。
+                log.info("session={} origin {} prize item {} unknown, skipped",
+                        session.machine.id(), originId, prize.configId());
+                continue;
+            }
+            if (grantBagItem(connection, session, info, prize.count()) == null) {
+                log.info("session={} origin {} prize item {} not delivered, keep unprized",
+                        session.machine.id(), originId, prize.configId());
+                return; // 未标记已领奖：下次点击 702 补发
+            }
+            itemOk++;
+        }
+        List<Integer> titles = catalog.titlePrizes(id);
+        if (panelStore != null && !titles.isEmpty()) {
+            try {
+                for (int titleId : titles) {
+                    panelStore.grantTitle(session.selected.id(), titleId);
+                }
+            } catch (RuntimeException e) {
+                log.warn("session={} grant titles for origin {}: {}",
+                        session.machine.id(), originId, e.getMessage());
+            }
+        }
+        int oldReputeRows = session.reputes.size();
+        boolean reputeChanged = false;
+        var reputeTable = com.nineyin.server.game.avatar.panel.ReputeLevelTable.load();
+        for (OriginCatalog.PropPrize prize : catalog.propPrizes(id)) {
+            if (!prize.prop().startsWith("repute_") || !reputeTable.present()
+                    || !reputeTable.isCamp(prize.prop())) {
+                continue; // 非声望属性（或阵营未知）留待后续
+            }
+            long current = session.reputes.getOrDefault(prize.prop(), 0L);
+            long updated = Math.max(0,
+                    Math.min(current + prize.value(), reputeTable.maxValue(prize.prop())));
+            if (updated > 0) {
+                session.reputes.put(prize.prop(), updated);
+            }
+            reputeChanged = true;
+        }
+        if (reputeChanged) {
+            refreshReputeRows(connection, session, oldReputeRows);
+        }
+        session.origins.put(originId, 2);
+        connection.writeFrame(RecordMessages.recordAddString(
+                SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                RecordSchemas.indexByName("Origin_Prized"), originId));
+        if (panelStore != null) {
+            try {
+                panelStore.markOriginPrized(session.selected.id(), id);
+            } catch (RuntimeException e) {
+                log.warn("session={} mark origin {} prized: {}",
+                        session.machine.id(), originId, e.getMessage());
+            }
+        }
+        log.info("session={} origin {} prized: items={} titles={} reputeChanged={}",
+                session.machine.id(), originId, itemOk, titles.size(), reputeChanged);
+    }
+
+    /** 身份记录行重放（status≥1 → Origin_Active；status=2 追加 Origin_Prized；空表零帧）。 */
+    private void pushOriginRows(Connection connection, LoginSession session) {
+        if (session.origins.isEmpty()) {
+            return;
+        }
+        int activeRecord = RecordSchemas.indexByName("Origin_Active");
+        int prizedRecord = RecordSchemas.indexByName("Origin_Prized");
+        for (Map.Entry<String, Integer> row : session.origins.entrySet()) {
+            connection.writeFrame(RecordMessages.recordAddString(
+                    SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                    activeRecord, row.getKey()));
+            if (row.getValue() >= 2) {
+                connection.writeFrame(RecordMessages.recordAddString(
+                        SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                        prizedRecord, row.getKey()));
+            }
+        }
+    }
+
+    /** 身份 id 实参（lua 端 str/variant 两口径：窄串或 int32/int64 皆可收）。 */
+    private static String originIdArg(CustomC2S.Message custom) {
+        if (custom.values.size() < 2) {
+            return null;
+        }
+        CustomC2S.Value value = custom.values.get(1);
+        if (value.text != null && !value.text.trim().isEmpty()) {
+            return value.text.trim();
+        }
+        try {
+            return String.valueOf(value.exactInt32());
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Integer parseOriginId(String value) {
+        try {
+            return Integer.valueOf(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     private void pushTitleId(Connection connection, int titleId) {
         List<PropertyValues.Indexed> properties = new java.util.ArrayList<>(1);
         Props.add(properties, "TitleID", PropertyValues.Value.ofInt32(titleId));
@@ -3098,6 +3652,451 @@ public final class LoginFlow {
         }
         session.idleStanceLastPushMs = now;
         pushIdleStance(connection, session);
+    }
+
+    // ------------------------------------------------------------ 伙伴系统（bot_*）
+
+    /** 伙伴跟随停距（米，XZ 平面）：超出追击、以内停步面向主人。 */
+    private static final float BOT_FOLLOW_STOP_DISTANCE = 2.5f;
+    /** 伙伴辅助施法距离（米）：太远不施法（跟随时天然满足；驻足走远即停）。 */
+    private static final float BOT_SUPPORT_RANGE_METERS = 12.0f;
+
+    /**
+     * 创建/校验伙伴（bot_ensure，幂等）：预设闭名单键（缺省 qinghe）；同预设
+     * 在场则回执状态校验（0x0D 物化后客户端即可见），不在场（含切图世代失效）
+     * 在玩家身前重新生成；换预设先摘旧再放新（辅助/跟随配置沿用会话值）。
+     */
+    private void applyBotEnsure(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("创建伙伴失败：角色尚未进入场景");
+            return;
+        }
+        String key = command.strParam("bot").trim();
+        GmBotPresets.Bot preset = key.isEmpty()
+                ? GmBotPresets.defaultPreset() : GmBotPresets.preset(key);
+        if (preset == null) {
+            command.fail("未知伙伴预设: " + key + "（可用 " + GmBotPresets.keys() + "）");
+            return;
+        }
+        if (botPresent(session)) {
+            if (session.bot.preset.key().equals(preset.key())) {
+                String message = "伙伴在场：" + botStateText(session);
+                refreshBotSnapshot(session);
+                gmHub.update(session.machine.id(), s -> s.lastAction = message);
+                command.succeed(message);
+                return;
+            }
+            removeGmSpawn(session, session.bot.objectId); // 换预设：先摘旧再放新
+        }
+        try {
+            spawnBot(session, preset);
+        } catch (IOException e) {
+            command.fail("伙伴模板加载失败: " + e.getMessage());
+            return;
+        } catch (RuntimeException e) {
+            command.fail("伙伴注册失败: " + e.getMessage());
+            return;
+        }
+        String message = "已生成伙伴（" + botStateText(session)
+                + "），默认跟随；辅助默认关（bot_support_configure 开启）";
+        refreshBotSnapshot(session);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+    }
+
+    /**
+     * 拉伙伴到身边（bot_pull_here）：不要求先 ensure（不在场即生成，使用当前
+     * 场景）；在场则 0x1F 权威坐标瞬移到玩家身前（companionPlace 双写实体）。
+     */
+    private void applyBotPullHere(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("拉伙伴失败：角色尚未进入场景");
+            return;
+        }
+        if (!ensureBot(session, command, "拉伙伴")) {
+            return;
+        }
+        float[] at = gmSpawnPosition(session);
+        session.world.companionPlace(session.bot.objectId,
+                new com.nineyin.server.world.scene.WorldScene.Transform(at[0], at[1], at[2], at[3]));
+        session.bot.moving = false;
+        String message = "伙伴 " + session.bot.preset.name() + " 已拉到身前（对象 "
+                + session.bot.objectId + "）";
+        refreshBotSnapshot(session);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+    }
+
+    /** 跟随开关（bot_follow_start/stop）：start 不在场先 ensure；stop 驻足原地。 */
+    private void applyBotFollow(Connection connection, LoginSession session,
+                                GmCommand command, boolean start) {
+        if (session.selected == null || session.world == null) {
+            command.fail((start ? "开始跟随" : "停止跟随") + "失败：角色尚未进入场景");
+            return;
+        }
+        if (start) {
+            if (!ensureBot(session, command, "开始跟随")) {
+                return;
+            }
+        } else if (!botPresent(session)) {
+            command.fail("停止跟随失败：伙伴不在场");
+            return;
+        }
+        session.bot.following = start;
+        String message = "伙伴 " + session.bot.preset.name()
+                + (start ? " 开始跟随" : " 已停止跟随（原地驻足）");
+        refreshBotSnapshot(session);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+    }
+
+    /**
+     * 复活伙伴（bot_revive）：回满血 + 清威胁/重生租约（FightState.reviveCompanion），
+     * 0x10 NPC 战斗帧整血下发；阵亡期死亡由 killOverride 接管冻结（不吃 15s 重生）。
+     */
+    private void applyBotRevive(Connection connection, LoginSession session, GmCommand command) {
+        if (session.selected == null || session.world == null) {
+            command.fail("复活伙伴失败：角色尚未进入场景");
+            return;
+        }
+        if (!ensureBot(session, command, "复活伙伴")) {
+            return;
+        }
+        LoginSession.BotState bot = session.bot;
+        SceneLifecycle.CombatNpcInfo info = session.world.combatNpcInfo(bot.objectId);
+        int maxHp = info != null ? info.maxHp() : bot.preset.maxHp();
+        boolean wasHurt = session.fight != null && session.fight.reviveCompanion(bot.objectId);
+        connection.writeFrame(FightMessages.npcCombatFrame(
+                bot.objectId, info != null ? info.ownerId() : 1,
+                maxHp, maxHp, 0, false));
+        String message = "伙伴 " + bot.preset.name() + " 已复活回满血（" + maxHp + "/" + maxHp
+                + (wasHurt ? "）" : "，此前未受伤）");
+        refreshBotSnapshot(session);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+    }
+
+    /**
+     * 辅助配置（bot_support_configure）：enabled/intervalSec/heal 均可选（缺省
+     * 保持现值）；未生成伙伴也可先存配置（ensure/自动重生时沿用）。
+     */
+    private void applyBotSupportConfigure(Connection connection, LoginSession session,
+                                          GmCommand command) {
+        if (session.bot == null) {
+            LoginSession.BotState bot = new LoginSession.BotState();
+            bot.preset = GmBotPresets.defaultPreset();
+            bot.supportHeal = bot.preset.supportHeal();
+            bot.supportIntervalSec = bot.preset.supportIntervalSec();
+            session.bot = bot;
+        }
+        LoginSession.BotState bot = session.bot;
+        Integer enabled = command.intParam("enabled");
+        if (enabled != null) {
+            bot.supportEnabled = enabled == 1;
+        }
+        Integer intervalSec = command.intParam("intervalSec");
+        if (intervalSec != null) {
+            bot.supportIntervalSec = intervalSec;
+        }
+        Integer heal = command.intParam("heal");
+        if (heal != null) {
+            bot.supportHeal = heal;
+        }
+        String message = "伙伴辅助已配置：" + (bot.supportEnabled ? "开" : "关")
+                + "，每 " + bot.supportIntervalSec + "s 治疗玩家 " + bot.supportHeal + " 点";
+        refreshBotSnapshot(session);
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM bot support configure enabled={} interval={}s heal={}",
+                session.machine.id(), bot.supportEnabled, bot.supportIntervalSec, bot.supportHeal);
+    }
+
+    /**
+     * GM 御风神水·挂（yufeng_add）：给玩家挂 buf_ride_yufeng 御风状态 10 分钟
+     * （大轻功百鸟凌云一/二/三段冲刺的客户端条件包）。双通道同 QingGongHandler 缓降：
+     * msg169 九值(add=0) 驱动 lua on_buffer_change + 0x10 BufferInfoN 槽串（BuffStore
+     * 权威）。重复点击同槽续期（官方 ReplaceType=1 同 id 顶替语义）；到期未摘由
+     * scheduler 补发摘除双帧（租约槽位/到期一致才动作，续期后旧任务空转）。
+     */
+    private void applyYufengAdd(Connection connection, LoginSession session, GmCommand command) {
+        PlayerActor player = session.player;
+        Instant now = player.clock().instant();
+        int existing = player.reuseBuffSlot(PlayerActor.YUFENG_BUFF_CONFIG, now);
+        int slot = existing > 0 ? existing : player.freeBuffSlot();
+        if (slot <= 0) {
+            command.fail("buff 槽 12..24 已满，先用「取消御风状态」或等租约到期");
+            return;
+        }
+        boolean renewal = existing > 0;
+        Instant expiresAt = now.plusMillis(PlayerActor.YUFENG_BUFF_LIFETIME_MS);
+        String bufferInfo = player.activateBuff(slot, PlayerActor.YUFENG_BUFF_STATIC_DATA,
+                PlayerActor.YUFENG_BUFF_CONFIG, 1, expiresAt);
+        connection.writeFrame(FightMessages.timedBuff(0, PlayerActor.YUFENG_BUFF_CONFIG,
+                PlayerActor.YUFENG_BUFF_CATEGORY, expiresAt.toEpochMilli(),
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, player.snapshotName()));
+        connection.writeFrame(player.buffSlotFrame(slot, bufferInfo));
+        // 到期自动摘（scheduler 缺席的极简测试流跳过——生产与 faculty ticker 同源必有）。
+        if (scheduler != null) {
+            long untilMs = expiresAt.toEpochMilli() - now.toEpochMilli();
+            scheduler.schedule(() -> {
+                if (session.player != player) {
+                    return; // 重登换了 PlayerActor，旧租约随实例丢弃
+                }
+                PlayerActor.ActiveBuffLease lease = player.activeBuffLease(
+                        PlayerActor.YUFENG_BUFF_CONFIG, player.clock().instant());
+                if (lease == null || lease.slot() != slot
+                        || !lease.expiresUtc().equals(expiresAt)) {
+                    return; // 已被 yufeng_remove 摘除或重复 add 续期（新任务接管）
+                }
+                player.clearBuffSlot(slot);
+                connection.writeFrame(FightMessages.timedBuff(1, PlayerActor.YUFENG_BUFF_CONFIG,
+                        PlayerActor.YUFENG_BUFF_CATEGORY, expiresAt.toEpochMilli(),
+                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                        player.snapshotName()));
+                connection.writeFrame(player.buffSlotFrame(slot, ""));
+            }, Math.max(untilMs, 1), java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+        String message = (renewal ? "御风状态已续期" : "御风状态已添加")
+                + "（槽 " + slot + "，10 分钟内可施展大轻功）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM yufeng add slot={} expires={}",
+                session.machine.id(), slot, expiresAt);
+    }
+
+    /**
+     * GM 御风神水·摘（yufeng_remove）：msg169 九值(add=1) + 空槽帧（客户端 BuffStore
+     * 按槽权威，releaseGlide 同款）；未持有时也回 msg169 摘除帧做客户端重同步。
+     */
+    private void applyYufengRemove(Connection connection, LoginSession session, GmCommand command) {
+        PlayerActor player = session.player;
+        Instant now = player.clock().instant();
+        PlayerActor.ActiveBuffLease lease =
+                player.activeBuffLease(PlayerActor.YUFENG_BUFF_CONFIG, now);
+        long endMs = lease == null ? now.toEpochMilli() : lease.expiresUtc().toEpochMilli();
+        int slot = lease == null ? -1 : lease.slot();
+        if (slot > 0) {
+            player.clearBuffSlot(slot);
+        }
+        connection.writeFrame(FightMessages.timedBuff(1, PlayerActor.YUFENG_BUFF_CONFIG,
+                PlayerActor.YUFENG_BUFF_CATEGORY, endMs,
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID, player.snapshotName()));
+        if (slot > 0) {
+            connection.writeFrame(player.buffSlotFrame(slot, ""));
+        }
+        String message = slot > 0 ? "御风状态已取消（槽 " + slot + "）" : "当前没有御风状态（已补发重同步帧）";
+        gmHub.update(session.machine.id(), s -> s.lastAction = message);
+        command.succeed(message);
+        log.info("session={} GM yufeng remove slot={}", session.machine.id(), slot);
+    }
+
+    /** 伙伴在场（当前场景世代）：bot 态非空且 gmSpawns 仍有该摆放（切图随 begin 清空）。 */
+    private boolean botPresent(LoginSession session) {
+        if (session.bot == null) {
+            return false;
+        }
+        LoginSession.GmSpawn spawn = session.gmSpawns.get(session.bot.objectId);
+        return spawn != null && spawn.bot;
+    }
+
+    /** 伙伴不在场则按当前/缺省预设生成（拉人/跟随/复活不要求先 ensure；失败即回执）。 */
+    private boolean ensureBot(LoginSession session, GmCommand command, String what) {
+        if (botPresent(session)) {
+            return true;
+        }
+        GmBotPresets.Bot preset = session.bot != null
+                ? session.bot.preset : GmBotPresets.defaultPreset();
+        try {
+            spawnBot(session, preset);
+        } catch (IOException | RuntimeException e) {
+            command.fail(what + "失败：伙伴生成失败 " + e.getMessage());
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 生成伙伴：预设模板克隆（名字/血量/跑速覆盖）→ GM 摆放（bot 口径）→
+     * FightState 伙伴标记（反击 AI 跳过 + 死亡冻结）→ reconcile 物化 0x0D+0x1F。
+     */
+    private int spawnBot(LoginSession session, GmBotPresets.Bot preset) throws IOException {
+        float[] at = gmSpawnPosition(session);
+        NpcSpawn npc = com.nineyin.server.world.npc.GmNpcFactory.spawnFromTemplate(
+                preset.table(), preset.template(), at[0], at[1], at[2], at[3],
+                Map.of("Name", preset.name(),
+                        "MaxHP", Integer.toString(preset.maxHp()),
+                        "HP", Integer.toString(preset.maxHp()),
+                        "RunSpeed", Float.toString(preset.runSpeed())));
+        int objectId = registerGmSpawn(session, npc, false, false, false, false, true);
+        if (session.bot == null) {
+            LoginSession.BotState bot = new LoginSession.BotState();
+            bot.preset = preset;
+            bot.supportHeal = preset.supportHeal();
+            bot.supportIntervalSec = preset.supportIntervalSec();
+            session.bot = bot;
+        } else {
+            session.bot.preset = preset;
+        }
+        session.bot.objectId = objectId;
+        session.bot.moving = false;
+        session.bot.lastHealAtMs = 0;
+        if (session.fight != null) {
+            session.fight.markCompanion(objectId);
+        }
+        session.world.reconcileViewport();
+        log.info("session={} GM bot {} ({}) spawned as object {} at ({},{},{})",
+                session.machine.id(), preset.name(), preset.key(), objectId, at[0], at[1], at[2]);
+        return objectId;
+    }
+
+    /** 伙伴状态文案（回执/面板用）：名字/对象号/血量/阵亡/跟随/辅助。 */
+    private String botStateText(LoginSession session) {
+        LoginSession.BotState bot = session.bot;
+        SceneLifecycle.CombatNpcInfo info = session.world != null
+                ? session.world.combatNpcInfo(bot.objectId) : null;
+        int maxHp = info != null ? info.maxHp() : bot.preset.maxHp();
+        FightState.NpcCombat combat = session.fight != null
+                ? session.fight.npc(bot.objectId) : null;
+        int hp = combat != null ? combat.state().hp() : maxHp;
+        boolean alive = session.fight == null || session.fight.npcAlive(bot.objectId);
+        return bot.preset.name() + " 对象 " + bot.objectId + " 血 " + hp + "/" + maxHp
+                + (alive ? "" : "（已阵亡）")
+                + (bot.following ? " 跟随中" : " 驻足")
+                + " 辅助" + (bot.supportEnabled
+                        ? "开 " + bot.supportHeal + "/" + bot.supportIntervalSec + "s" : "关");
+    }
+
+    /** 伙伴快照摘要写回 GM 面板（sessions().bot 数据源）。 */
+    private void refreshBotSnapshot(LoginSession session) {
+        if (session.bot == null) {
+            return;
+        }
+        SceneLifecycle.CombatNpcInfo info = session.world != null
+                ? session.world.combatNpcInfo(session.bot.objectId) : null;
+        int maxHp = info != null ? info.maxHp() : session.bot.preset.maxHp();
+        FightState.NpcCombat combat = session.fight != null
+                ? session.fight.npc(session.bot.objectId) : null;
+        int hp = combat != null ? combat.state().hp() : maxHp;
+        boolean alive = session.fight == null || session.fight.npcAlive(session.bot.objectId);
+        String name = session.bot.preset.name();
+        boolean following = session.bot.following;
+        String support = session.bot.supportEnabled
+                ? "开 " + session.bot.supportHeal + "/" + session.bot.supportIntervalSec + "s" : "关";
+        gmHub.update(session.machine.id(), s -> {
+            s.botName = name;
+            s.botHp = alive ? hp : 0;
+            s.botMaxHp = maxHp;
+            s.botFollowing = following;
+            s.botSupport = support;
+        });
+    }
+
+    /**
+     * 伙伴拍（1s ticker，与 GM 命令泵同线程串行）：
+     *
+     * <ul>
+     *   <li>世代失效自动重生：切图/重登后 gmSpawns 清空，本拍在玩家身边按预设
+     *       重生成（跨场景跟随），本拍只落位不追击。</li>
+     *   <li>跟随（0x21 官方口径）：目的地=玩家实时位（pendingLocation），服务端
+     *       权威坐标按速度×1s 步进；到点发一次 moving=0 停步 + 面向主人。</li>
+     *   <li>辅助（按配置周期）：msg337+msg20 伙伴施法帧（NpcCombatAi 出招同型）
+     *       + 玩家 restore 回血 + vitalUpdate 面板帧。</li>
+     * </ul>
+     */
+    void companionTick(Connection connection, LoginSession session) {
+        if (session.bot == null || session.world == null || session.player == null) {
+            return;
+        }
+        if (!botPresent(session)) {
+            try {
+                spawnBot(session, session.bot.preset);
+                refreshBotSnapshot(session);
+            } catch (IOException | RuntimeException e) {
+                log.warn("session={} respawn bot: {}", session.machine.id(), e.getMessage());
+            }
+            return;
+        }
+        SceneLifecycle.CombatNpcInfo info = session.world.combatNpcInfo(session.bot.objectId);
+        if (info == null) {
+            return;
+        }
+        Roles.Location location = session.pendingLocation != null
+                ? session.pendingLocation : session.selected.location();
+        Roles.Position target = location.position();
+        companionFollowTick(session, info, target);
+        companionSupportTick(connection, session, info, target);
+    }
+
+    /** 跟随拍：追击走 0x21（目的地=玩家位），到点/关跟随发一次停步（moving=0 + 面向主人）。 */
+    private void companionFollowTick(LoginSession session, SceneLifecycle.CombatNpcInfo info,
+                                     Roles.Position target) {
+        LoginSession.BotState bot = session.bot;
+        float dx = target.x() - info.x();
+        float dz = target.z() - info.z();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        if (bot.following && session.player.actorState().hp() > 0
+                && distance > BOT_FOLLOW_STOP_DISTANCE) {
+            float speed = bot.preset.runSpeed();
+            float travel = (float) Math.min(speed, distance); // 1s 一拍：步长=速度×1s
+            float ratio = (float) (travel / distance);
+            com.nineyin.server.world.scene.WorldScene.Transform stepped =
+                    new com.nineyin.server.world.scene.WorldScene.Transform(
+                            info.x() + dx * ratio,
+                            info.y() + (target.y() - info.y()) * ratio,
+                            info.z() + dz * ratio,
+                            (float) Math.atan2(dz, dx));
+            com.nineyin.server.world.scene.WorldScene.Transform dest =
+                    new com.nineyin.server.world.scene.WorldScene.Transform(
+                            target.x(), target.y(), target.z(), stepped.orient());
+            session.world.companionStep(bot.objectId, stepped, dest, speed, true);
+            bot.moving = true;
+            return;
+        }
+        if (bot.moving) {
+            // 停步：0x21 moving=0（客户端收步动画），朝向=面向主人。
+            float facing = (float) Math.atan2(target.z() - info.z(), target.x() - info.x());
+            com.nineyin.server.world.scene.WorldScene.Transform at =
+                    new com.nineyin.server.world.scene.WorldScene.Transform(
+                            info.x(), info.y(), info.z(), facing);
+            session.world.companionStep(bot.objectId, at, at, 0f, false);
+            bot.moving = false;
+        }
+    }
+
+    /** 辅助拍：伙伴存活 + 玩家掉血 + 距离内 + 到周期 → 施法帧 + 回血 + vitalUpdate。 */
+    private void companionSupportTick(Connection connection, LoginSession session,
+                                      SceneLifecycle.CombatNpcInfo info, Roles.Position target) {
+        LoginSession.BotState bot = session.bot;
+        if (!bot.supportEnabled || bot.supportHeal <= 0) {
+            return;
+        }
+        var state = session.player.actorState();
+        if (state.hp() <= 0 || state.hp() >= state.maxHp()) {
+            return;
+        }
+        if (session.fight != null && !session.fight.npcAlive(bot.objectId)) {
+            return; // 伙伴阵亡不施法（bot_revive 复活）
+        }
+        float dx = target.x() - info.x();
+        float dz = target.z() - info.z();
+        if (dx * dx + dz * dz > BOT_SUPPORT_RANGE_METERS * BOT_SUPPORT_RANGE_METERS) {
+            return;
+        }
+        long now = clock.instant().toEpochMilli();
+        if (now - bot.lastHealAtMs < bot.supportIntervalSec * 1000L) {
+            return;
+        }
+        bot.lastHealAtMs = now;
+        // 施法两帧（NpcCombatAi 出招同款：msg337 伙伴位姿 + msg20 伙伴施法，目标=玩家）。
+        connection.writeFrame(FightMessages.casterTransformSync(
+                info.id(), info.ownerId(), info.x(), info.y(), info.z(), info.orient()));
+        connection.writeFrame(FightMessages.skillAction(
+                info.id(), info.ownerId(), bot.preset.supportSkill(),
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID));
+        int heal = Math.min(bot.supportHeal, state.maxHp() - state.hp());
+        if (heal > 0 && session.player.restore(heal, 0)) {
+            connection.writeFrame(session.player.vitalUpdate());
+        }
     }
 
     /** 皮肤部件摘要（回执文案用，如 "Weapon blade_card_001"）。 */
@@ -4771,6 +5770,30 @@ public final class LoginFlow {
                         session.machine.id(), session.letters.size());
             }
         }
+        if (session.player != null && !session.reputesGranted) {
+            // 声望行（Repute_Record 44，玩家对象挂接，letters 同口径）：ExitScene 清
+            // 挂接行，按内存镜像整表重放；空表零帧（golden 流程角色无声望行）。
+            session.reputesGranted = true;
+            if (!session.reputes.isEmpty()) {
+                for (byte[] frame : com.nineyin.server.game.avatar.panel.ReputeMessages.rowsFrames(
+                        SceneMessages.PLAYER_OBJECT_ID, SceneMessages.PLAYER_OWNER_ID,
+                        session.reputes, com.nineyin.server.game.avatar.panel.ReputeLevelTable.load())) {
+                    connection.writeFrame(frame);
+                }
+                log.info("session={} replayed {} Repute_Record rows",
+                        session.machine.id(), session.reputes.size());
+            }
+        }
+        if (session.player != null && !session.originsGranted) {
+            // 身份行（Origin_Active 45 / Origin_Prized 48，玩家对象挂接，reputes 同口径）：
+            // ExitScene 清挂接行，按内存镜像整表重放；空表零帧。
+            session.originsGranted = true;
+            if (!session.origins.isEmpty()) {
+                pushOriginRows(connection, session);
+                log.info("session={} replayed {} origin rows",
+                        session.machine.id(), session.origins.size());
+            }
+        }
         if (session.player != null) {
             boolean granted = StarterGrants.grantSitcrossShortcut(connection, session.player);
             if (granted) {
@@ -4782,10 +5805,11 @@ public final class LoginFlow {
             // 全量下发补集：基础武学→三脚猫招式五件套缺则补齐（View40/211 已学表/CanUse 行同源）。
             java.util.List<RoleInventoryStore.Skill> dbSkills =
                     StarterSkills.withDefaultBasics(loadDbSkills(session));
-            StarterGrants.grantStarterProgress(connection, session.player,
-                    dbSkills, session.starterShortcutFallback);
-            session.learnedSkills = learnedSkillLevels(dbSkills);
+            long roleId = session.selected != null ? session.selected.id() : 0L;
+            session.learnedSkills = learnedSkillLevels(roleId, dbSkills);
             session.skillRows = skillRows(dbSkills);
+            StarterGrants.grantStarterProgress(connection, session.player,
+                    dbSkills, session.starterShortcutFallback, session.learnedSkills);
             session.neigongGranted = true;
             // View40 行可用性初始批（62433 抓包：starter 授予后每行推 CanUse=1；
             // 不发则客户端技能图标恒为不可用——真机反馈"显示不可用但能释放"）
@@ -4924,6 +5948,10 @@ public final class LoginFlow {
         // 快捷栏记录行同属玩家对象挂接行，ExitScene 后必须按内存快照整表重放。
         session.shortcutRowsSent = false;
         session.lettersGranted = false;
+        // 声望行同属玩家挂接行（Repute_Record），随收尾整表重放。
+        session.reputesGranted = false;
+        // 身份行同口径（Origin_Active/Origin_Prized）。
+        session.originsGranted = false;
         grantOncePerConnectionRows(connection, session);
         session.awaitingReentryReady = false;
         session.reentryFramesSent = false;
@@ -5053,6 +6081,9 @@ public final class LoginFlow {
                     }
                 }
             }
+            // 身份系统：700 激活单身份 / 702 领奖（真发奖）/ 706 请求刷新；
+            // 701 展示 / 705 领取查询留待（S2C lua 回调无抓包证据）。
+            case 700, 702, 706 -> handleOriginCustom(connection, session, custom);
             case 107 -> handleCustomizingUpload(connection, session, custom);
             case 200 -> handleSetShortcut(connection, session, custom);
             case 201 -> handleRemoveShortcut(connection, session, custom);
@@ -6088,17 +7119,26 @@ public final class LoginFlow {
                 | (plain[offset + 2] & 0xFF) << 16 | (plain[offset + 3] & 0xFF) << 24;
     }
 
-    /** 已学表：DB role_skills 优先，回退 starter 集（等级恒 1，与 View40 下发一致）。 */
-    private static java.util.Map<String, Integer> learnedSkillLevels(
-            java.util.List<RoleInventoryStore.Skill> dbSkills) {
+    /** 已学表：DB role_skills 优先，回退 starter 集；等级合并 data/武学等级.json 档值（learn_all_taolu 满级重登保持）。 */
+    java.util.Map<String, Integer> learnedSkillLevels(
+            long roleId, java.util.List<RoleInventoryStore.Skill> dbSkills) {
         java.util.Map<String, Integer> learned = new java.util.LinkedHashMap<>();
         if (dbSkills != null && !dbSkills.isEmpty()) {
             for (RoleInventoryStore.Skill skill : dbSkills) {
-                learned.put(skill.skillId(), 1);
+                learned.put(skill.skillId(), storedSkillLevel(roleId, skill.skillId()));
             }
             return learned;
         }
-        return StarterSkills.starterLearnedLevels();
+        for (java.util.Map.Entry<String, Integer> entry : StarterSkills.starterLearnedLevels().entrySet()) {
+            learned.put(entry.getKey(), storedSkillLevel(roleId, entry.getKey()));
+        }
+        return learned;
+    }
+
+    /** 档值等级：data/武学等级.json &gt;1 用档值，否则 1。 */
+    private int storedSkillLevel(long roleId, String skillId) {
+        int stored = skillLevelStore.level(roleId, skillId);
+        return stored > 1 ? stored : 1;
     }
 
     /** View40 行号表：与 grantStarterProgress 下发顺序同构（db 行序或 starter 列表序，1 起）。 */

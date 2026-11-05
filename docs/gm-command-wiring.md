@@ -99,7 +99,7 @@ LoginFlow.startFacultyTicker → drainGmCommands（与 facultyTick/meridianTick 
 
 ## 5. 动作清单（2026-11-04）
 
-已实现（白名单+case 双接线，34 个）：
+已实现（白名单+case 双接线，47 个）：
 `set_move_speed, set_gravity, set_silver, set_guanyin, set_gold, set_sp, add_sp, fill_sp,
 reload_scripts, set_zhenqi_cap, set_power_level, set_alignment, set_vitals, set_five_attributes,
 wear_title, cancel_title, set_faculty, set_fill_speed, fill_current_neigong,
@@ -107,8 +107,11 @@ add_livepoint, set_hold_faculty, set_live_speed_power,
 set_act_day_limit, clear_team_fatigue, set_team_faculty_last,
 switch_scene_preset, switch_scene, teleport, grant_item, send_test_mail, giftbox_merchant_here,
 spawn_combat_dummy, clear_combat_dummies, worldboss_spawn, worldboss_clear, worldboss_list,
-set_faction`
-（2026-11-05 追加 worldboss 三动作与 set_faction；其余批次——洗练/外观坐骑/生成族等见各节）
+set_faction, bot_ensure, bot_pull_here, bot_follow_start, bot_follow_stop, bot_revive,
+bot_support_configure, yufeng_add, yufeng_remove, set_weather, repute_apply,
+origin_activate_all`
+（2026-11-05 追加 worldboss 三动作、set_faction、bot_* 六动作、御风两动作、场景天气、
+repute_apply 与 origin_activate_all；其余批次——洗练/外观坐骑/生成族等见各节）
 
 修为三动作参数：
 
@@ -217,6 +220,89 @@ set_faction`
 - 会话级摆放（同木桩/假人口径），切图随 world.begin 清空；定时刷新
   （normalbossrefreshtime 时间窗）、掉落/伤害排行、全服公告与跨会话共享留待后续。
 
+伙伴系统六动作（2026-11-05，面板「伙伴系统」区块；预设闭名单 `GmBotPresets`）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `bot_ensure` | `bot` 可选（预设键，缺省 `qinghe`；闭名单拒绝任意字符串） | 无（会话内实体） |
+| `bot_pull_here` | 无参（不在场先按预设生成；在场 0x1F 瞬移到玩家身前） | 无 |
+| `bot_follow_start` / `bot_follow_stop` | 无参（跟随开关；start 不在场先 ensure） | 无 |
+| `bot_revive` | 无参（FightState 回满清租约 + 0x10 NPC 战斗帧整血下发） | 无 |
+| `bot_support_configure` | `enabled` 0/1 + `intervalSec` 1..60 + `heal` 0..100000（均可选，缺省保持现值） | 无 |
+
+- **预设** = `GmBotPresets` 闭名单（仿 `GmFactionPresets`）：`qinghe`「青禾」→
+  attacknpc.txt `monf022202`「机关木人」（战斗假人同款、唯一全链验证的人形
+  AttackNpc 模板），生成期覆盖 Name/MaxHP 5000/RunSpeed 6.0；辅助缺省技
+  `jn_mon053_02`、500 点/5s。
+- **战斗语义**：AttackNpc 天然 combat——可被玩家选中/受击/AoE 误伤；但
+  FightState 伙伴标记使 NpcCombatAi 跳过（**永不反击主人**），死亡由
+  killOverride 接管**冻结不重生**（不吃 15s 满血），`bot_revive` 手动复活。
+- **跟随引擎**（`LoginFlow.companionTick`，1s faculty ticker 内、与 GM 命令泵
+  同线程串行）：玩家实时位取 `session.pendingLocation`（0x0A motion 包更新）；
+  XZ 距离 > 2.5m → 0x21 ServerAllDest 单条目（目的地=玩家位、speed=RunSpeed、
+  moving=1），服务端权威坐标按速度×1s 步进（`SceneLifecycle.companionStep`，
+  同巡逻口径不动 revision）；到点发一次 moving=0 停步 + 面向主人。
+  **0x20 依旧不用**（官方抓包从未出现）。
+- **跨场景跟随**：切图/重登 gmSpawns 随 world.begin 清空 → 下一拍 companionTick
+  检测世代失效自动在玩家身边重生成（新对象号 + FightState 重标记），本拍只落位。
+- **辅助治疗**：开启且玩家掉血、伙伴存活、12m 内、到周期 → msg337+msg20 伙伴
+  施法帧（NpcCombatAi 出招同型，目标=玩家）+ `player.restore` 回血 + 0x10
+  vitalUpdate 面板帧。
+- **面板状态**：`/api/sessions` 每会话新增 `bot` 对象（name/hp/maxHp/following/
+  support，GmHub.PlayerSnapshot bot 字段族，`refreshBotSnapshot` 维护）；前端
+  `#bot-state` 渲染实时状态（console-core.js `refreshBots`，不再读静态
+  `/api/bots` 目录——该目录接口保留未动）。
+
+门派声望一动作（2026-11-05，面板「门派声望（自定义）」区块；UI/JS/读接口
+`/api/repute/status` 此前已就绪，本次只接 `repute_apply`）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `repute_apply` | `reputeName`（"all" 或 `repute_*` 阵营键，闭名单=repute_level.ini [Repute] 36 项）+ `reputeMode` set/add（缺省 set）+ `reputeValue` 0..9999999 | role_repute 逐阵营 upsert |
+
+- **闭名单两级**：入口（GmRemote）验 name 非空限长/mode/value 域；游戏侧按
+  `ReputeLevelTable`（GBK INI + ResourceCache，WorldBossRefreshTable 同款）校验
+  阵营键并列出可用项——阵营集随数据表走，不硬编码。
+- **客户端两通道**：`Repute_Record`（官方方言 idx 44，列 [窄串,int32,int32]=名/值/
+  等级）行整刷——0x12 倒序删旧 + 0x11 逐行（NewRideRec/CardRec 同方言），等级按
+  [Level] 默认曲线/阵营自定义段取 ≤值最高档（级号=INI 键）；`PrestigeExp@848`
+  汇总单帧（panel.prestigeExp = min(INT_MAX, Σ行值)）。
+- **上限**：[repute_max_value] 特例（wanshou=40 万等）否则 [Level] 最大；set 0 摘行。
+- **落库/重放**：role_repute upsert best-effort（失败 warn 不回滚，set_faculty
+  同口径）；登录 `loadPanelData` 装载行镜像（prestigeExp 同源求和，不再单独
+  reputeTotal），`grantOncePerConnectionRows` 按 letters 口径整表重放（空表零帧，
+  golden 无扰动），切图收尾复位 `reputesGranted` 重放。
+- 消费方：condition.ini 1706 条 `Name=Repute_Record` 条件（身份/门派内功声望门槛）
+  与声望面板；等级列语义与 PrestigeExp=SUM 汇总口径同列「真机待验」。
+
+身份系统一动作 + C2S 三口（2026-11-05，面板「身份系统（一键激活全部）」区块；
+origin = 官方「出身/身份」成长体系，1197 个身份，bak SceneFlow 700-706 stub 交棒）：
+
+| action / C2S | 参数 | 落库 |
+| --- | --- | --- |
+| `origin_activate_all` | 无参（origin.ini 全量入【已激活】集；【未领取】状态不动） | role_origins INSERT IGNORE（0012 迁移） |
+| C2S 700 `[700, 身份 id]` | 激活单身份（测试服跳过 ActiveConditions 门；int/窄串两口径） | 同上 |
+| C2S 702 `[702, 身份 id]` | 领奖：prize_item 物品入包（grantBagItem，**全部成功才标记**，满包/失败不标记下次补发；config 缺失跳过不阻断）+ prize_title 称号所有权（role_titles INSERT IGNORE，grantTitle 新方法）+ prize_prop `repute_*` 阵营叠加（Repute 行整刷 + PrestigeExp 单帧，repute_apply 同口径）→ Origin_Prized 行 | role_origins status→2 + role_titles + role_repute |
+| C2S 706 `[706]` | 请求刷新：按内存镜像重推 Origin_Active/Origin_Prized 全部行 | 无 |
+
+- **数据源** = `share/task/origin/` 四表（`OriginCatalog`，ISO-8859-1 + ResourceCache，
+  WorldBossRefreshTable 同款）：origin.ini（数字节名=身份 id，1197 个升序）+
+  prize_item（`r=configId,数量` 重复键最多 4 条）+ prize_title（`r=称号 id`）+
+  prize_prop（`r=prop,值`，本期只消费 repute_* 阵营）。
+- **记录行通道** = 官方 447 表内建：`Origin_Active[3]`/`Origin_Prized[3]`（单窄串列，
+  行键=身份 id 数字串，`RecordMessages.recordAddString`）；登录装载 + grantOnce
+  重放门 `originsGranted`（letters/reputes 同口径，切图收尾复位，空表零帧）。
+- **镜像/落库**：`session.origins`（LinkedHashMap，id→1 激活/2 已领奖）+
+  role_origins（0012：role_id+origin_id 主键，status 只进不退）双源 best-effort。
+- 701 展示 / 705 领取查询留待（S2C lua 回调 custom_refresh_origin/
+  custom_can_get_side_origin 无抓包证据）；originnew 东海身份树/Origin_Record
+  等级列语义同留待。/api/origin/status 读接口（gm-web）既有未动。
+- 测试：`OriginCatalogTest`（手写四表：数字节过滤/多 r 收集/坏行丢弃/缺根
+  present=false）+ `LoginFlowGmCommandTest.originActivateAllAndPrizeRoundTrip`
+  （@TempDir 手写最小表全链：全量激活 0x11×N/702 三帧序（Repute 行 0x11+
+  PrestigeExp 0x10+Prized 0x11）/重复 702 幂等零帧/706 重推 3+1/700 int 口径
+  单激活/目录外拒绝零帧）+ `GmRemoteRoundTripTest` origin_activate_all 透传。
+
 模板生成三动作（2026-11-04，60501 家族基座 + 官方洗练池词条）：
 
 | action | 参数 | 词条构造 | 落库 |
@@ -269,6 +355,58 @@ set_faction`
   ∈ drops_mvp.json 的真正可开礼包，按 configId 排序，SellPrice2=0 免费领，msg70 购买
   链零改动复用）。
 
+御风神水两动作（2026-11-05，面板「御风神水（大轻功）」区块收尾）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `yufeng_add` | 无参（挂 buf_ride_yufeng 10 分钟租约；重复点同槽续期） | 无（PlayerActor 内存租约，重登清零） |
+| `yufeng_remove` | 无参（msg169 摘除 + 空槽帧；未持有时仍补 msg169 重同步） | 无 |
+
+- **语义**：大轻功（百鸟凌云系列）一/二/三段冲刺的客户端条件包要求 BuffStore 持有
+  buf_ride_yufeng。表实证（运行根 `share/skill/`）：buff_new[buf_ride_yufeng]
+  StaticData=**10293**（0x2835）、buff_static[10293] **Category=0**（对照缓降
+  218→2048 同口径）；官方每 10s 耗 1% 内力、进战斗即摘由客户端 lua
+  （buf\ride\buf_ride_yufeng.lua）处理，GM 版不模拟消耗。
+- **双通道**（QingGongHandler 缓降同款蓝本）：挂/摘各两帧——msg169 九值
+  （`FightMessages.timedBuff`，v0=0 挂/1 摘，v7=到期 Unix 毫秒**原值**）+
+  0x10 单槽帧 `buffSlotFrame(slot, …)`（BufferInfoN 槽串 StaticData,1,1,1,
+  **到期+11644473600000（1601 纪元）**,1，空串=清槽；两口径勿混）。
+- **槽位**：`reuseBuffSlot`(同 configId 续期) → 否则 `freeBuffSlot()`（12..24，
+  1..11 系统租约区）；满槽整单拒绝。到期自动摘由 scheduler 延迟任务补发摘除
+  双帧（租约槽位+到期一致才动作，续期/手动摘后旧任务空转；worldboss 移除同款守卫）。
+- 切图不摘（buff_static LeaveSceneClear=0）：重入场景 0x10 全量面板自带
+  BufferInfo1..24，租约天然恢复，无需重放标志。配套四个「发放御风神水
+  (3/7/10/14 天)」按钮走 `add_item` 发 ride_windrunner_002/004/003/005 入包
+  （官服真实道具路线：右键使用蓄力后才加状态），与本直挂动作互补。
+- 测试：`LoginFlowGmCommandTest.yufengAddRemoveRoundTrip`（msg169 九值字节级
+  v0/169/窄串、槽串 2835 首字段、续期不换槽、空槽帧、无租约重同步、到期任务
+  补发且旧任务空转）+ `GmRemoteRoundTripTest` yufeng 两动作透传。
+
+场景天气一动作（2026-11-05，面板「场景天气」区块；修正旧注释"场景对象 WeatherRec
+驱动"的臆测——那是载图期 Weather@1448 属性，仅 scene_weather.ini 5 个主城夜景段）：
+
+| action | 参数 | 落库 |
+| --- | --- | --- |
+| `set_weather` | `weather` 键 ∈ GmWeatherPresets 49 键（= 客户端 `share/rule/weather/sceneparastore/` 天气渲染包目录名）+ `fadeSec` 可选 0..600（缺省 10） | 无（会话级单帧） |
+
+- **通道** = S2C 0x27 命令名寻址 `on_weather_sky`（popup_gm_panel 同款），sub_type=4
+  → 原生 `weather_manager:ChangeWeatherEffect(目录, 过渡秒, 特效串, 4)`（现代客户端
+  weatherconfig.ini [GlobleRule] **IsLua=0** 原生模式；Lua 模式 weather_set.lua
+  start_weather 同参数收敛——arg1=TTID 时段目录、arg2=过渡秒、arg3=TXID 特效串空）。
+- **闭名单**（`GmWeatherPresets`，仿 GmFactionPresets）：49 键与 sceneparastore 目录
+  逐一对齐；`_001`=昼/`_501`=夜变体（SunHeight 实证）；中文标签对齐官方 17 类
+  （interface.idres tianqi_1..17）。入口与游戏侧双重校验，不收任意路径字符串。
+- **面板下拉** = gm-web `/api/weather` 改读 sceneparastore **目录列举**（旧源
+  weathereffect.ini 是粒子定义表、域不匹配已弃用），Label 与九阴侧 GmWeatherPresets
+  同口径派生（双端镜像 scenes.ini 先例）。
+- 雨/雪粒子需客户端画面设置开天气 + 高/极高画质；天色/雾不受限。**恢复默认 =
+  切图重进**（客户端载图重初始化天气；服务端无干净恢复通道——sub_type=5 原生
+  语义不可证，不做）。
+- 测试：`GmWeatherPresetsTest`（49 键与目录集逐一对齐/标签非空/未知键拒绝）+
+  `LoginFlowGmCommandTest.weatherSwitchSendsOnWeatherSkyFrame`（0x27 五值字节级：
+  命令名/sub 4/目录/过渡秒/空特效串、缺省 fadeSec、未知键零帧失败）+
+  `GmRemoteRoundTripTest` set_weather 透传与参数域拒绝。
+
 切图链（`applySceneSwitch`）：0x0C 退场 → `world.begin` 世代重置 → **750ms 调度延迟**
 （旧场景 on_exit_scene 的 ClearAll 收尾；Go 在会话 goroutine 睡，Java 在 faculty ticker
 上不能睡改 `scheduler.schedule`，`LoginFlow.reentryFrameDelayMillis` 测试可注入）→
@@ -290,13 +428,17 @@ faculty_team_action.ini [setting] TeamValue），客户端按 (80000−值)×100
 前端 backlog（console.html 有按钮、服务端**未接线**，点击 409，接线时按第 2 节走）：
 `learn_all_neigong, learn_all_taolu, forget_all_taolu,
 set_jingmai_tier,
-bot_*, ninjiuzhi_*, set_pk_mode,
-set_weather, story(剧情族剩余), custom_probe, keybind` 等。
+ninjiuzhi_*, set_pk_mode,
+story(剧情族剩余), custom_probe, keybind` 等。
 （add_item 与 story('giftbox_merchant_here') 已于 2026-11-04 接线；
 equip_card/unequip_card/grant_all_cards、equip_hair、mount_ride、idle_stance_set
 已于 2026-11-05 随「外观与坐骑」六区块补全接线，详见 docs/坐骑与待机站姿.md；
 worldboss_spawn/clear/list 已于 2026-11-05 接线，见上文世界 BOSS 三动作节；
-set_faction 已于 2026-11-05 接线，见下文门派一动作节。）
+set_faction 已于 2026-11-05 接线，见下文门派一动作节；
+bot_* 六动作已于 2026-11-05 接线，见上文伙伴系统六动作节；
+yufeng_add/yufeng_remove 已于 2026-11-05 接线，见上文御风神水两动作节；
+set_weather 已于 2026-11-05 接线，见下文场景天气一动作节；
+origin_activate_all 已于 2026-11-05 接线，见上文身份系统节。）
 
 门派一动作（2026-11-05，Go gm_factions.go 闭名单移植）：
 
@@ -369,6 +511,16 @@ set_faction 已于 2026-11-05 接线，见下文门派一动作节。）
   礼包/排序/免费、View61 头+行帧、msg70 零价购买入包；临时角色 990035）；
   物品发放域：`GrantItemFlowTest`（入包行+成对帧/wearNow 穿戴帧序/换装让位旧装回收
   装备页/双槽耳环 11+12 不覆盖/不可穿戴降级入包；临时角色 990036）。
+  伙伴域：`LoginFlowGmCommandTest.botEnsureFollowSupportReviveRoundTrip`
+  （@TempDir 真实 attacknpc 表全链：ensure 幂等/非法键拒绝/0x21 追击 moving=1 与
+  停步 moving=0 的条目尾 u32 断言/pull 0x1F/世代失效重生换对象号/辅助回满+间隔闸/
+  FightState 打死→revive 回满）+ `GmRemoteRoundTripTest` bot_* 六动作透传与参数域
+  拒绝分支。
+  声望域：`ReputeLevelTableTest`（合成 repute_level.ini：[Repute] 表序/[Level] 非
+  连续键级号/[repute_max_value] 特例/自定义段优先）+ `LoginFlowGmCommandTest.
+  reputeApplySetAddAllRoundTrip`（@TempDir 真实表全链：set 单阵营 0x11 idx44 名/值
+  LE 断言 + PrestigeExp 0x10/add 叠加 0x12+0x11 整刷/all 全量计数/set 0 摘行/未知
+  阵营零帧）+ `GmRemoteRoundTripTest` repute_apply 参数域拒绝与透传分支。
 - 已知存量失败随在制改动漂移，以当次实测为准（2026-11-05 全量 370 例实测 4 个存量失败：
   PlayerPanelRealtimeTest 1、RoleInventoryStoreIntegrationTest 1（需 MySQL）、MailFlowTest
   tearDown 2；stash 往返验证与 GM 链路无关。更早口径：View40 CD 修复遗留 7 个）。

@@ -80,7 +80,23 @@ public final class TaskStore {
                 completed.add(((Number) item).intValue());
             }
         }
-        return new PlayerTask.Snapshot(List.copyOf(accepted), List.copyOf(completed));
+        // 进度计数（二期）：taskId → {步骤 TypeID → curnum}；老档缺节点 → 空。
+        Map<Integer, Map<Integer, Integer>> progress = new TreeMap<>();
+        JSONObject progressNode = node.getJSONObject("progress");
+        if (progressNode != null) {
+            for (Map.Entry<String, Object> taskEntry : progressNode.entrySet()) {
+                Map<Integer, Integer> counts = new TreeMap<>();
+                JSONObject countsNode = (JSONObject) taskEntry.getValue();
+                if (countsNode != null) {
+                    for (Map.Entry<String, Object> stepEntry : countsNode.entrySet()) {
+                        counts.put(Integer.parseInt(stepEntry.getKey()),
+                                ((Number) stepEntry.getValue()).intValue());
+                    }
+                }
+                progress.put(Integer.parseInt(taskEntry.getKey()), counts);
+            }
+        }
+        return new PlayerTask.Snapshot(List.copyOf(accepted), List.copyOf(completed), Map.copyOf(progress));
     }
 
     /**
@@ -254,6 +270,17 @@ public final class TaskStore {
             completed.add(Integer.toString(taskId));
         }
         node.raw("completed", GoJson.renderArray(completed, depth));
+        if (!snapshot.progress().isEmpty()) {
+            GoJson.Object progressNode = new GoJson.Object();
+            for (Map.Entry<Integer, Map<Integer, Integer>> taskEntry : snapshot.progress().entrySet()) {
+                GoJson.Object countsNode = new GoJson.Object();
+                for (Map.Entry<Integer, Integer> stepEntry : taskEntry.getValue().entrySet()) {
+                    countsNode.field(Long.toString(stepEntry.getKey()), stepEntry.getValue());
+                }
+                progressNode.raw(Long.toString(taskEntry.getKey()), countsNode.render(depth + 1));
+            }
+            node.raw("progress", progressNode.render(depth));
+        }
         return node.render(depth);
     }
 }

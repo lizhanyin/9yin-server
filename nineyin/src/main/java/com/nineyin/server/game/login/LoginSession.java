@@ -77,6 +77,16 @@ public final class LoginSession {
     Set<Integer> activeNpcs = new java.util.HashSet<>();
     /** 四期交互：NPC 对话/商店路由态（0x07 两段式 + View61 开店 + msg70 购买）。 */
     com.nineyin.server.world.npc.NpcDialog dialog = new com.nineyin.server.world.npc.NpcDialog();
+    /**
+     * 任务域（二期）：客户端记录行服务端镜像——taskAcceptedRowOrder=Task_Accepted
+     * 行序（starter 15 行之后：接取尾插、状态回刷移尾、提交/放弃移除）；
+     * taskRecordRowKeys=Task_Record 步骤行序（"taskId:typeId"，与下发行 1:1）。
+     * 客户端记录引擎无原位更新（0x13 未逆向），进度/状态变更=删行+尾插重发，
+     * 删行号必须按本镜像寻址（升序假设在乱序接取/回刷后失真）；切图重入
+     * grantTaskRestoreFrames 按规范序整表重放时重建（仅场景线程读写）。
+     */
+    final java.util.List<Integer> taskAcceptedRowOrder = new java.util.ArrayList<>();
+    final java.util.List<String> taskRecordRowKeys = new java.util.ArrayList<>();
     Instant lastPositionSave;
     Roles.Location pendingLocation;
     /**

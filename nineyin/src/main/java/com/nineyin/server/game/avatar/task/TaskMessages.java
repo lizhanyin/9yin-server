@@ -34,7 +34,9 @@ public final class TaskMessages {
     /** NPC 头顶任务标记：args = (npcConfigId, flag 2 可交/4 可接)。 */
     public static final int SUBMSG_NPC_EFFECT = 15;
 
-    /** Task_Record 子类型（task_define.lua subtype_*）：6=story 对话步骤。 */
+    /** Task_Record 子类型（task_define.lua subtype_*）：1=杀怪 3=交互 6=story 对话步骤。 */
+    public static final int TASK_RECORD_SUBTYPE_HUNTER = 1;
+    public static final int TASK_RECORD_SUBTYPE_INTERACTIVE = 3;
     public static final int TASK_RECORD_SUBTYPE_STORY = 6;
 
     private static final String TASK_COMMAND = "task_msg_logic";
@@ -148,23 +150,74 @@ public final class TaskMessages {
     }
 
     /**
-     * Task_Record story 步骤行（15 列：0 id/1 subtype/2 index/3 order/4 curnum/
+     * Task_Record 通用步骤行（15 列：0 id/1 subtype/2 index/3 order/4 curnum/
      * 5 maxnum/6 key/7 scene/8 trackinfo/12 curnum_ex/13 maxnum_ex/14 hyper_link）。
+     * story/hunter/interactive 同一布局，subtype 与 key（story=对话目标、
+     * 进度步骤=目标模板名）由调用方给。
+     */
+    public static byte[] taskRecordRow(long objectId, long ownerId, int taskId, int subtype,
+                                       int order, int curnum, int maxnum, String key,
+                                       String scene, String trackInfo) {
+        return RecordMessages.recordAddCells((int) objectId, (int) ownerId,
+                com.nineyin.server.protocol.RecordSchemas.indexByName("Task_Record"),
+                RecordMessages.Cell.ofInt(taskId),              // 0 id
+                RecordMessages.Cell.ofInt(subtype),             // 1 subtype
+                RecordMessages.Cell.ofInt(0),                   // 2 index
+                RecordMessages.Cell.ofInt(order),               // 3 order
+                RecordMessages.Cell.ofInt(curnum),              // 4 curnum
+                RecordMessages.Cell.ofInt(maxnum),              // 5 maxnum
+                RecordMessages.Cell.ofString(key),              // 6 key（目标标识）
+                RecordMessages.Cell.ofString(scene == null ? "" : scene), // 7 scene
+                RecordMessages.Cell.ofString(trackInfo == null ? "" : trackInfo)); // 8 trackinfo
+    }
+
+    /**
+     * Task_Record story 步骤行（{@link #taskRecordRow} 的 story 方言包装，
+     * 布局与一期逐字节一致）。
      */
     public static byte[] taskStoryRow(long objectId, long ownerId, TaskCatalog catalog,
                                       TaskCatalog.Step step, String trackInfoId) {
         TaskCatalog.TaskDef def = catalog.task(step.taskId());
-        return RecordMessages.recordAddCells((int) objectId, (int) ownerId,
-                com.nineyin.server.protocol.RecordSchemas.indexByName("Task_Record"),
-                RecordMessages.Cell.ofInt(step.taskId()),        // 0 id
-                RecordMessages.Cell.ofInt(TASK_RECORD_SUBTYPE_STORY), // 1 subtype=story
-                RecordMessages.Cell.ofInt(0),                    // 2 index
-                RecordMessages.Cell.ofInt(step.order()),         // 3 order
-                RecordMessages.Cell.ofInt(0),                    // 4 curnum
-                RecordMessages.Cell.ofInt(1),                    // 5 maxnum
-                RecordMessages.Cell.ofString(step.typeId()),     // 6 key（story 对话目标）
-                RecordMessages.Cell.ofString(def != null ? String.valueOf(def.sceneId()) : ""), // 7 scene
-                RecordMessages.Cell.ofString(trackInfoId == null ? "" : trackInfoId)); // 8 trackinfo
+        return taskRecordRow(objectId, ownerId, step.taskId(), TASK_RECORD_SUBTYPE_STORY,
+                step.order(), 0, 1, step.typeId(),
+                def != null ? String.valueOf(def.sceneId()) : "", trackInfoId);
+    }
+
+    /**
+     * 进度步骤行（hunter/interact 通用）：按 subfunction Type 查进度表取
+     * maxnum/key/scene/trackinfo（hunter：key=怪物模板名；interact：key=目标 NPC）。
+     * 非进度步骤或进度表缺配置返回 null（不下发该行）。
+     */
+    public static byte[] taskProgressRow(long objectId, long ownerId, TaskCatalog catalog,
+                                         TaskCatalog.Step step, int curnum) {
+        int typeId = parseTypeId(step.typeId());
+        if ("hunter".equalsIgnoreCase(step.type())) {
+            TaskCatalog.HuntDef hunt = catalog.hunt(typeId);
+            if (hunt == null) {
+                return null;
+            }
+            return taskRecordRow(objectId, ownerId, step.taskId(), TASK_RECORD_SUBTYPE_HUNTER,
+                    step.order(), curnum, hunt.count(), hunt.npcId(),
+                    hunt.sceneId() > 0 ? String.valueOf(hunt.sceneId()) : "", hunt.trackInfo());
+        }
+        if ("interact".equalsIgnoreCase(step.type())) {
+            TaskCatalog.InteractDef interact = catalog.interact(typeId);
+            if (interact == null) {
+                return null;
+            }
+            return taskRecordRow(objectId, ownerId, step.taskId(), TASK_RECORD_SUBTYPE_INTERACTIVE,
+                    step.order(), curnum, 1, interact.npcId(),
+                    interact.sceneId() > 0 ? String.valueOf(interact.sceneId()) : "", interact.trackInfo());
+        }
+        return null;
+    }
+
+    private static int parseTypeId(String raw) {
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /**

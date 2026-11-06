@@ -530,6 +530,21 @@
         </button>
       </section>
       <section>
+        <h2>任务进度</h2>
+        <p class="muted">
+          一键补满已接任务的杀怪/交互进度（Task_Record 步骤行删+加回刷，
+          满足门控的任务回刷 Task_Accepted 行为「可提交」并点亮交任务 NPC
+          头顶标记）；任务 ID 留空 = 全部已接任务。用于真机联调目标怪
+          未物化的任务线，正常推进请走击杀/点击链路。
+        </p>
+        <label>任务 ID
+          <input id="task-progress-id" type="number" min="1" max="999999"
+            style="min-width: 110px; width: 110px" placeholder="留空=全部" /></label>
+        <button onclick="taskProgress()">
+          补满任务进度
+        </button>
+      </section>
+      <section>
         <h2>武学套路</h2>
         <p class="muted">
           把玩家已学会的全部武学套路（View=40
@@ -900,7 +915,7 @@
         <button onclick="authoredTask('authored_task_start')">
           接取任务
         </button>
-        <button onclick="authoredTask('authored_task_submit_ready')">
+        <button onclick="authoredTask('task_progress')">
           推进全部步骤（可交付）
         </button>
         <button onclick="authoredTask('authored_task_remove')">

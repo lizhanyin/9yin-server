@@ -2,6 +2,8 @@ package com.nineyin.server.game.avatar.task;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -48,7 +50,7 @@ class TaskMessagesTest {
                 java.util.Map.of(50, new TaskCatalog.PrizeDef(50, "", 100, 5000,
                         "", 0, "", 0, "", 0,
                         "pill_a", 2, "", 0, "", 0, "", 0, 0, 0, 0)),
-                java.util.Map.of(), java.util.Map.of());
+                java.util.Map.of(), java.util.Map.of(), java.util.Map.of(), java.util.Map.of());
         byte[] frame = TaskMessages.taskAcceptedRow(1, 1, catalog,
                 new PlayerTask.Accepted(50, PlayerTask.STATUS_DOING, 1234567890L));
         // 28 列满宽（含字符串材料列，宽于全零 golden 的 144B）
@@ -86,7 +88,8 @@ class TaskMessagesTest {
                         "npc_a", "npc_b", 448, 0, 0, List.of(), List.of(),
                         "", "", "", "", "title_50", "context_50", "complete_50",
                         "target_50", "next_50", 1, 0)),
-                java.util.Map.of(), java.util.Map.of(), java.util.Map.of());
+                java.util.Map.of(), java.util.Map.of(), java.util.Map.of(),
+                java.util.Map.of(), java.util.Map.of());
         byte[] frame = TaskMessages.taskStoryRow(1, 1, catalog,
                 new TaskCatalog.Step(50, "story", "49", 1), "next_50");
         assertEquals(0x11, frame[0]);
@@ -95,6 +98,49 @@ class TaskMessagesTest {
         assertEquals(RecordSchemas.indexByName("Task_Record"), recordIndex);
         assertEquals(50, leInt(frame, 16), "列 0 = 任务 ID");
         assertEquals(TaskMessages.TASK_RECORD_SUBTYPE_STORY, leInt(frame, 20), "列 1 = subtype=6(story)");
+    }
+
+    @Test
+    void taskProgressRowRendersHunterAndInteractiveDialects() {
+        TaskCatalog catalog = new TaskCatalog(
+                java.util.Map.of(80, new TaskCatalog.TaskDef(80, 1, "", 1,
+                        "npc_a", "npc_b", 448, 0, 0, List.of(), List.of(),
+                        "", "", "", "", "title_80", "context_80", "complete_80",
+                        "target_80", "next_80", 1, 0)),
+                java.util.Map.of(),
+                java.util.Map.of(),
+                java.util.Map.of(75701, new TaskCatalog.HuntDef(
+                        75701, "newmp_ut_001", 5, "hunterinfo_75701", 448)),
+                java.util.Map.of(75801, new TaskCatalog.InteractDef(
+                        75801, "wd_ut_001", 11, "interactinfo_75801")),
+                java.util.Map.of());
+
+        // hunter 行：subtype=1、curnum/maxnum=2/5（帧头 16B，int 列定长 4B）。
+        byte[] hunter = TaskMessages.taskProgressRow(1, 1, catalog,
+                new TaskCatalog.Step(80, "hunter", "75701", 2), 2);
+        assertNotNull(hunter);
+        assertEquals(0x11, hunter[0]);
+        int recordIndex = (hunter[10] & 0xFF) | (hunter[11] & 0xFF) << 8;
+        assertEquals(RecordSchemas.indexByName("Task_Record"), recordIndex);
+        assertEquals(80, leInt(hunter, 16), "列 0 = 任务 ID");
+        assertEquals(TaskMessages.TASK_RECORD_SUBTYPE_HUNTER, leInt(hunter, 20), "列 1 = subtype=1(hunter)");
+        assertEquals(2, leInt(hunter, 32), "列 4 = curnum");
+        assertEquals(5, leInt(hunter, 36), "列 5 = maxnum=huntlist Count");
+
+        // interact 行：subtype=3、1/1。
+        byte[] interact = TaskMessages.taskProgressRow(1, 1, catalog,
+                new TaskCatalog.Step(80, "interact", "75801", 3), 1);
+        assertNotNull(interact);
+        assertEquals(TaskMessages.TASK_RECORD_SUBTYPE_INTERACTIVE, leInt(interact, 20), "列 1 = subtype=3(interact)");
+        assertEquals(1, leInt(interact, 32));
+        assertEquals(1, leInt(interact, 36));
+
+        // 进度表缺配置（TypeID 无 huntlist 行）→ 不下发。
+        assertNull(TaskMessages.taskProgressRow(1, 1, catalog,
+                new TaskCatalog.Step(80, "hunter", "99999", 4), 0));
+        // 非进度步骤 → 不下发。
+        assertNull(TaskMessages.taskProgressRow(1, 1, catalog,
+                new TaskCatalog.Step(80, "convoy", "75701", 5), 0));
     }
 
     /** 小端 int32 读取（PacketWriter.writeU32 低字节在前）。 */

@@ -934,6 +934,8 @@ public final class LoginFlow {
         switch (command.action()) {
             case "set_move_speed" -> applyMotionValue(connection, session, command, true);
             case "set_gravity" -> applyMotionValue(connection, session, command, false);
+            // 任务二期调试：一键补满已接任务进度（taskId 省略=全部已接）。
+            case "task_progress" -> applyTaskProgress(connection, session, command);
             case "set_silver" -> applySilver(connection, session, command);
             case "set_guanyin" -> applyCapital(connection, session, command, "guanYin", "官银");
             case "set_gold" -> applyCapital(connection, session, command, "gold", "黄金");
@@ -2161,13 +2163,15 @@ public final class LoginFlow {
     }
 
     /**
-     * 击杀接管（msg211 击杀分支钩子）：世界 BOSS 认领 worldBoss 摆放 → 跳过 15s
-     * 重生，延迟 {@link #WORLD_BOSS_REMOVE_DELAY_MS} 摘除（击杀帧先发）+ 面板回执；
-     * 伙伴（bot 摆放）阵亡 → 冻结不重生（bot_revive 手动复活）；副本目录 NPC 由
-     * {@link #claimCloneKill} 认领 → 死后不复活并尝试波次推进。
+     * 击杀接管（msg211 击杀分支钩子）：前置杀怪任务推进（不认领，重生链不受影响）；
+     * 世界 BOSS 认领 worldBoss 摆放 → 跳过 15s 重生，延迟 {@link #WORLD_BOSS_REMOVE_DELAY_MS}
+     * 摘除（击杀帧先发）+ 面板回执；伙伴（bot 摆放）阵亡 → 冻结不重生（bot_revive
+     * 手动复活）；副本目录 NPC 由 {@link #claimCloneKill} 认领 → 死后不复活并尝试波次推进。
      */
-    private IntPredicate killOverride(LoginSession session) {
+    private IntPredicate killOverride(Connection connection, LoginSession session) {
         return objectId -> {
+            // 杀怪任务进度（二期）：覆盖直击/多段/反弹全部击杀路径，恒不认领。
+            advanceHunterProgress(connection, session, objectId);
             LoginSession.GmSpawn spawn = session.gmSpawns.get(objectId);
             if (spawn != null && spawn.worldBoss) {
                 String name = gmSpawnName(spawn);
@@ -2980,6 +2984,55 @@ public final class LoginFlow {
         gmHub.update(session.machine.id(), s -> s.lastAction = action);
         command.succeed(action);
         log.info("session={} GM set_pk_mode={}", session.machine.id(), mode);
+    }
+
+    /**
+     * GM task_progress：一键补满已接任务进度（taskId 省略=全部已接）——真机
+     * 联调利器（目标怪未物化的任务也能走完提交链）。回刷口径与自然推进一致：
+     * 逐步骤行删+加、满的任务回刷 Task_Accepted 行（status=2）+ 头顶标记。
+     */
+    private void applyTaskProgress(Connection connection, LoginSession session, GmCommand command) {
+        Integer taskId = command.intParam("taskId");
+        int filledTasks = 0;
+        int filledSteps = 0;
+        for (int id : session.player.task().acceptedIds()) {
+            if (taskId != null && taskId > 0 && id != taskId) {
+                continue;
+            }
+            int statusBefore = session.player.task().acceptedTask(id).status();
+            List<String> filled = session.player.task().fillProgress(taskCatalog(), id);
+            if (filled.isEmpty()) {
+                continue;
+            }
+            filledTasks++;
+            filledSteps += filled.size();
+            for (var step : taskCatalog().steps(id)) {
+                if (filled.contains(step.typeId())) {
+                    refreshTaskStepRow(connection, session, step);
+                }
+            }
+            var entry = session.player.task().acceptedTask(id);
+            if (entry != null && entry.status() != statusBefore) {
+                refreshTaskAcceptedRow(connection, session, id);
+                var def = taskCatalog().task(id);
+                if (def != null && !def.submitNpc().isEmpty()) {
+                    connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.npcEffect(
+                            def.submitNpc(), 2));
+                }
+            }
+        }
+        persistTask(session);
+        if (filledTasks == 0) {
+            command.fail(taskId != null && taskId > 0
+                    ? "任务 " + taskId + " 未接或无进度步骤"
+                    : "没有待补进度的已接任务");
+            return;
+        }
+        String action = "已补满 " + filledTasks + " 个任务的 " + filledSteps + " 个进度步骤";
+        gmHub.update(session.machine.id(), s -> s.lastAction = action);
+        command.succeed(action);
+        log.info("session={} GM task_progress: {} tasks / {} steps",
+                session.machine.id(), filledTasks, filledSteps);
     }
 
     private void applyWearTitle(Connection connection, LoginSession session,
@@ -6867,7 +6920,7 @@ public final class LoginFlow {
                     SkillCastHandler.handleDashLanding(new SkillCastHandler.CastContext(
                             connection, session.player, session.world, session.fight,
                             session.learnedSkills, session.skillRows, scheduler, clock,
-                            session.combatRandom, killOverride(session)), custom);
+                            session.combatRandom, killOverride(connection, session)), custom);
                 }
             }
             // msg15 移动上报（9 值：[15, state, moveType, f32 x/y/z, f32 orient, (会话哈希),
@@ -7167,7 +7220,7 @@ public final class LoginFlow {
         SkillCastHandler.handle(new SkillCastHandler.CastContext(
                 connection, session.player, session.world, session.fight,
                 session.learnedSkills, session.skillRows, scheduler, clock,
-                session.combatRandom, killOverride(session)), custom);
+                session.combatRandom, killOverride(connection, session)), custom);
     }
 
     /**
@@ -7189,7 +7242,7 @@ public final class LoginFlow {
         SkillCastHandler.tryRushArrival(new SkillCastHandler.CastContext(
                 connection, session.player, session.world, session.fight,
                 session.learnedSkills, session.skillRows, scheduler, clock,
-                session.combatRandom, killOverride(session)), values.get(3).float32, values.get(4).float32,
+                session.combatRandom, killOverride(connection, session)), values.get(3).float32, values.get(4).float32,
                 values.get(5).float32, orient);
     }
 
@@ -7232,6 +7285,8 @@ public final class LoginFlow {
             selectCombatTarget(connection, session, objectId, ownerId);
             return true;
         }
+        // 交互任务推进（二期）：点击目标 NPC 计数 1/1，不影响后续对话/菜单行为。
+        advanceInteractProgress(connection, session, objectId);
         openNpcDialog(connection, session, objectId, ownerId);
         return true;
     }
@@ -7415,7 +7470,8 @@ public final class LoginFlow {
         List<Integer> submittable = new ArrayList<>();
         if (session.player != null) {
             for (int taskId : npcTasks.submit()) {
-                if (session.player.task().isAccepted(taskId) && taskCatalog().task(taskId) != null) {
+                if (session.player.task().isAccepted(taskId) && taskCatalog().task(taskId) != null
+                        && session.player.task().isProgressComplete(taskCatalog(), taskId)) {
                     submittable.add(taskId);
                 }
             }
@@ -7456,6 +7512,10 @@ public final class LoginFlow {
             if (def == null) {
                 continue;
             }
+            // 二期门控：进度未满不上可交菜单项（对话菜单与任务专线同口径）。
+            if (!session.player.task().isProgressComplete(taskCatalog(), taskId)) {
+                continue;
+            }
             items.add(new NpcMessages.MenuItem(MENU_ITEM_TYPE,
                     session.dialog.allocate(new NpcDialog.SubmitTask(taskId)), def.titleId()));
         }
@@ -7481,7 +7541,8 @@ public final class LoginFlow {
 
     /**
      * 接任务（对话选项/任务专线菜单项落地）：校验 → Task_Accepted 28 列行 +
-     * Task_Record story 步骤行 + 327 sub=9（on_task_add）→ 落档。
+     * Task_Record 全部步骤行（story + hunter/interact 进度行，steps() 序）+
+     * 327 sub=9（on_task_add）→ 落档 + 行序镜像登记。
      * mark 表内的任务窗（sub=1 官方接取窗）真机验证后按需启用。
      */
     private void acceptTask(Connection connection, LoginSession session, int taskId) {
@@ -7500,12 +7561,9 @@ public final class LoginFlow {
         connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.taskAcceptedRow(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
                 taskCatalog(), result.entry()));
+        session.taskAcceptedRowOrder.add(taskId);
         for (var step : taskCatalog().steps(taskId)) {
-            if ("story".equalsIgnoreCase(step.type())) {
-                connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.taskStoryRow(
-                        PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
-                        taskCatalog(), step, def.trackInfoId()));
-            }
+            sendTaskStepRow(connection, session, step, 0);
         }
         connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.taskAdded(taskId));
         persistTask(session);
@@ -7513,9 +7571,36 @@ public final class LoginFlow {
     }
 
     /**
-     * 交任务（SubmitTask 菜单项 / 327 "complete_task"）：先算 Task_Accepted 行号
-     * 再落态 → 0x12 删行 + Task_Completed 位图行同步（删+加，行值=starter 位与
-     * 玩家完成位合并）+ 327 sub=8 → 奖励 → 落档。
+     * 下发单条步骤行并登记镜像：story → taskStoryRow；hunter/interact →
+     * taskProgressRow（进度表缺配置跳过——该步骤不参与计数与门控）。
+     */
+    private void sendTaskStepRow(Connection connection, LoginSession session,
+                                 com.nineyin.server.game.avatar.task.TaskCatalog.Step step, int curnum) {
+        byte[] frame;
+        if ("story".equalsIgnoreCase(step.type())) {
+            var def = taskCatalog().task(step.taskId());
+            frame = com.nineyin.server.game.avatar.task.TaskMessages.taskStoryRow(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    taskCatalog(), step, def != null ? def.trackInfoId() : null);
+        } else {
+            frame = com.nineyin.server.game.avatar.task.TaskMessages.taskProgressRow(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    taskCatalog(), step, curnum);
+        }
+        if (frame == null) {
+            return;
+        }
+        connection.writeFrame(frame);
+        String key = step.taskId() + ":" + step.typeId();
+        session.taskRecordRowKeys.remove(key);
+        session.taskRecordRowKeys.add(key);
+    }
+
+    /**
+     * 交任务（SubmitTask 菜单项 / 327 "complete_task"）：进度门控（二期——
+     * hunter/interact 步骤未满拒绝）→ 先算 Task_Accepted 行号再落态 → 0x12 删行 +
+     * 该任务全部 Task_Record 步骤行删除（镜像降序行号）+ Task_Completed 位图行同步
+     * （删+加，行值=starter 位与玩家完成位合并）+ 327 sub=8 → 奖励 → 落档。
      */
     private void submitTask(Connection connection, LoginSession session, int taskId) {
         connection.writeFrame(NpcMessages.clearMenu());
@@ -7527,6 +7612,11 @@ public final class LoginFlow {
             log.info("session={} submit task {} not accepted", session.machine.id(), taskId);
             return;
         }
+        if (!session.player.task().isProgressComplete(taskCatalog(), taskId)) {
+            log.info("session={} reject submit task {}: progress incomplete",
+                    session.machine.id(), taskId);
+            return;
+        }
         int row = taskAcceptedRowNumber(session, taskId);
         var completed = session.player.task().complete(taskId);
         if (completed == null) {
@@ -7535,6 +7625,8 @@ public final class LoginFlow {
         connection.writeFrame(RecordMessages.recordDelRow(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
                 RecordMessages.RECORD_TASK_ACCEPTED, row));
+        session.taskAcceptedRowOrder.remove(Integer.valueOf(taskId));
+        removeTaskStepRows(connection, session, taskId);
         for (byte[] frame : taskCompletedRowSyncFrames(session, taskId)) {
             connection.writeFrame(frame);
         }
@@ -7544,7 +7636,7 @@ public final class LoginFlow {
         log.info("session={} submitted task {}", session.machine.id(), taskId);
     }
 
-    /** 放弃任务（327 sub=0，任务日志界面）：删 Task_Accepted 行；完成集不动。 */
+    /** 放弃任务（327 sub=0，任务日志界面）：删 Task_Accepted 行 + 步骤行；完成集不动。 */
     private void giveupTask(Connection connection, LoginSession session, int taskId) {
         if (session.player == null || taskId <= 0) {
             return;
@@ -7552,14 +7644,167 @@ public final class LoginFlow {
         int row = taskAcceptedRowNumber(session, taskId);
         var removed = session.player.task().giveup(taskId);
         if (removed == null) {
-            log.info("session={} giveup task {} not accepted", session.machine.id(), taskId);
+            log.info("session={} give up task {} not accepted", session.machine.id(), taskId);
             return;
         }
         connection.writeFrame(RecordMessages.recordDelRow(
                 PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
                 RecordMessages.RECORD_TASK_ACCEPTED, row));
+        session.taskAcceptedRowOrder.remove(Integer.valueOf(taskId));
+        removeTaskStepRows(connection, session, taskId);
         persistTask(session);
         log.info("session={} gave up task {}", session.machine.id(), taskId);
+    }
+
+    /** 删任务的全部 Task_Record 步骤行（按镜像降序行号删，防前移失真）+ 镜像清理。 */
+    private void removeTaskStepRows(Connection connection, LoginSession session, int taskId) {
+        List<Integer> rows = new ArrayList<>();
+        for (int i = session.taskRecordRowKeys.size() - 1; i >= 0; i--) {
+            if (session.taskRecordRowKeys.get(i).startsWith(taskId + ":")) {
+                rows.add(i);
+                session.taskRecordRowKeys.remove(i);
+            }
+        }
+        for (int row : rows) { // 已降序收集
+            connection.writeFrame(RecordMessages.recordDelRow(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    RecordMessages.RECORD_TASK_RECORD, row));
+        }
+    }
+
+    /**
+     * 进度步骤行回刷（客户端记录引擎无原位更新）：按镜像行号删行 + 按新计数
+     * 尾插重发 + 镜像同步移尾。行不在镜像（异常防御）只发新增行。
+     */
+    private void refreshTaskStepRow(Connection connection, LoginSession session,
+                                    com.nineyin.server.game.avatar.task.TaskCatalog.Step step) {
+        String key = step.taskId() + ":" + step.typeId();
+        int row = session.taskRecordRowKeys.indexOf(key);
+        if (row >= 0) {
+            connection.writeFrame(RecordMessages.recordDelRow(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    RecordMessages.RECORD_TASK_RECORD, row));
+            session.taskRecordRowKeys.remove(row);
+        }
+        sendTaskStepRow(connection, session, step,
+                session.player.task().progressOf(step.taskId(), step.typeId()));
+    }
+
+    /**
+     * Task_Accepted 整行回刷（status→可提交等）：按镜像行号删行 + 整行尾插重发
+     * （{@code taskAcceptedRow} 按当前 Accepted.status 渲染）+ 镜像移尾。
+     */
+    private void refreshTaskAcceptedRow(Connection connection, LoginSession session, int taskId) {
+        var entry = session.player.task().acceptedTask(taskId);
+        if (entry == null) {
+            return;
+        }
+        int row = session.taskAcceptedRowOrder.indexOf(taskId);
+        if (row >= 0) {
+            connection.writeFrame(RecordMessages.recordDelRow(
+                    PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                    RecordMessages.RECORD_TASK_ACCEPTED, row));
+            session.taskAcceptedRowOrder.remove(row);
+        }
+        connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.taskAcceptedRow(
+                PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
+                taskCatalog(), entry));
+        session.taskAcceptedRowOrder.add(taskId);
+    }
+
+    /**
+     * 步骤推进落帧共用尾：回刷步骤行；任务刚满（advance 判定）再回刷
+     * Task_Accepted 行（status=2 可提交）+ 交任务 NPC 头顶标记（sub=15 flag 2）。
+     */
+    private void afterStepAdvanced(Connection connection, LoginSession session,
+                                   com.nineyin.server.game.avatar.task.TaskCatalog.Step step,
+                                   boolean justCompleted) {
+        refreshTaskStepRow(connection, session, step);
+        if (justCompleted) {
+            refreshTaskAcceptedRow(connection, session, step.taskId());
+            var def = taskCatalog().task(step.taskId());
+            if (def != null && !def.submitNpc().isEmpty()) {
+                connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.npcEffect(
+                        def.submitNpc(), 2));
+            }
+            log.info("session={} task {} progress complete (can submit)",
+                    session.machine.id(), step.taskId());
+        }
+        persistTask(session);
+    }
+
+    /**
+     * 杀怪任务推进（killOverride 前置钩子，覆盖直击/多段/反弹全部击杀路径）：
+     * 被杀 NPC 模板名匹配已接任务 hunter 步骤 → 计数 +1 → 回刷行。恒不认领
+     * （重生链不受影响）。
+     */
+    private void advanceHunterProgress(Connection connection, LoginSession session, int objectId) {
+        if (session.player == null || session.world == null) {
+            return;
+        }
+        String npcConfigId = session.world.npcConfigId(objectId);
+        if (npcConfigId == null || npcConfigId.isEmpty()) {
+            return;
+        }
+        for (int taskId : session.player.task().acceptedIds()) {
+            for (var step : taskCatalog().steps(taskId)) {
+                if (!"hunter".equalsIgnoreCase(step.type())) {
+                    continue;
+                }
+                var hunt = taskCatalog().hunt(parseIntOrNegative(step.typeId()));
+                if (hunt == null || !hunt.npcId().equals(npcConfigId)) {
+                    continue;
+                }
+                var result = session.player.task().advance(taskCatalog(), taskId, step.typeId());
+                if (!result.changed()) {
+                    continue;
+                }
+                afterStepAdvanced(connection, session, step, result.justCompleted());
+                log.info("session={} task {} hunt {} -> {}/{}",
+                        session.machine.id(), taskId, hunt.npcId(),
+                        session.player.task().progressOf(taskId, step.typeId()), hunt.count());
+            }
+        }
+    }
+
+    /**
+     * 交互任务推进（0x07 初点非战斗 NPC 前置钩子）：点击的 NPC 模板名匹配已接
+     * 任务 interact 步骤 → 计数 1/1。不影响既有对话/菜单行为。
+     */
+    private void advanceInteractProgress(Connection connection, LoginSession session, int objectId) {
+        if (session.player == null || session.world == null) {
+            return;
+        }
+        String npcConfigId = session.world.npcConfigId(objectId);
+        if (npcConfigId == null || npcConfigId.isEmpty()) {
+            return;
+        }
+        for (int taskId : session.player.task().acceptedIds()) {
+            for (var step : taskCatalog().steps(taskId)) {
+                if (!"interact".equalsIgnoreCase(step.type())) {
+                    continue;
+                }
+                var interact = taskCatalog().interact(parseIntOrNegative(step.typeId()));
+                if (interact == null || !interact.npcId().equals(npcConfigId)) {
+                    continue;
+                }
+                var result = session.player.task().advance(taskCatalog(), taskId, step.typeId());
+                if (!result.changed()) {
+                    continue;
+                }
+                afterStepAdvanced(connection, session, step, result.justCompleted());
+                log.info("session={} task {} interact {} done",
+                        session.machine.id(), taskId, npcConfigId);
+            }
+        }
+    }
+
+    private static int parseIntOrNegative(String raw) {
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException | NullPointerException e) {
+            return -1;
+        }
     }
 
     /**
@@ -7659,10 +7904,16 @@ public final class LoginFlow {
 
     /**
      * Task_Accepted 记录行号：客户端行序 = starter 功能解锁 15 行（登录链前缀）
-     * + 玩家已接任务升序序号。删除前调用（删除后序号即失真）。
+     * + 会话镜像 {@code taskAcceptedRowOrder}（真实下发序：接取尾插、状态回刷
+     * 移尾——升序假设在乱序接取/回刷后失真，二期起按镜像寻址）。删除前调用
+     * （删除后序号即失真）；镜像缺项（防御）回退升序口径。
      */
     private static int taskAcceptedRowNumber(LoginSession session, int taskId) {
         int starterRows = StarterQingGong.acceptedTaskIds().size();
+        int mirrored = session.taskAcceptedRowOrder.indexOf(taskId);
+        if (mirrored >= 0) {
+            return starterRows + mirrored;
+        }
         int offset = 0;
         for (int id : session.player.task().acceptedIds()) {
             if (id == taskId) {
@@ -7699,15 +7950,19 @@ public final class LoginFlow {
     }
 
     /**
-     * 登录任务恢复帧（starter 链后下发）：已接任务 Task_Accepted 28 列行
-     * （starter 族去重）+ 已完成任务位图差异行（starter 基线 ∪ 玩家完成集，
-     * 与基线不同的行删+加）。新玩家零帧——starter golden 帧序不受影响。
+     * 登录任务恢复帧（starter 链后下发；GM 切图重入同链重放）：已接任务
+     * Task_Accepted 28 列行（starter 族去重）+ 全部 Task_Record 步骤行（带存档
+     * curnum，story+hunter/interact）+ 已完成任务位图差异行（starter 基线 ∪
+     * 玩家完成集，与基线不同的行删+加）。新玩家零帧——starter golden 帧序不受影响。
+     * 行序镜像按本恢复序重建（0x0C 清行后客户端行序即恢复序）。
      */
     private void grantTaskRestoreFrames(Connection connection, LoginSession session) {
         if (session.player == null) {
             return;
         }
         java.util.Set<Long> starterAccepted = new java.util.HashSet<>(StarterQingGong.acceptedTaskIds());
+        session.taskAcceptedRowOrder.clear();
+        session.taskRecordRowKeys.clear();
         int restored = 0;
         for (int taskId : session.player.task().acceptedIds()) {
             if (starterAccepted.contains((long) taskId)) {
@@ -7717,6 +7972,11 @@ public final class LoginFlow {
                 connection.writeFrame(com.nineyin.server.game.avatar.task.TaskMessages.taskAcceptedRow(
                         PlayerActor.PLAYER_OBJECT_ID, PlayerActor.PLAYER_OWNER_ID,
                         taskCatalog(), session.player.task().acceptedTask(taskId)));
+                session.taskAcceptedRowOrder.add(taskId);
+                for (var step : taskCatalog().steps(taskId)) {
+                    sendTaskStepRow(connection, session, step,
+                            session.player.task().progressOf(taskId, step.typeId()));
+                }
                 restored++;
             } catch (RuntimeException e) {
                 log.warn("restore accepted task row {}: {}", taskId, e.getMessage());

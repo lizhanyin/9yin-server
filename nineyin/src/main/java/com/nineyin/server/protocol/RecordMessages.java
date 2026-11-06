@@ -20,6 +20,8 @@ public final class RecordMessages {
 
     /** 官方方言下标（0x0A 帧 447 schema 的帧内位置）。 */
     public static final int RECORD_TASK_ACCEPTED = RecordSchemas.indexByName("Task_Accepted");
+    /** 任务步骤进度行（15 列：subtype 1 杀/2 采/3 交互/4 护送/5 quest/6 story/7 用道具）。 */
+    public static final int RECORD_TASK_RECORD = RecordSchemas.indexByName("Task_Record");
     public static final int RECORD_TASK_COMPLETED = RecordSchemas.indexByName("Task_Completed");
     public static final int RECORD_SHORTCUT = RecordSchemas.indexByName("shortcut_rec");
     /** CoolLogicManager 原生回调：每行 = StartACool(category, end-start, team, 0)（cols [3,4,4,2]，team u16）。 */

@@ -221,6 +221,10 @@ public class GmRemote {
                 }
                 yield intRange(params, "amount", 1, 9999);
             }
+            // 任务二期调试：一键补满已接任务进度（taskId 省略或 0=全部已接）。
+            case "task_progress" -> params != null && params.containsKey("taskId")
+                    ? intRange(params, "taskId", 0, 999_999)
+                    : null;
             // 礼包与物品区块：系统邮件附件发送（send_test_mail 同参数域）+
             // 礼包测试商人拉到身边（无参）。
             case "send_test_mail" -> {

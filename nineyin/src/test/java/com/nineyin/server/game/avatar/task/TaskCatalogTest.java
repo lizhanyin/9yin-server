@@ -2,6 +2,7 @@ package com.nineyin.server.game.avatar.task;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -109,5 +110,35 @@ class TaskCatalogTest {
         for (String segment : segments) {
             assertEquals("0", segment, "all-zero prize string（is_have_prize 不渲染奖励区）");
         }
+    }
+
+    @Test
+    void loadsHuntAndInteractProgressTables() throws IOException {
+        write(shareRoot.resolve(Path.of("task", "task", "huntlist", "huntlist_ut_001.txt")),
+                "STRING\tSTRING\tSTRING\tSTRING\tSTRING\tSTRING\r\n"
+                        + "ID\tNpcId\tCount\tRefreshMonster\tTrackInfo\tSceneID",
+                "75701\tnewmp_klzyb_002\t5\t\thunterinfo_75701\t448",
+                "75702\t\t1\t\t\t", // NpcId 空 → 跳过
+                "75703\tnewmp_klzyb_010\t\t\t\t448"); // Count 空 → 缺省 1
+        write(shareRoot.resolve(Path.of("task", "task", "interactivelist", "interactivelist_ut_001.txt")),
+                "STRING\tSTRING\tSTRING\tSTRING\r\nID\tNpcId\tSceneID\tTrackInfo",
+                "75801\twd_ut_001\t11\tinteractinfo_75801");
+
+        TaskCatalog catalog = TaskCatalog.loadShare(shareRoot);
+
+        TaskCatalog.HuntDef hunt = catalog.hunt(75701);
+        assertNotNull(hunt, "hunt 75701 configured");
+        assertEquals("newmp_klzyb_002", hunt.npcId());
+        assertEquals(5, hunt.count());
+        assertEquals("hunterinfo_75701", hunt.trackInfo());
+        assertEquals(448, hunt.sceneId());
+        assertNull(catalog.hunt(75702), "NpcId 空行跳过");
+        assertEquals(1, catalog.hunt(75703).count(), "Count 空缺省 1");
+
+        TaskCatalog.InteractDef interact = catalog.interact(75801);
+        assertNotNull(interact, "interact 75801 configured");
+        assertEquals("wd_ut_001", interact.npcId());
+        assertEquals(11, interact.sceneId());
+        assertEquals("interactinfo_75801", interact.trackInfo());
     }
 }

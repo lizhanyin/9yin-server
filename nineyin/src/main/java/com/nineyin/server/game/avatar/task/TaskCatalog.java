@@ -20,11 +20,13 @@ import com.nineyin.util.ServerPaths;
 /**
  * 任务静态配置目录（share/task TSV + npcconfig 任务归属列），进程级缓存。
  *
- * <p>四类源表（GBK + 带引号 TSV，{@link NpcTemplateTable#parseQuotedTsv} 语义）：
+ * <p>六类源表（GBK + 带引号 TSV，{@link NpcTemplateTable#parseQuotedTsv} 语义）：
  * <ul>
  * <li>主任务表 task/task/task_*.txt（两行表头，列名行在 records[1]，59 列方言）；
  * <li>奖励表 task/task/prize/prize_*.txt（两行表头，28 列）；
- * <li>步骤表 task/task/subfunction/subfunction_*.txt（两行表头，Type=story/interact）；
+ * <li>步骤表 task/task/subfunction/subfunction_*.txt（两行表头，Type=story/hunter/interact）；
+ * <li>杀怪进度表 task/task/huntlist/huntlist_*.txt（两行表头，NpcId 模板名 ×Count）；
+ * <li>交互进度表 task/task/interactivelist/interactivelist_*.txt（两行表头，点击目标 NPC）；
  * <li>NPC 归属 npcconfig 全目录 txt 的 table@TaskCanAccept / table@TaskCanSubmit
  *     列（三行表头，值为分号分隔任务 ID 尾分号，如 {@code 24721;24727;}）。
  * </ul>
@@ -91,8 +93,16 @@ public final class TaskCatalog {
         }
     }
 
-    /** 步骤行（subfunction 表：Type=story 对话 / interact 交互）。 */
+    /** 步骤行（subfunction 表：Type=story 对话 / hunter 杀怪 / interact 交互）。 */
     public record Step(int taskId, String type, String typeId, int order) {
+    }
+
+    /** 杀怪进度行（huntlist 表：TypeId=NpcId 模板名 ×Count 只）。 */
+    public record HuntDef(int id, String npcId, int count, String trackInfo, int sceneId) {
+    }
+
+    /** 交互进度行（interactivelist 表：点击 NpcId 目标 NPC 即完成）。 */
+    public record InteractDef(int id, String npcId, int sceneId, String trackInfo) {
     }
 
     /** NPC 任务归属（table@TaskCanAccept / table@TaskCanSubmit 两列）。 */
@@ -102,13 +112,18 @@ public final class TaskCatalog {
     private final Map<Integer, TaskDef> tasks;
     private final Map<Integer, PrizeDef> prizes;
     private final Map<Integer, List<Step>> steps;
+    private final Map<Integer, HuntDef> hunts;
+    private final Map<Integer, InteractDef> interacts;
     private final Map<String, NpcTasks> npcTasks;
 
     TaskCatalog(Map<Integer, TaskDef> tasks, Map<Integer, PrizeDef> prizes,
-                Map<Integer, List<Step>> steps, Map<String, NpcTasks> npcTasks) {
+                Map<Integer, List<Step>> steps, Map<Integer, HuntDef> hunts,
+                Map<Integer, InteractDef> interacts, Map<String, NpcTasks> npcTasks) {
         this.tasks = tasks;
         this.prizes = prizes;
         this.steps = steps;
+        this.hunts = hunts;
+        this.interacts = interacts;
         this.npcTasks = npcTasks;
     }
 
@@ -121,6 +136,8 @@ public final class TaskCatalog {
         Map<Integer, TaskDef> tasks = new TreeMap<>();
         Map<Integer, PrizeDef> prizes = new TreeMap<>();
         Map<Integer, List<Step>> steps = new TreeMap<>();
+        Map<Integer, HuntDef> hunts = new TreeMap<>();
+        Map<Integer, InteractDef> interacts = new TreeMap<>();
         for (Path file : tsvFiles(shareRoot.resolve(Path.of("task", "task", "task")))) {
             loadTaskTable(file, tasks);
         }
@@ -130,9 +147,15 @@ public final class TaskCatalog {
         for (Path file : tsvFiles(shareRoot.resolve(Path.of("task", "task", "subfunction")))) {
             loadStepTable(file, steps);
         }
+        for (Path file : tsvFiles(shareRoot.resolve(Path.of("task", "task", "huntlist")))) {
+            loadHuntTable(file, hunts);
+        }
+        for (Path file : tsvFiles(shareRoot.resolve(Path.of("task", "task", "interactivelist")))) {
+            loadInteractTable(file, interacts);
+        }
         Map<String, NpcTasks> npcTasks = new HashMap<>();
         loadNpcTasks(shareRoot.resolve(Path.of("npc", "npcconfig")), npcTasks);
-        return new TaskCatalog(tasks, prizes, steps, npcTasks);
+        return new TaskCatalog(tasks, prizes, steps, hunts, interacts, npcTasks);
     }
 
     public TaskDef task(int id) {
@@ -152,6 +175,28 @@ public final class TaskCatalog {
         List<Step> sorted = new ArrayList<>(list);
         sorted.sort(Comparator.comparingInt(Step::order));
         return sorted;
+    }
+
+    public HuntDef hunt(int huntId) {
+        return hunts.get(huntId);
+    }
+
+    public InteractDef interact(int interactId) {
+        return interacts.get(interactId);
+    }
+
+    /** 全部步骤（真实 share 冒烟解析率统计用；taskId → 原始步骤列表）。 */
+    public Map<Integer, List<Step>> stepsByTask() {
+        return java.util.Collections.unmodifiableMap(steps);
+    }
+
+    /** 杀怪步骤行数（真实 share 冒烟：hunter 步骤 → huntlist 解析率）。 */
+    public int huntCount() {
+        return hunts.size();
+    }
+
+    public int interactCount() {
+        return interacts.size();
     }
 
     public NpcTasks npcTasks(String npcConfigId) {
@@ -247,6 +292,47 @@ public final class TaskCatalog {
             }
             out.computeIfAbsent(id, key -> new ArrayList<>())
                     .add(new Step(id, type, typeId, table.intOf(record, "Order", 0)));
+        }
+    }
+
+    /** 杀怪进度表：NpcId=怪物模板名、Count=击杀数（缺省 1）、TrackInfo=追踪文本 key。 */
+    private static void loadHuntTable(Path file, Map<Integer, HuntDef> out) {
+        Table table = Table.load(file, 1);
+        if (table == null) {
+            return;
+        }
+        for (String[] record : table.records) {
+            int id = table.intOf(record, "ID", 0);
+            String npcId = table.textOf(record, "NpcId");
+            if (id <= 0 || npcId.isEmpty()) {
+                continue;
+            }
+            out.putIfAbsent(id, new HuntDef(
+                    id,
+                    npcId,
+                    Math.max(1, table.intOf(record, "Count", 1)),
+                    table.textOf(record, "TrackInfo"),
+                    table.intOf(record, "SceneID", 0)));
+        }
+    }
+
+    /** 交互进度表：点击 NpcId 目标 NPC 即完成（DialogID/OkMenu 对话层留三期）。 */
+    private static void loadInteractTable(Path file, Map<Integer, InteractDef> out) {
+        Table table = Table.load(file, 1);
+        if (table == null) {
+            return;
+        }
+        for (String[] record : table.records) {
+            int id = table.intOf(record, "ID", 0);
+            String npcId = table.textOf(record, "NpcId");
+            if (id <= 0 || npcId.isEmpty()) {
+                continue;
+            }
+            out.putIfAbsent(id, new InteractDef(
+                    id,
+                    npcId,
+                    table.intOf(record, "SceneID", 0),
+                    table.textOf(record, "TrackInfo")));
         }
     }
 

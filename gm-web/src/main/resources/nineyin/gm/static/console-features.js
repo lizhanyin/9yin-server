@@ -252,6 +252,13 @@
         taskId: +document.querySelector("#authored-task-id").value || 0,
       });
     }
+    // 任务进度补满（二期）：taskId 留空/0 = 全部已接任务。
+    function taskProgress() {
+      command({
+        action: "task_progress",
+        taskId: +document.querySelector("#task-progress-id").value || 0,
+      });
+    }
     function setSP() {
       command({ action: "set_sp", sp: +document.querySelector("#sp").value });
     }

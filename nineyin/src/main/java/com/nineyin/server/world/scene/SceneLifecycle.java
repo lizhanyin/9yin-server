@@ -182,6 +182,12 @@ public final class SceneLifecycle {
         return toCombatInfo(entity);
     }
 
+    /** NPC 模板名（npctemplate configId，任务杀怪按此匹配；不存在 → null）。 */
+    public synchronized String npcConfigId(int id) {
+        SceneEntity entity = entities.get(id);
+        return entity != null ? entity.configId : null;
+    }
+
     /** 全部 combat NPC（面积技能目标选择的快照遍历）。 */
     public synchronized java.util.List<CombatNpcInfo> combatNpcs() {
         java.util.List<CombatNpcInfo> result = new java.util.ArrayList<>(entities.size());
